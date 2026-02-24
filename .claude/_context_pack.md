@@ -76,20 +76,26 @@
 ## Git Status
 
 ```
-?? .claude/
-?? .idea/
-?? CLAUDE.md
+M .claude/_context_pack.md
+ M .claude/hooks/post-tool-use.sh
+ M .claude/hooks/skill_suggest.py
+ M .claude/skill-rules.json
+ M docs/RUNBOOK.md
+?? .claude/_edited_files.log
+?? .claude/hooks/__pycache__/
+?? .claude/skills/
 ?? __pycache__/
-?? docs/
-?? main.py
-?? prompts/
-?? recipes/
-?? scripts/
-?? tools/
+?? scripts/__pycache__/
+?? tools/__pycache__/
 ```
 
 ## Git Diff (stat)
 
 ```
-
+.claude/_context_pack.md       | 26 +++++++++------
+ .claude/hooks/post-tool-use.sh | 10 +++---
+ .claude/hooks/skill_suggest.py | 75 ++++++++++++++++++++++++++++++++++++++----
+ .claude/skill-rules.json       | 11 ++++---
+ docs/RUNBOOK.md                | 23 +++++++++++++
+ 5 files changed, 120 insertions(+), 25 deletions(-)
 ```

@@ -67,6 +67,29 @@ uv run python tools/generate_notebook.py <recipe-name>
 uv run python -m compileall . && uv run python scripts/smoke_test.py
 ```
 
+## Skill Suggestion — Manual Test (3 Samples)
+
+```bash
+# 1) Recipe keyword → expect: recipe-authoring
+echo '{"prompt":"add a new recipe for SwiftTry"}' | bash .claude/hooks/userprompt-submit.sh
+# Expected: -> recipe-authoring (matched: keyword 'recipe')
+
+# 2) Colab debug keyword → expect: colab-debugging
+echo '{"prompt":"fix pip install torch conflict in Colab"}' | bash .claude/hooks/userprompt-submit.sh
+# Expected: -> colab-debugging (matched: keyword 'pip')
+
+# 3) Notebook intent → expect: notebook-builder
+echo '{"prompt":"generate the notebook for my recipe"}' | bash .claude/hooks/userprompt-submit.sh
+# Expected: -> notebook-builder (matched: pattern 'generate.*notebook')
+```
+
+File-path matching test (requires `_edited_files.log` entries):
+```bash
+echo '{"ts":"2026-01-01","tool":"Edit","file":"recipes/test/docs/plan.md"}' > .claude/_edited_files.log
+echo '{"prompt":"check status"}' | bash .claude/hooks/userprompt-submit.sh
+# Expected: -> recipe-authoring (matched: edited file ... matches 'recipes/**/docs/**')
+```
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

@@ -13,7 +13,7 @@
         "(?i)(plan|context|tasks)\\s*(doc|md|문서)",
         "(?i)recipe\\.yaml"
       ],
-      "pathPatterns": ["recipes/*/docs/*", "recipes/*/recipe.yaml"],
+      "pathPatterns": ["recipes/**/docs/**", "recipes/**/recipe.yaml"],
       "priority": 10,
       "enforcement": "suggest",
       "hint": "Read the SSOT triad (plan/context/tasks.md) before making changes. Update tasks.md after each step."
@@ -24,7 +24,10 @@
       "keywords": [
         "colab", "install", "pip", "cuda", "gpu", "oom", "runtime",
         "conflict", "dependency", "error", "fail", "crash", "패키지", "충돌",
-        "설치", "메모리", "ImportError", "ModuleNotFoundError"
+        "설치", "메모리", "ImportError", "ModuleNotFoundError",
+        "torch", "torchvision", "diffusers", "transformers", "accelerate",
+        "xformers", "triton", "safetensors", "nvidia-smi", "cu12", "cudnn",
+        "illegal memory access", "segfault", "Killed"
       ],
       "intentPatterns": [
         "(?i)(fix|debug|solve|resolve)\\s.*(install|import|package|dependency|colab|error)",
@@ -32,7 +35,7 @@
         "(?i)(cuda|gpu|oom|out.of.memory)",
         "(?i)(ModuleNotFoundError|ImportError|RuntimeError)"
       ],
-      "pathPatterns": ["recipes/*/requirements*.txt", "recipes/*/install.sh"],
+      "pathPatterns": ["recipes/**/requirements*.txt", "recipes/**/install.sh"],
       "priority": 20,
       "enforcement": "suggest",
       "hint": "Check requirements files for version pins. Use compat-debugger agent for complex conflicts."
@@ -50,7 +53,7 @@
         "(?i)%%writefile",
         "(?i)generate_notebook"
       ],
-      "pathPatterns": ["recipes/*/notebook_manifest.yaml", "outputs/notebooks/*"],
+      "pathPatterns": ["recipes/**/notebook_manifest.yaml", "outputs/notebooks/**"],
       "priority": 15,
       "enforcement": "suggest",
       "hint": "Ensure notebook_manifest.yaml is up-to-date before generating. Run: uv run python tools/generate_notebook.py <recipe>"

@@ -30,14 +30,14 @@ try:
 except: pass
 " 2>/dev/null || true)
     if [ -n "$FILE_PATH" ]; then
-      # Append as JSONL
-      uv run python -c "
-import json, sys
+      # Append as JSONL (use env vars to avoid quoting/escape issues)
+      _TOOL="$TOOL_NAME" _FILE="$FILE_PATH" uv run python -c "
+import json, os
 from datetime import datetime, timezone
 entry = {
     'ts': datetime.now(timezone.utc).isoformat(),
-    'tool': '$TOOL_NAME',
-    'file': '''$FILE_PATH'''
+    'tool': os.environ['_TOOL'],
+    'file': os.environ['_FILE']
 }
 print(json.dumps(entry))
 " >> "$LOG_FILE" 2>/dev/null || true

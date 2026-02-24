@@ -5,6 +5,7 @@ Reads hook payload JSON from stdin, matches prompt against skill-rules.json,
 outputs JSON with suggested skills as additionalContext.
 """
 
+import fnmatch
 import json
 import re
 import sys
@@ -18,6 +19,32 @@ def load_skill_rules(repo_root: Path) -> list[dict]:
     with open(rules_path, encoding="utf-8") as f:
         data = json.load(f)
     return data.get("skills", [])
+
+
+def load_recent_edits(repo_root: Path) -> list[str]:
+    """Read recent file paths from _edited_files.log (JSONL)."""
+    log_path = repo_root / ".claude" / "_edited_files.log"
+    if not log_path.exists():
+        return []
+    paths = []
+    try:
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+                file_path = entry.get("file", "")
+                if file_path:
+                    try:
+                        rel = str(Path(file_path).relative_to(repo_root))
+                    except ValueError:
+                        rel = file_path
+                    paths.append(rel.replace("\\", "/"))
+            except json.JSONDecodeError:
+                continue
+    except Exception:
+        pass
+    return paths
 
 
 def match_skill(skill: dict, prompt: str) -> tuple[bool, str]:
@@ -40,19 +67,45 @@ def match_skill(skill: dict, prompt: str) -> tuple[bool, str]:
     return False, ""
 
 
-def suggest_skills(prompt: str, repo_root: Path) -> list[dict]:
+def match_skill_paths(skill: dict, edited_paths: list[str]) -> tuple[bool, str]:
+    """Check if any recently edited file matches a skill's pathPatterns."""
+    for pattern in skill.get("pathPatterns", []):
+        for path in edited_paths:
+            if fnmatch.fnmatch(path, pattern):
+                return True, f"edited file '{path}' matches '{pattern}'"
+    return False, ""
+
+
+def suggest_skills(prompt: str, edited_paths: list[str], repo_root: Path) -> list[dict]:
     skills = load_skill_rules(repo_root)
     matches = []
+    seen = set()
 
     for skill in skills:
+        name = skill["name"]
+
+        # Input 1: Prompt text matching
         matched, reason = match_skill(skill, prompt)
-        if matched:
+        if matched and name not in seen:
             matches.append({
-                "name": skill["name"],
+                "name": name,
                 "reason": reason,
                 "hint": skill.get("hint", ""),
                 "priority": skill.get("priority", 50),
             })
+            seen.add(name)
+
+        # Input 2: Recently edited file path matching
+        if name not in seen and edited_paths:
+            matched, reason = match_skill_paths(skill, edited_paths)
+            if matched:
+                matches.append({
+                    "name": name,
+                    "reason": reason,
+                    "hint": skill.get("hint", ""),
+                    "priority": skill.get("priority", 50),
+                })
+                seen.add(name)
 
     # Sort by priority (lower = higher priority)
     matches.sort(key=lambda x: x["priority"])
@@ -72,20 +125,30 @@ def main():
     # Extract prompt from hook payload (UserPromptSubmit schema)
     prompt = payload.get("prompt", "")
     if not prompt:
-        # No prompt in payload — nothing to suggest
         sys.exit(0)
 
-    matches = suggest_skills(prompt, repo_root)
+    # Load recently edited file paths (Input 2)
+    edited_paths = load_recent_edits(repo_root)
+
+    matches = suggest_skills(prompt, edited_paths, repo_root)
 
     if not matches:
         sys.exit(0)
 
-    # Build additionalContext output
+    # Build additionalContext output (progressive disclosure)
     lines = ["[Skill Suggestions]"]
     for m in matches:
         lines.append(f"  -> {m['name']} (matched: {m['reason']})")
         if m["hint"]:
             lines.append(f"     Hint: {m['hint']}")
+        # Load skill resource file if available
+        skill_file = repo_root / ".claude" / "skills" / m["name"] / "SKILL.md"
+        if skill_file.exists():
+            content = skill_file.read_text(encoding="utf-8", errors="replace")
+            # Truncate to keep context lean (first 40 lines)
+            truncated = "\n".join(content.splitlines()[:40])
+            lines.append(f"     [Resource: .claude/skills/{m['name']}/SKILL.md]")
+            lines.append(truncated)
 
     # Read active recipe for SSOT reminder
     recipe = "_template"

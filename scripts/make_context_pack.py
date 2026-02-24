@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Generate .claude/_context_pack.md from active recipe docs + git status."""
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def get_repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def read_file_safe(path: Path, max_lines: int = 60) -> str:
+    """Read file, return content truncated to max_lines."""
+    if not path.exists():
+        return f"(file not found: {path})\n"
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    content = "\n".join(lines[:max_lines])
+    if len(lines) > max_lines:
+        content += f"\n... ({len(lines) - max_lines} more lines)\n"
+    return content
+
+
+def get_active_recipe(repo: Path) -> str:
+    last_recipe = repo / ".claude" / "last_recipe.txt"
+    if last_recipe.exists():
+        return last_recipe.read_text(encoding="utf-8").strip()
+    return "_template"
+
+
+def git_command(args: list[str], cwd: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            capture_output=True, text=True, cwd=str(cwd), timeout=10
+        )
+        return result.stdout.strip() if result.returncode == 0 else f"(git error: {result.stderr.strip()})"
+    except Exception as e:
+        return f"(git unavailable: {e})"
+
+
+def build_context_pack(repo: Path) -> str:
+    recipe = get_active_recipe(repo)
+    docs_dir = repo / "recipes" / recipe / "docs"
+
+    sections = []
+    sections.append(f"# Context Pack\n\n**Active Recipe**: `{recipe}`")
+    sections.append(f"**Generated**: auto\n")
+
+    # --- Recipe docs ---
+    sections.append("## Recipe Docs\n")
+    for doc_name in ("plan.md", "context.md", "tasks.md"):
+        doc_path = docs_dir / doc_name
+        sections.append(f"### {doc_name}\n")
+        sections.append(f"```\n{read_file_safe(doc_path)}\n```\n")
+
+    # --- Git status ---
+    sections.append("## Git Status\n")
+    sections.append(f"```\n{git_command(['status', '--short'], repo)}\n```\n")
+
+    # --- Git diff stat ---
+    sections.append("## Git Diff (stat)\n")
+    sections.append(f"```\n{git_command(['diff', '--stat'], repo)}\n```\n")
+
+    return "\n".join(sections)
+
+
+def main():
+    repo = get_repo_root()
+    pack_path = repo / ".claude" / "_context_pack.md"
+    pack_path.parent.mkdir(parents=True, exist_ok=True)
+
+    content = build_context_pack(repo)
+    pack_path.write_text(content, encoding="utf-8")
+    print(f"[make_context_pack] Written to {pack_path.relative_to(repo)}")
+
+
+if __name__ == "__main__":
+    main()

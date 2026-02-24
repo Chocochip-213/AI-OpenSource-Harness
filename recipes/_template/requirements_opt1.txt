@@ -1,0 +1,2 @@
+# Option 1: Minimal dependencies
+# Add your pip packages here, one per line

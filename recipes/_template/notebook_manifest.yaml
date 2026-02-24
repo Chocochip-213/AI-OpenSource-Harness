@@ -1,0 +1,14 @@
+title: "Template Recipe Notebook"
+
+# pip packages to install in Colab
+install:
+  # - some-package
+
+# Files to write into Colab via %%writefile
+files:
+  # - src: main.py
+  #   dst: main.py
+  #   description: "Main entry point"
+
+# Command to run after all files are written
+run: "echo 'Hello from _template recipe!'"

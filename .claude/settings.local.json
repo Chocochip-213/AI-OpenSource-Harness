@@ -34,7 +34,9 @@
       "Bash(tail:*)",
       "Bash(cd /c/Users/kmw16/Desktop/NewTest/AI-OpenSource-Harness && PYTHONIOENCODING=utf-8 uv run --with pyyaml python tools/generate_notebook.py --recipe swifttry --out outputs/notebooks/swifttry_A100.ipynb 2>&1)",
       "Bash(cd /c/Users/kmw16/Desktop/NewTest/AI-OpenSource-Harness && PYTHONIOENCODING=utf-8 uv run python scripts/smoke_test.py 2>&1)",
-      "Bash(cd /c/Users/kmw16/Desktop/NewTest/AI-OpenSource-Harness && PYTHONIOENCODING=utf-8 uv run python scripts/make_context_pack.py 2>&1)"
+      "Bash(cd /c/Users/kmw16/Desktop/NewTest/AI-OpenSource-Harness && PYTHONIOENCODING=utf-8 uv run python scripts/make_context_pack.py 2>&1)",
+      "Bash(cd /c/Users/kmw16/Desktop/NewTest/AI-OpenSource-Harness && PYTHONIOENCODING=utf-8 uv run --with pyyaml python -c \"import yaml; yaml.safe_load\\(open\\('recipes/swifttry/notebook_manifest.yaml', encoding='utf-8'\\)\\); print\\('YAML OK'\\)\" && PYTHONIOENCODING=utf-8 uv run --with pyyaml python tools/generate_notebook.py --recipe swifttry --out outputs/notebooks/swifttry_A100.ipynb 2>&1)",
+      "Bash(cd /c/Users/kmw16/Desktop/NewTest/AI-OpenSource-Harness && PYTHONIOENCODING=utf-8 uv run --with pyyaml python tools/generate_notebook.py --recipe swifttry --out outputs/notebooks/swifttry_A100.ipynb 2>&1 && PYTHONIOENCODING=utf-8 uv run python scripts/make_context_pack.py 2>&1)"
     ]
   }
 }

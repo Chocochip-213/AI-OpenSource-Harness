@@ -1,0 +1,41 @@
+# ============================================================
+# opt1_legacy — FALLBACK: match upstream pinned versions
+# ============================================================
+# WHEN TO USE: opt2_modern fails due to API incompatibility in
+#              diffusers/transformers with Colab's newer torch.
+# STRATEGY:  Pin every package to the exact upstream version.
+#            torch 2.0.1 IS included — this WILL downgrade Colab's
+#            torch and may cause CUDA mismatch on CUDA 12.x runtimes.
+# RISK:      HIGH — torch 2.0.1 ships with CUDA 11.8 binaries.
+#            On Colab CUDA 12.x, you may see "CUDA driver too old"
+#            or silent fallback to CPU. Use only as last resort.
+# ============================================================
+
+accelerate==0.21.0
+av==11.0.0
+clip @ https://github.com/openai/CLIP/archive/d50d76daa670286dd6cacf3bcd80b5e4823fc8e1.zip
+decord==0.6.0
+diffusers==0.24.0
+einops==0.4.1
+imageio==2.33.0
+imageio-ffmpeg==0.4.9
+numpy==1.23.5
+omegaconf==2.2.3
+onnxruntime-gpu==1.16.3
+open-clip-torch==2.20.0
+opencv-contrib-python==4.8.1.78
+opencv-python==4.8.1.78
+Pillow==9.5.0
+scikit-image==0.21.0
+scikit-learn==1.3.2
+scipy==1.11.4
+torch==2.0.1
+torchdiffeq==0.2.3
+torchmetrics==1.2.1
+torchsde==0.2.5
+torchvision==0.15.2
+tqdm==4.66.1
+transformers==4.30.2
+xformers==0.0.22
+controlnet-aux==0.0.7
+huggingface_hub

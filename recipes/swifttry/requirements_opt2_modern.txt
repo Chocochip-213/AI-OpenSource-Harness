@@ -1,0 +1,46 @@
+# ============================================================
+# opt2_modern — DEFAULT for Colab (A100 / T4)
+# ============================================================
+# WHEN TO USE: Fresh Colab runtime with pre-installed torch >=2.1.
+# COLAB BASELINE (2026-01-20):
+#   Python=3.12  torch=2.9.0  torchvision=0.24.0  numpy=2.x
+#   diffusers=0.36.0  accelerate=1.12.0  xformers (matched)
+# STRATEGY:  DO NOT TOUCH Colab pre-installed packages.
+#            Only install what Colab doesn't ship.
+#            Apply patches/fix_diffusers_compat.py for diffusers API compat.
+# CRITICAL:  numpy must stay >=2.0 (torch 2.9 ABI requires it).
+# ============================================================
+
+# --- Core ML: ALL already on Colab — do NOT install ---
+# torch, torchvision, diffusers, accelerate, xformers
+# numpy, scipy, scikit-learn, tqdm, Pillow — all on Colab, DO NOT PIN
+
+# --- transformers: Colab may have newer, but SwiftTry needs <4.46 ---
+transformers>=4.30.2,<4.46
+
+# --- Vision / Video (not on Colab by default) ---
+opencv-contrib-python
+imageio
+imageio-ffmpeg
+av
+decord
+
+# --- Utilities (not on Colab by default) ---
+einops
+omegaconf
+
+# --- DWPose (ONNX) ---
+onnxruntime-gpu
+
+# --- CLIP ---
+open-clip-torch
+ftfy
+
+# --- Diffusion extras ---
+torchdiffeq
+torchmetrics
+torchsde>=0.2.6
+controlnet-aux
+
+# --- HF Hub (for weight download) ---
+huggingface_hub

@@ -1,0 +1,60 @@
+name: swifttry
+version: "0.1.0"
+description: >
+  SwiftTry — Fast and Consistent Video Virtual Try-On with Diffusion Models (AAAI 2025).
+  Runs video-based garment try-on inference on Colab A100/T4.
+
+upstream:
+  repo: https://github.com/VinAIResearch/SwiftTry
+  ref: "57d3f0b8b25509d4b650db68391c1ad11b86e833"   # master HEAD as of 2026-02-24
+  branch: master
+
+# Default requirements option (opt2 = Colab-native torch, opt1 = upstream-pinned)
+requirements: requirements_opt2_modern.txt
+
+# Entry point
+main: run.sh
+
+# Colab notebook generation
+notebook_manifest: notebook_manifest.yaml
+
+# Docs triad (SSOT)
+docs:
+  plan: docs/plan.md
+  context: docs/context.md
+  tasks: docs/tasks.md
+
+# Runtime
+runtime:
+  gpu: A100          # recommended; T4 also works (slower, may need lower resolution)
+  python: "3.10"
+  disk_gb: 25        # weights ~12GB + repo + data
+
+# Stages
+stages:
+  - name: clone
+    description: "Clone upstream repo at pinned ref"
+    command: |
+      git clone https://github.com/VinAIResearch/SwiftTry.git SwiftTry
+      cd SwiftTry && git checkout 57d3f0b8b25509d4b650db68391c1ad11b86e833
+  - name: install
+    description: "Install dependencies"
+    command: "bash install.sh"
+  - name: weights
+    description: "Download pretrained weights via upstream script + SD-Inpainting"
+    command: |
+      cd SwiftTry && python tools/download_weights.py
+      python -c "
+      from huggingface_hub import snapshot_download
+      snapshot_download('runwayml/stable-diffusion-inpainting',
+                        local_dir='./pretrained_sd_models/stable-diffusion-inpainting',
+                        ignore_patterns=['*.safetensors','*.fp16.*'])
+      "
+      ln -sfn pretrained_sd_models/swift_try weights/tiktokdress
+  - name: inference
+    description: "Run video try-on inference"
+    command: |
+      cd SwiftTry && python inference.py \
+        --data_dir "$DATA_DIR" \
+        --test_pairs "$DATA_DIR/test_pairs.txt" \
+        --save_dir "$OUT_DIR"

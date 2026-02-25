@@ -178,9 +178,17 @@ Colab baseline as of 2026-01-20: torch 2.9.0, torchvision 0.24.0, torchaudio 2.9
 ## Git Status
 
 ```
-M .claude/_context_pack.md
+M .claude/settings.local.json
+ M outputs/notebooks/swifttry_A100.ipynb
+ M recipes/swifttry/docs/context.md
+ M recipes/swifttry/docs/tasks.md
+ M recipes/swifttry/notebook_manifest.yaml
 ?? .claude/hooks/__pycache__/
 ?? __pycache__/
+?? outputs/notebooks/swifttry_A100.ipynb.v4bak
+?? recipes/swifttry/docs/context.md.v4bak
+?? recipes/swifttry/docs/tasks.md.v4bak
+?? recipes/swifttry/notebook_manifest.yaml.v4bak
 ?? recipes/swifttry/patches/__pycache__/
 ?? scripts/__pycache__/
 ?? tools/__pycache__/
@@ -189,6 +197,10 @@ M .claude/_context_pack.md
 ## Git Diff (stat)
 
 ```
-.claude/_context_pack.md | 35 ++---------------------------------
- 1 file changed, 2 insertions(+), 33 deletions(-)
+.claude/settings.local.json             |   4 +-
+ outputs/notebooks/swifttry_A100.ipynb   | 299 +++++++++++++++++++++++---------
+ recipes/swifttry/docs/context.md        |   3 +
+ recipes/swifttry/docs/tasks.md          |  20 ++-
+ recipes/swifttry/notebook_manifest.yaml | 299 +++++++++++++++++++++++---------
+ 5 files changed, 451 insertions(+), 174 deletions(-)
 ```

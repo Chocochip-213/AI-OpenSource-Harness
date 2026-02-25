@@ -142,8 +142,26 @@
 - [ ] Colab 테스트: hull pre-filter + DILATION_ITER=1 → 외곽 overflow 개선 확인
 - [ ] Colab 테스트: GARMENT_ADAPTIVE_ARMS → 긴팔/반팔 적응 확인
 
+## Mask v4 — v3 롤백 + SAM2 Image Predictor
+
+### Part A: v3 롤백
+- [x] HULL_MASK True→False, DILATION_ITER 1→3, CONSENSUS_MODE "hull"→"interior", EDGE_DILATION False→True
+- [x] v3 코드 비활성화만 (삭제 X) — 수동 활성화 가능
+
+### Part B: SAM2 Image Predictor
+- [x] B-1: MASK_ENGINE + SAM2_MODEL Colab form 파라미터 추가
+- [x] B-2: Cell C에 `!pip install -q sam2` 추가
+- [x] B-3: SAM2 Step 2 분기 (if/elif) — SAM2ImagePredictor.from_pretrained + per-frame predict
+- [x] B-4: sam2_mode 후처리 조건부 가드 (hull pre-filter, hood/scarf merge, hair exclude)
+- [x] B-5: Garment-adaptive arms — SAM2 시 SegFormer 1-shot + wrist negative 제어
+- [x] UI 문자열 업데이트 (셀 제목, 요약, 시각화 라벨)
+- [x] docs 업데이트 (context.md, tasks.md)
+- [x] YAML 검증 + 노트북 재생성 + smoke_test
+- [ ] Colab 테스트: MASK_ENGINE="segformer" → v2 동작 확인
+- [ ] Colab 테스트: MASK_ENGINE="sam2" → 마스크 의류 형태, 얼굴 제외 확인
+
 ### Phase 4: SAM3 실험 (미래)
-- [ ] SAM3 안정화 확인 후 MASK_ENGINE 파라미터 추가
+- [ ] SAM3 안정화 확인 후 MASK_ENGINE에 "sam3" 옵션 추가
 - [ ] SAM3 텍스트 프롬프트 경로 구현
 
 ### Documentation

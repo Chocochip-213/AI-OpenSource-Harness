@@ -165,6 +165,8 @@ cells:
           !pip install -q open-clip-torch ftfy
           # Diffusion extras
           !pip install -q torchdiffeq torchmetrics "torchsde>=0.2.6" controlnet-aux
+          # SAM2 (optional — MASK_ENGINE="sam2" 시 사용)
+          !pip install -q sam2
           # HF Hub
           !pip install -q huggingface_hub
       else:
@@ -652,7 +654,7 @@ cells:
 
   - type: code
     source: |
-      #@title H-2. 자동 전처리 — DWPose + SegFormer 마스크 { run: "auto" }
+      #@title H-2. 자동 전처리 — DWPose + 마스크 (SegFormer/SAM2) { run: "auto" }
       if MODE != "user":
           print("⏭ SKIP — user 모드에서만 실행됩니다.")
       else:
@@ -661,6 +663,9 @@ cells:
           from PIL import Image, ImageDraw
 
           # ── Colab Form Parameters ──
+          MASK_ENGINE = "segformer"  #@param ["segformer", "sam2"]
+          SAM2_MODEL = "facebook/sam2.1-hiera-large"  #@param ["facebook/sam2.1-hiera-large", "facebook/sam2.1-hiera-base-plus", "facebook/sam2.1-hiera-small", "facebook/sam2.1-hiera-tiny"]
+
           STICK_WIDTH = 4  #@param [4, 8, 12, 16] {type:"raw"}
 
           # PR-1: Debug dump
@@ -668,7 +673,7 @@ cells:
 
           # PR-2: Person bbox + DWPose hull pre-filter
           PERSON_BBOX_AND = True   #@param {type:"boolean"}
-          HULL_MASK = True         #@param {type:"boolean"}
+          HULL_MASK = False        #@param {type:"boolean"}
           HULL_EXPAND_PX = 15      #@param {type:"slider", min:0, max:40, step:5}
           BBOX_PAD_X = 0.10        #@param {type:"number"}
           BBOX_PAD_Y = 0.05        #@param {type:"number"}
@@ -687,7 +692,7 @@ cells:
           TEMPORAL_WINDOW = 3      #@param [1, 3, 5, 7] {type:"raw"}
           MORPH_CLOSE_KERNEL = 0   #@param [0, 3, 5, 7] {type:"raw"}
           FILL_HOLE_MAX_PCT = 10   #@param {type:"slider", min:0, max:50, step:5}
-          DILATION_ITER = 1        #@param {type:"slider", min:0, max:15, step:1}
+          DILATION_ITER = 3        #@param {type:"slider", min:0, max:15, step:1}
           KEEP_LARGEST_BLOB = True #@param {type:"boolean"}
 
           # PR-5: Dual mask
@@ -699,10 +704,10 @@ cells:
           # v2: Consensus tuning
           CONSENSUS_PAD_X = 0.08         #@param {type:"number"}
           CONSENSUS_THRESHOLD = 0.45     #@param {type:"number"}
-          CONSENSUS_MODE = "hull"        #@param ["hull", "interior", "union", "off"]
+          CONSENSUS_MODE = "interior"    #@param ["hull", "interior", "union", "off"]
 
-          # v2: Edge-aware dilation (v3: 기본 off — hull pre-filter가 overflow 방지)
-          EDGE_DILATION = False          #@param {type:"boolean"}
+          # v2: Edge-aware dilation
+          EDGE_DILATION = True           #@param {type:"boolean"}
           EDGE_DILATION_MAX = 5          #@param {type:"slider", min:1, max:15, step:1}
           EDGE_THRESHOLD = 30            #@param {type:"slider", min:10, max:100, step:10}
 
@@ -927,7 +932,7 @@ cells:
                   pose_img.resize((W, H), Image.LANCZOS).save(f"{pose_frames_dir}/{i:05d}.png")
 
                   # PR-2: Extract bbox/keypoints from DWPose internals
-                  if PERSON_BBOX_AND or HULL_MASK or FACE_EXCLUDE_MODE == "segformer+dwpose":
+                  if PERSON_BBOX_AND or HULL_MASK or FACE_EXCLUDE_MODE == "segformer+dwpose" or MASK_ENGINE == "sam2":
                       bgr = cv2.cvtColor(frame_arr, cv2.COLOR_RGB2BGR)
                       try:
                           from src.dwpose.onnxdet import inference_detector as dwpose_detect_persons
@@ -978,33 +983,32 @@ cells:
                   if HULL_MASK:
                       print(f"  ✓ DWPose hull masks: {n_frames}프레임 (expand_px={HULL_EXPAND_PX})")
 
-              # ========== Step 2: SegFormer 퍼-프레임 마스킹 ==========
-              # mattmdjaga/segformer_b2_clothes — 18-class semantic segmentation
-              # 얼굴(11)/머리카락(2) 구조적 제외, 팔(14,15) 픽셀 정확
-              print("\n[Step 2] SegFormer 마스크 생성...")
-              from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
+              # ========== Step 2: 마스크 생성 (SAM2 / SegFormer) ==========
+              sam2_mode = (MASK_ENGINE == "sam2")
               from scipy.ndimage import binary_dilation, binary_fill_holes, binary_closing
               from scipy.ndimage import label as ndimage_label
-
-              seg_processor = SegformerImageProcessor.from_pretrained("mattmdjaga/segformer_b2_clothes")
-              seg_model = SegformerForSemanticSegmentation.from_pretrained("mattmdjaga/segformer_b2_clothes")
-              seg_model = seg_model.to("cuda").eval()
 
               # Labels: 4=upper-clothes, 7=dress, 14=left-arm, 15=right-arm
               # 11=face, 1=hat, 2=hair, 17=scarf
               TARGET_LABELS = {4, 7}
               if INCLUDE_ARMS:
-                  TARGET_LABELS |= {14, 15}  # 반팔/민소매일 때 팔 피부 포함
-              print(f"  TARGET_LABELS: {TARGET_LABELS}" + (" (+arms)" if INCLUDE_ARMS else " (상의만)"))
+                  TARGET_LABELS |= {14, 15}
               FACE_LABEL = 11
               HAT_LABEL = 1
               HAIR_LABEL = 2
               SCARF_LABEL = 17
               UPPER_LABEL = 4
-              PANTS_LABELS = {6, 12, 13}  # 6=Pants, 12=Left-leg, 13=Right-leg
-              BATCH_SIZE = 4
+              PANTS_LABELS = {6, 12, 13}
 
-              # 배치 추론 — PR-3: 추가 레이블 수집
+              # SegFormer 로드 (segformer 배치 추론 or garment-adaptive-arms 1회 추론)
+              _need_segformer = (not sam2_mode) or (GARMENT_ADAPTIVE_ARMS and not INCLUDE_ARMS)
+              if _need_segformer:
+                  from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
+                  seg_processor = SegformerImageProcessor.from_pretrained("mattmdjaga/segformer_b2_clothes")
+                  seg_model = SegformerForSemanticSegmentation.from_pretrained("mattmdjaga/segformer_b2_clothes")
+                  seg_model = seg_model.to("cuda").eval()
+
+              # ── Initialize mask lists ──
               raw_masks = []
               face_masks = []
               hat_masks = []
@@ -1012,31 +1016,34 @@ cells:
               scarf_masks = []
               upper_masks = []
               pants_masks = []
-              arm_masks = []  # 14=left-arm, 15=right-arm
-              for batch_start in range(0, n_frames, BATCH_SIZE):
-                  batch_end = min(batch_start + BATCH_SIZE, n_frames)
-                  batch_pils = [Image.fromarray(orig_frames[i]) for i in range(batch_start, batch_end)]
-                  inputs = seg_processor(images=batch_pils, return_tensors="pt").to("cuda")
-                  with torch.no_grad():
-                      logits = seg_model(**inputs).logits
-                  upsampled = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
-                  preds = upsampled.argmax(dim=1).cpu().numpy()
-                  for pred in preds:
-                      raw_masks.append(np.isin(pred, list(TARGET_LABELS)).astype(np.uint8))
-                      face_masks.append((pred == FACE_LABEL).astype(np.uint8))
-                      hat_masks.append((pred == HAT_LABEL).astype(np.uint8))
-                      hair_masks.append((pred == HAIR_LABEL).astype(np.uint8))
-                      scarf_masks.append((pred == SCARF_LABEL).astype(np.uint8))
-                      upper_masks.append((pred == UPPER_LABEL).astype(np.uint8))
-                      pants_masks.append(np.isin(pred, list(PANTS_LABELS)).astype(np.uint8))
-                      arm_masks.append(np.isin(pred, [14, 15]).astype(np.uint8))
-                  if (batch_end) % 20 == 0 or batch_end == n_frames:
-                      print(f"  {batch_end}/{n_frames} frames")
+              arm_masks = []
 
-              # ========== Garment sleeve detection (v2) ==========
-              # 가먼트 이미지를 SegFormer에 돌려서 긴팔/반팔 판정
-              # 긴팔 → INCLUDE_ARMS override → 맨 팔도 마스크에 포함
-              # 반팔 → INCLUDE_ARMS 유지(False) → 원본 팔 피부 보존 (일렁임 방지)
+              # ── SegFormer 배치 추론 ──
+              if not sam2_mode:
+                  print("\n[Step 2] SegFormer 마스크 생성...")
+                  print(f"  TARGET_LABELS: {TARGET_LABELS}" + (" (+arms)" if INCLUDE_ARMS else " (상의만)"))
+                  BATCH_SIZE = 4
+                  for batch_start in range(0, n_frames, BATCH_SIZE):
+                      batch_end = min(batch_start + BATCH_SIZE, n_frames)
+                      batch_pils = [Image.fromarray(orig_frames[i]) for i in range(batch_start, batch_end)]
+                      inputs = seg_processor(images=batch_pils, return_tensors="pt").to("cuda")
+                      with torch.no_grad():
+                          logits = seg_model(**inputs).logits
+                      upsampled = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
+                      preds = upsampled.argmax(dim=1).cpu().numpy()
+                      for pred in preds:
+                          raw_masks.append(np.isin(pred, list(TARGET_LABELS)).astype(np.uint8))
+                          face_masks.append((pred == FACE_LABEL).astype(np.uint8))
+                          hat_masks.append((pred == HAT_LABEL).astype(np.uint8))
+                          hair_masks.append((pred == HAIR_LABEL).astype(np.uint8))
+                          scarf_masks.append((pred == SCARF_LABEL).astype(np.uint8))
+                          upper_masks.append((pred == UPPER_LABEL).astype(np.uint8))
+                          pants_masks.append(np.isin(pred, list(PANTS_LABELS)).astype(np.uint8))
+                          arm_masks.append(np.isin(pred, [14, 15]).astype(np.uint8))
+                      if (batch_end) % 20 == 0 or batch_end == n_frames:
+                          print(f"  {batch_end}/{n_frames} frames")
+
+              # ── Garment sleeve detection (both modes use SegFormer 1-shot) ──
               if GARMENT_ADAPTIVE_ARMS and not INCLUDE_ARMS:
                   gar_img_path = f"{USER_DIR}/garments/{USER_GARMENT_ID}.png"
                   if os.path.isfile(gar_img_path):
@@ -1049,7 +1056,6 @@ cells:
                       gar_pred = gar_up.argmax(dim=1).cpu().numpy()[0]
                       gar_upper_px = int((gar_pred == UPPER_LABEL).sum())
                       gar_arm_px = int(np.isin(gar_pred, [14, 15]).sum())
-                      # arm 픽셀이 upper의 5% 미만 → 팔 노출 거의 없음 = 긴팔
                       if gar_upper_px > 0:
                           arm_ratio = gar_arm_px / gar_upper_px
                           garment_is_long = (arm_ratio < 0.05)
@@ -1060,48 +1066,167 @@ cells:
                       if garment_is_long:
                           INCLUDE_ARMS = True
                           TARGET_LABELS |= {14, 15}
-                          # raw_masks에 arm 픽셀 추가 (이미 추론 완료된 프레임)
-                          arm_added = 0
-                          for i in range(n_frames):
-                              new_px = int(arm_masks[i].sum() - (raw_masks[i] * arm_masks[i]).sum())
-                              if new_px > 0:
-                                  raw_masks[i] = np.maximum(raw_masks[i], arm_masks[i])
-                                  arm_added += new_px
-                          print(f"    → 긴팔 감지 → INCLUDE_ARMS=True 자동 활성화 (+{arm_added:,}px)")
+                          if not sam2_mode:
+                              # SegFormer: raw_masks에 arm 픽셀 추가
+                              arm_added = 0
+                              for i in range(n_frames):
+                                  new_px = int(arm_masks[i].sum() - (raw_masks[i] * arm_masks[i]).sum())
+                                  if new_px > 0:
+                                      raw_masks[i] = np.maximum(raw_masks[i], arm_masks[i])
+                                      arm_added += new_px
+                              print(f"    → 긴팔 감지 → INCLUDE_ARMS=True 자동 활성화 (+{arm_added:,}px)")
+                          else:
+                              print(f"    → 긴팔 감지 → INCLUDE_ARMS=True (SAM2 wrist negative 제거)")
                       else:
                           print(f"    → 반팔/민소매 → 원본 팔 피부 유지")
                   else:
                       print(f"\n  ⚠ 가먼트 이미지 없음: {gar_img_path}")
 
-              del seg_model, seg_processor
-              torch.cuda.empty_cache()
+              # ── SegFormer unload ──
+              if _need_segformer:
+                  del seg_model, seg_processor
+                  torch.cuda.empty_cache()
 
-              # ========== SegFormer 레이블 진단 ==========
-              # 18-class labels: 0=Background, 1=Hat, 2=Hair, 3=Sunglasses, 4=Upper-clothes,
-              # 5=Skirt, 6=Pants, 7=Dress, 8=Belt, 9=Left-shoe, 10=Right-shoe,
-              # 11=Face, 12=Left-leg, 13=Right-leg, 14=Left-arm, 15=Right-arm,
-              # 16=Bag, 17=Scarf
-              hat_total = sum(m.sum() for m in hat_masks)
-              hair_total = sum(m.sum() for m in hair_masks)
-              scarf_total = sum(m.sum() for m in scarf_masks)
-              upper_total = sum(m.sum() for m in upper_masks)
-              pants_total = sum(m.sum() for m in pants_masks)
-              hat_frames = sum(1 for m in hat_masks if m.any())
-              print(f"\n  [SegFormer 레이블 진단]")
-              print(f"    hat(1):    {hat_total:>10,} px total, {hat_frames}/{n_frames} frames")
-              print(f"    hair(2):   {hair_total:>10,} px total")
-              print(f"    upper(4):  {upper_total:>10,} px total")
-              print(f"    pants(6+): {pants_total:>10,} px total")
-              print(f"    scarf(17): {scarf_total:>10,} px total")
-              if hat_frames == 0 and HOOD_MERGE:
-                  print(f"    ⚠ hat(1) 0프레임 — SegFormer가 후드를 hat으로 분류하지 않음")
-                  print(f"      후드가 hair(2) 또는 upper-clothes(4)로 분류된 가능성 높음")
+              # ── SAM2 Image Predictor 퍼-프레임 ──
+              if sam2_mode:
+                  print(f"\n[Step 2] SAM2 Image Predictor 마스크 생성...")
+                  print(f"  model: {SAM2_MODEL}")
+                  print(f"  INCLUDE_ARMS: {INCLUDE_ARMS}")
+                  from sam2.sam2_image_predictor import SAM2ImagePredictor
+                  sam2_predictor = SAM2ImagePredictor.from_pretrained(SAM2_MODEL)
+
+                  # DWPose keypoint indices (wholebody 18-point format)
+                  # 0=nose, 1=neck, 2=R_shoulder, 3=R_elbow, 4=R_wrist,
+                  # 5=L_shoulder, 6=L_elbow, 7=L_wrist,
+                  # 8=R_hip, 11=L_hip, 14=L_eye, 15=R_eye, 16=L_ear, 17=R_ear
+                  KP_NECK, KP_RSHOULDER, KP_LSHOULDER = 1, 2, 5
+                  KP_RWRIST, KP_LWRIST = 4, 7
+                  KP_RHIP, KP_LHIP = 8, 11
+                  KP_NOSE, KP_LEYE, KP_REYE, KP_LEAR, KP_REAR = 0, 14, 15, 16, 17
+
+                  for i in range(n_frames):
+                      img = orig_frames[i]
+                      sam2_predictor.set_image(img)
+
+                      # Build positive/negative points from DWPose keypoints
+                      pos_points = []
+                      neg_points = []
+
+                      kps_i = person_keypoints_all[i] if person_keypoints_all else None
+                      sco_i = person_kp_scores_all[i] if person_kp_scores_all else None
+
+                      if kps_i is not None and len(kps_i) > 0:
+                          pk = kps_i[0] if len(kps_i.shape) == 3 else kps_i
+                          ps = sco_i[0] if len(sco_i.shape) == 2 else sco_i
+
+                          # Positive: neck, shoulders
+                          for ki in [KP_NECK, KP_RSHOULDER, KP_LSHOULDER]:
+                              if ki < len(pk) and ps[ki] > 0.3:
+                                  pos_points.append(pk[ki][:2].tolist())
+
+                          # Positive: mid-torso (neck↔hip 50%), lower-torso (75%)
+                          neck_ok = (KP_NECK < len(pk) and ps[KP_NECK] > 0.3)
+                          rhip_ok = (KP_RHIP < len(pk) and ps[KP_RHIP] > 0.3)
+                          lhip_ok = (KP_LHIP < len(pk) and ps[KP_LHIP] > 0.3)
+                          if neck_ok and (rhip_ok or lhip_ok):
+                              neck_pt = pk[KP_NECK][:2]
+                              hip_pts = []
+                              if rhip_ok: hip_pts.append(pk[KP_RHIP][:2])
+                              if lhip_ok: hip_pts.append(pk[KP_LHIP][:2])
+                              hip_mid = np.mean(hip_pts, axis=0)
+                              mid_torso = (neck_pt * 0.5 + hip_mid * 0.5).tolist()
+                              lower_torso = (neck_pt * 0.25 + hip_mid * 0.75).tolist()
+                              pos_points.append(mid_torso)
+                              pos_points.append(lower_torso)
+
+                          # Negative: nose, eyes, ears (face exclusion)
+                          for ki in [KP_NOSE, KP_LEYE, KP_REYE, KP_LEAR, KP_REAR]:
+                              if ki < len(pk) and ps[ki] > 0.3:
+                                  neg_points.append(pk[ki][:2].tolist())
+
+                          # Negative: wrists (short sleeves → exclude arms)
+                          if not INCLUDE_ARMS:
+                              for ki in [KP_RWRIST, KP_LWRIST]:
+                                  if ki < len(pk) and ps[ki] > 0.3:
+                                      neg_points.append(pk[ki][:2].tolist())
+
+                      if pos_points:
+                          all_points = np.array(pos_points + neg_points, dtype=np.float32)
+                          labels = np.array([1]*len(pos_points) + [0]*len(neg_points), dtype=np.int32)
+                          masks_pred, scores_pred, _ = sam2_predictor.predict(
+                              point_coords=all_points,
+                              point_labels=labels,
+                              multimask_output=True,
+                          )
+                          best_idx = int(np.argmax(scores_pred))
+                          mask = masks_pred[best_idx].astype(np.uint8)
+                      else:
+                          mask = np.zeros((H, W), dtype=np.uint8)
+
+                      raw_masks.append(mask)
+
+                      # Face mask from DWPose keypoints (ellipse approximation)
+                      dw_face = np.zeros((H, W), dtype=np.uint8)
+                      if kps_i is not None and len(kps_i) > 0:
+                          pk = kps_i[0] if len(kps_i.shape) == 3 else kps_i
+                          ps = sco_i[0] if len(sco_i.shape) == 2 else sco_i
+                          face_pts = []
+                          for fi in [KP_NOSE, KP_LEYE, KP_REYE, KP_LEAR, KP_REAR]:
+                              if fi < len(pk) and ps[fi] > 0.3:
+                                  face_pts.append(pk[fi][:2])
+                          if len(face_pts) >= 3:
+                              fc = np.mean(face_pts, axis=0).astype(int)
+                              dists = [np.linalg.norm(np.array(p) - fc) for p in face_pts]
+                              radius = int(max(dists) * 1.5) + 10
+                              cv2.ellipse(dw_face, (int(fc[0]), int(fc[1])),
+                                          (radius, int(radius * 1.3)),
+                                          0, 0, 360, 1, -1)
+                      face_masks.append(dw_face)
+
+                      if (i + 1) % 10 == 0:
+                          print(f"  {i+1}/{n_frames} frames")
+
+                  # SAM2 has no semantic labels → empty masks
+                  hat_masks = [np.zeros((H, W), dtype=np.uint8) for _ in range(n_frames)]
+                  hair_masks = [np.zeros((H, W), dtype=np.uint8) for _ in range(n_frames)]
+                  scarf_masks = [np.zeros((H, W), dtype=np.uint8) for _ in range(n_frames)]
+                  upper_masks = [np.zeros((H, W), dtype=np.uint8) for _ in range(n_frames)]
+                  pants_masks = [np.zeros((H, W), dtype=np.uint8) for _ in range(n_frames)]
+                  arm_masks = [np.zeros((H, W), dtype=np.uint8) for _ in range(n_frames)]
+
+                  del sam2_predictor
+                  torch.cuda.empty_cache()
+                  print(f"  ✓ SAM2 마스크 {n_frames}프레임 완료")
+
+              # ── sam2_mode 후처리 오버라이드 ──
+              if sam2_mode:
+                  CONSENSUS_MODE = "off"
+                  DILATION_ITER = min(DILATION_ITER, 1)
+                  print(f"  [sam2_mode] CONSENSUS_MODE=off, DILATION_ITER={DILATION_ITER}")
+
+              # ── SegFormer 레이블 진단 (segformer only) ──
+              if not sam2_mode:
+                  hat_total = sum(m.sum() for m in hat_masks)
+                  hair_total = sum(m.sum() for m in hair_masks)
+                  scarf_total = sum(m.sum() for m in scarf_masks)
+                  upper_total = sum(m.sum() for m in upper_masks)
+                  pants_total = sum(m.sum() for m in pants_masks)
+                  hat_frames = sum(1 for m in hat_masks if m.any())
+                  print(f"\n  [SegFormer 레이블 진단]")
+                  print(f"    hat(1):    {hat_total:>10,} px total, {hat_frames}/{n_frames} frames")
+                  print(f"    hair(2):   {hair_total:>10,} px total")
+                  print(f"    upper(4):  {upper_total:>10,} px total")
+                  print(f"    pants(6+): {pants_total:>10,} px total")
+                  print(f"    scarf(17): {scarf_total:>10,} px total")
+                  if hat_frames == 0 and HOOD_MERGE:
+                      print(f"    ⚠ hat(1) 0프레임 — SegFormer가 후드를 hat으로 분류하지 않음")
+                      print(f"      후드가 hair(2) 또는 upper-clothes(4)로 분류된 가능성 높음")
 
               # ========== Step 2.1: Hood/Scarf 조건부 합성 (PR-3) ==========
               # hood_hair_preserve: per-frame mask of hair pixels to NOT exclude (they're hood)
               hood_hair_preserve = [np.zeros((H, W), dtype=np.uint8) for _ in range(n_frames)]
 
-              if HOOD_MERGE or HOOD_FROM_HAIR or SCARF_MERGE:
+              if (HOOD_MERGE or HOOD_FROM_HAIR or SCARF_MERGE) and not sam2_mode:
                   print(f"\n[Step 2.1] Hood/Scarf 조건부 합성...")
                   hood_hat_added = 0
                   hood_hair_added = 0
@@ -1146,7 +1271,7 @@ cells:
 
               # ========== v3: DWPose hull pre-filter ==========
               # hull 바깥 SegFormer 오탐 제거 → consensus도 깨끗해짐
-              if HULL_MASK and person_hull_masks:
+              if HULL_MASK and person_hull_masks and not sam2_mode:
                   hull_removed = 0
                   for i in range(n_frames):
                       before = int(raw_masks[i].sum())
@@ -1372,19 +1497,21 @@ cells:
                   final_masks.append(dilated)
                   Image.fromarray((dilated * 255).astype(np.uint8)).convert('L').save(f"{mask_frames_dir}/{i:05d}.png")
 
+              _engine_label = "SAM2" if sam2_mode else "SegFormer"
               if EDGE_DILATION:
-                  print(f"  ✓ SegFormer 마스크 {n_frames}프레임 완료 (edge_dilation={EDGE_DILATION_MAX}, edge_threshold={EDGE_THRESHOLD}, neck_margin={NECK_MARGIN})")
+                  print(f"  ✓ {_engine_label} 마스크 {n_frames}프레임 완료 (edge_dilation={EDGE_DILATION_MAX}, edge_threshold={EDGE_THRESHOLD}, neck_margin={NECK_MARGIN})")
               else:
-                  print(f"  ✓ SegFormer 마스크 {n_frames}프레임 완료 (dilation={DILATION_ITER}, neck_margin={NECK_MARGIN})")
+                  print(f"  ✓ {_engine_label} 마스크 {n_frames}프레임 완료 (dilation={DILATION_ITER}, neck_margin={NECK_MARGIN})")
+              print(f"    engine: {MASK_ENGINE}")
               if PERSON_BBOX_AND:
                   print(f"    + person bbox AND (pad_x={BBOX_PAD_X}, pad_y={BBOX_PAD_Y})")
-              if HULL_MASK:
+              if HULL_MASK and not sam2_mode:
                   print(f"    + DWPose hull pre-filter (expand_px={HULL_EXPAND_PX})")
-              if HOOD_MERGE:
+              if HOOD_MERGE and not sam2_mode:
                   print(f"    + hood merge from hat (radius={HOOD_MERGE_RADIUS})")
-              if HOOD_FROM_HAIR:
+              if HOOD_FROM_HAIR and not sam2_mode:
                   print(f"    + hood from hair (radius={HOOD_MERGE_RADIUS})")
-              if HAIR_EXCLUDE:
+              if HAIR_EXCLUDE and not sam2_mode:
                   print(f"    + hair exclude (hood-protected)")
               if INCLUDE_ARMS:
                   print(f"    + arms included (TARGET_LABELS has 14/15)")
@@ -1422,7 +1549,7 @@ cells:
               overlay[vis_mask > 127] = [255, 0, 0]
               blend = (orig_frames[0].astype(float) * 0.5 + overlay.astype(float) * 0.5).astype(np.uint8)
               _display(Image.fromarray(blend))
-              print("  (빨간 영역 = SegFormer 마스크 — 얼굴/머리카락 제외 확인)")
+              print(f"  (빨간 영역 = {_engine_label} 마스크 — 얼굴/머리카락 제외 확인)")
 
               # ========== Step 2.7: Dual mask (PR-5) ==========
               if DUAL_MASK:

@@ -1,0 +1,1814 @@
+title: "SwiftTry — Video Virtual Try-On (A100 Colab)"
+
+# Extended cell format: each cell has type (code/markdown) and source
+cells:
+  # ================================================================
+  # MODE SELECT — demo vs user
+  # ================================================================
+  - type: markdown
+    source: |
+      ## Mode Select
+      - **demo**: HuggingFace에서 TikTokDress 샘플 1개를 자동 다운로드하여 테스트
+      - **user**: 내 영상(.mp4) + 옷 이미지(.png)를 업로드하여 테스트
+
+      아래 셀에서 MODE를 선택한 뒤, **모든 셀을 순서대로 실행**하면 됩니다.
+      선택한 모드에 해당하지 않는 셀은 자동으로 스킵됩니다.
+
+  - type: code
+    source: |
+      #@title Mode 선택 { run: "auto" }
+      MODE = "demo"  #@param ["demo", "user"] {type:"string"}
+      print(f">>> MODE = {MODE}")
+      if MODE == "demo":
+          print("  → HF 샘플 자동 다운로드 + 추론")
+      else:
+          print("  → 내 영상/옷 업로드 + 추론")
+
+  # ================================================================
+  # A) GPU Check & Environment Info
+  # ================================================================
+  - type: markdown
+    source: |
+      ## A. GPU & Environment Check
+      Verify you have a GPU runtime (A100 recommended, T4 minimum).
+
+  - type: code
+    source: |
+      !nvidia-smi
+      import sys, platform
+      print(f"Python {sys.version}")
+      try:
+          import torch
+          print(f"PyTorch {torch.__version__}  CUDA {torch.version.cuda}  GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE'}")
+      except ImportError:
+          print("WARNING: torch not found — will be installed below")
+
+  # ================================================================
+  # B) Clone Upstream Repo (pinned ref)
+  # ================================================================
+  - type: markdown
+    source: |
+      ## B. Clone SwiftTry (pinned commit)
+      Clones the upstream repository at a reproducible commit SHA.
+
+  - type: code
+    source: |
+      import os
+      SWIFTTRY_REF = "57d3f0b8b25509d4b650db68391c1ad11b86e833"
+
+      if not os.path.isdir("SwiftTry"):
+          !git clone https://github.com/VinAIResearch/SwiftTry.git SwiftTry
+      %cd SwiftTry
+      !git checkout {SWIFTTRY_REF}
+      !git log --oneline -3
+      print(f"\n✓ SwiftTry checked out at {SWIFTTRY_REF[:10]}")
+
+  # ── B-2. Apply diffusers compatibility patches ──
+  - type: markdown
+    source: |
+      ### B-2. Apply Diffusers Compatibility Patches
+      Fixes 5 import breakages between diffusers 0.24 (upstream) and 0.36 (Colab).
+      This avoids the dependency collapse caused by downgrading diffusers.
+
+  - type: code
+    source: |
+      %%writefile /content/fix_diffusers_compat.py
+      """Patch SwiftTry for diffusers >= 0.26 compatibility."""
+      import sys
+      from pathlib import Path
+
+      def patch_file(fpath, replacements):
+          if not fpath.exists():
+              print(f"  SKIP: {fpath}")
+              return False
+          text = fpath.read_text()
+          original = text
+          for old, new in replacements:
+              text = text.replace(old, new)
+          if text != original:
+              fpath.write_text(text)
+              print(f"  PATCHED: {fpath.name}")
+              return True
+          print(f"  OK (no change): {fpath.name}")
+          return False
+
+      repo = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
+      print("[patch] Fixing diffusers 0.24→0.36 imports...\n")
+      n = 0
+
+      # 1. transformer_2d.py: CaptionProjection + LoRA
+      n += patch_file(repo / "src/models_attention/transformer_2d.py", [
+          ("from diffusers.models.embeddings import CaptionProjection",
+           "try:\n    from diffusers.models.embeddings import CaptionProjection\nexcept ImportError:\n    from diffusers.models.embeddings import PixArtAlphaTextProjection as CaptionProjection"),
+          ("from diffusers.models.lora import LoRACompatibleConv, LoRACompatibleLinear",
+           "try:\n    from diffusers.models.lora import LoRACompatibleConv, LoRACompatibleLinear\nexcept ImportError:\n    import torch.nn as nn\n    LoRACompatibleConv = nn.Conv2d\n    LoRACompatibleLinear = nn.Linear"),
+      ])
+
+      # 2. attention.py: AdaLayerNorm + Attention
+      n += patch_file(repo / "src/models_attention/attention.py", [
+          ("from diffusers.models.attention import AdaLayerNorm, Attention, FeedForward",
+           "from diffusers.models.attention import FeedForward\nfrom diffusers.models.attention_processor import Attention\ntry:\n    from diffusers.models.attention import AdaLayerNorm\nexcept ImportError:\n    from diffusers.models.normalization import AdaLayerNorm"),
+      ])
+
+      # 3. unet_2d_condition.py: ADDED_KV / CROSS processor sets + embeddings
+      n += patch_file(repo / "src/models_attention/unet_2d_condition.py", [
+          ("from diffusers.models.attention_processor import (\n    ADDED_KV_ATTENTION_PROCESSORS,\n    CROSS_ATTENTION_PROCESSORS,\n    AttentionProcessor,\n    AttnAddedKVProcessor,\n    AttnProcessor,\n)",
+           "from diffusers.models.attention_processor import (\n    AttentionProcessor,\n    AttnAddedKVProcessor,\n    AttnProcessor,\n)\ntry:\n    from diffusers.models.attention_processor import ADDED_KV_ATTENTION_PROCESSORS\nexcept ImportError:\n    ADDED_KV_ATTENTION_PROCESSORS = (AttnAddedKVProcessor,)\ntry:\n    from diffusers.models.attention_processor import CROSS_ATTENTION_PROCESSORS\nexcept ImportError:\n    CROSS_ATTENTION_PROCESSORS = (AttnProcessor,)"),
+          ("from diffusers.models.embeddings import (\n    GaussianFourierProjection,\n    ImageHintTimeEmbedding,\n    ImageProjection,\n    ImageTimeEmbedding,\n    PositionNet,\n    TextImageProjection,\n    TextImageTimeEmbedding,\n    TextTimeEmbedding,\n    TimestepEmbedding,\n    Timesteps,\n)",
+           "from diffusers.models.embeddings import (\n    GaussianFourierProjection,\n    ImageProjection,\n    ImageTimeEmbedding,\n    TextImageProjection,\n    TextImageTimeEmbedding,\n    TextTimeEmbedding,\n    TimestepEmbedding,\n    Timesteps,\n)\ntry:\n    from diffusers.models.embeddings import ImageHintTimeEmbedding\nexcept ImportError:\n    ImageHintTimeEmbedding = None\ntry:\n    from diffusers.models.embeddings import PositionNet\nexcept ImportError:\n    PositionNet = None"),
+      ])
+
+      # 4. unet_2d_blocks.py: DualTransformer2DModel
+      n += patch_file(repo / "src/models_attention/unet_2d_blocks.py", [
+          ("from diffusers.models.dual_transformer_2d import DualTransformer2DModel",
+           "try:\n    from diffusers.models.dual_transformer_2d import DualTransformer2DModel\nexcept ImportError:\n    try:\n        from diffusers.models.transformers.dual_transformer_2d import DualTransformer2DModel\n    except ImportError:\n        DualTransformer2DModel = None"),
+      ])
+
+      print(f"\n[patch] {n} file(s) patched.")
+
+  - type: code
+    source: |
+      %cd /content/SwiftTry
+      !python /content/fix_diffusers_compat.py .
+
+  # ================================================================
+  # C) Install Dependencies
+  # ================================================================
+  - type: markdown
+    source: |
+      ## C. Install Dependencies
+      **Default: opt2_modern** — Colab 기본 패키지는 절대 건드리지 않고, 없는 것만 설치.
+      Patches from B-2 handle the diffusers API differences.
+
+      > ⚠️ numpy, scipy, scikit-learn, tqdm, Pillow 등은 Colab 기본값 유지.
+      > numpy<2.0 다운그레이드 금지 (torch 2.9 ABI 깨짐).
+
+  - type: code
+    source: |
+      #@title Install Options { run: "auto" }
+      OPT = "opt2"  #@param ["opt2", "opt1"] {type:"string"}
+
+      %cd /content/SwiftTry
+
+      if OPT == "opt2":
+          # opt2_modern: Colab 패키지 유지, 없는 것만 설치
+          print(">>> opt2_modern: Colab 기본 유지 + 누락 패키지만 설치")
+          # transformers 버전 제한 (SwiftTry API 호환)
+          !pip install -q "transformers>=4.30.2,<4.46"
+          # Vision/Video (Colab에 없는 것)
+          !pip install -q opencv-contrib-python imageio imageio-ffmpeg av decord
+          # Utilities (Colab에 없는 것)
+          !pip install -q einops omegaconf
+          # DWPose ONNX
+          !pip install -q onnxruntime-gpu
+          # CLIP (open-clip + ftfy)
+          !pip install -q open-clip-torch ftfy
+          # Diffusion extras
+          !pip install -q torchdiffeq torchmetrics "torchsde>=0.2.6" controlnet-aux
+          # HF Hub
+          !pip install -q huggingface_hub
+      else:
+          # opt1_legacy: 업스트림 고정 (torch 다운그레이드 위험!)
+          print(">>> opt1_legacy (upstream-pinned, torch 2.0.1 — 위험)")
+          !pip install -q -r /content/SwiftTry/requirements.txt
+          !pip install -q huggingface_hub
+
+      # Verify
+      import torch, diffusers, transformers
+      print(f"\n✓ torch={torch.__version__}  CUDA={torch.version.cuda}  GPU={torch.cuda.is_available()}")
+      print(f"  diffusers={diffusers.__version__}  transformers={transformers.__version__}")
+
+  # ================================================================
+  # D) Download Weights
+  # ================================================================
+  - type: markdown
+    source: |
+      ## D. Download Pretrained Weights
+      Downloads 6 model components from HuggingFace (~12 GB total).
+      This takes 3–8 minutes depending on network speed.
+
+  - type: code
+    source: |
+      %cd /content/SwiftTry
+
+      # 1. Run upstream weight downloader (SD1.5 UNet, Image Encoder, DWPose, VAE, SwiftTry)
+      !python tools/download_weights.py
+
+      # 2. Download SD-Inpainting (NOT included in upstream script but required by inference config)
+      from huggingface_hub import snapshot_download
+      snapshot_download(
+          "runwayml/stable-diffusion-inpainting",
+          local_dir="./pretrained_sd_models/stable-diffusion-inpainting",
+          ignore_patterns=["*.safetensors", "*.fp16.*", "*.onnx", "*.onnx_data"],
+      )
+
+      # 3. Create symlinks for path mismatches
+      import os
+
+      # weights/tiktokdress -> pretrained_sd_models/swift_try (inference config)
+      os.makedirs("weights", exist_ok=True)
+      src = os.path.abspath("pretrained_sd_models/swift_try")
+      dst = "weights/tiktokdress"
+      if not os.path.exists(dst):
+          os.symlink(src, dst)
+          print(f"✓ Symlink: {dst} -> {src}")
+
+      # pretrained_weights -> pretrained_sd_models (DWPose code expects pretrained_weights/)
+      if not os.path.exists("pretrained_weights"):
+          os.symlink(os.path.abspath("pretrained_sd_models"), "pretrained_weights")
+          print("✓ Symlink: pretrained_weights -> pretrained_sd_models")
+
+      # Verify all weight directories exist
+      expected = [
+          "pretrained_sd_models/stable-diffusion-v1-5/unet/diffusion_pytorch_model.bin",
+          "pretrained_sd_models/stable-diffusion-inpainting/unet/diffusion_pytorch_model.bin",
+          "pretrained_sd_models/image_encoder/pytorch_model.bin",
+          "pretrained_sd_models/DWPose/dw-ll_ucoco_384.onnx",
+          "pretrained_sd_models/sd-vae-ft-mse/diffusion_pytorch_model.bin",
+          "weights/tiktokdress/denoising_unet.pth",
+      ]
+      all_ok = True
+      for p in expected:
+          ok = os.path.isfile(p)
+          status = "✓" if ok else "✗ MISSING"
+          print(f"  {status}  {p}")
+          if not ok:
+              all_ok = False
+      assert all_ok, "Some weights are missing — check download logs above"
+      print("\n✓ All weights downloaded and verified.")
+
+  # ================================================================
+  # E) User Data Paths & Inference
+  # ================================================================
+  - type: markdown
+    source: |
+      ## E. Configure Data Paths & Run Inference
+      **You must set `DATA_DIR` to your dataset location.**
+
+      Expected data structure:
+      ```
+      DATA_DIR/
+      ├── videos/           # Person videos (.mp4)
+      ├── garments/         # Garment images (.png)
+      ├── videos_mask/      # Binary mask videos (.mp4)
+      ├── videos_masked/    # Masked person videos (.mp4)
+      ├── videos_dwpose/    # DWPose skeleton videos (.mp4)
+      └── test_pairs.txt    # "video.mp4 garment.png" per line
+      ```
+
+      > ⚠️ TikTokDress dataset is NOT redistributable. Download from
+      > [HuggingFace](https://huggingface.co/datasets/nguyenquivinhquang/TikTokDress)
+      > and upload to your Google Drive or Colab storage.
+
+  - type: code
+    source: |
+      #@title Data & Output Paths { run: "auto" }
+      if MODE != "user":
+          print("⏭ SKIP — user 모드에서만 실행됩니다.")
+      else:
+          DATA_DIR  = "/content/drive/MyDrive/TikTokDress"  #@param {type:"string"}
+          PAIRS_FILE = ""  #@param {type:"string"}
+          OUT_DIR   = "/content/output_result"  #@param {type:"string"}
+
+          import os
+          if not PAIRS_FILE:
+              PAIRS_FILE = os.path.join(DATA_DIR, "test_pairs.txt")
+
+          %cd /content/SwiftTry
+
+          !cd /content/SwiftTry && PYTHONPATH=/content/SwiftTry python inference.py \
+              --data_dir "{DATA_DIR}" \
+              --test_pairs "{PAIRS_FILE}" \
+              --save_dir "{OUT_DIR}"
+
+          print(f"\n✓ Results saved to: {OUT_DIR}")
+
+  # ================================================================
+  # F) Input Data Sanity Check
+  # ================================================================
+  - type: markdown
+    source: |
+      ## F. Data Sanity Check (run BEFORE inference)
+      Verifies required folders exist and warns about frame-count mismatches.
+      **Run this cell before E** if you want to catch issues early.
+
+  - type: code
+    source: |
+      #@title Sanity Check { run: "auto" }
+      if MODE != "user":
+          print("⏭ SKIP — user 모드에서만 실행됩니다.")
+      else:
+          import os, glob
+
+          _data_dir = DATA_DIR if 'DATA_DIR' in dir() else "/content/drive/MyDrive/TikTokDress"
+          _pairs = PAIRS_FILE if 'PAIRS_FILE' in dir() else os.path.join(_data_dir, "test_pairs.txt")
+
+          required_dirs = ["videos", "garments", "videos_mask", "videos_masked", "videos_dwpose"]
+          print(f"Checking DATA_DIR: {_data_dir}\n")
+
+          all_ok = True
+          for d in required_dirs:
+              full = os.path.join(_data_dir, d)
+              exists = os.path.isdir(full)
+              count = len(os.listdir(full)) if exists else 0
+              status = f"✓ {count} files" if exists else "✗ MISSING"
+              print(f"  {status:20s}  {d}/")
+              if not exists:
+                  all_ok = False
+
+          if os.path.isfile(_pairs):
+              with open(_pairs) as f:
+                  lines = [l.strip() for l in f if l.strip()]
+              print(f"\n  ✓ test_pairs.txt: {len(lines)} pairs")
+              if lines:
+                  parts = lines[0].split()
+                  vid_ok = os.path.isfile(os.path.join(_data_dir, "videos", parts[0])) if len(parts) >= 1 else False
+                  gar_ok = os.path.isfile(os.path.join(_data_dir, "garments", parts[1])) if len(parts) >= 2 else False
+                  print(f"    First pair: {lines[0]}")
+                  print(f"    Video exists: {vid_ok}  Garment exists: {gar_ok}")
+          else:
+              print(f"\n  ✗ test_pairs.txt NOT FOUND at {_pairs}")
+              all_ok = False
+
+          if all_ok:
+              print("\n✓ Sanity check passed — ready for inference.")
+          else:
+              print("\n⚠ Some checks failed — fix the issues above before running inference.")
+
+  # ================================================================
+  # G) Quick Demo — 1 sample auto-download & inference
+  # ================================================================
+  - type: markdown
+    source: |
+      ---
+      ## G. Quick Demo — 샘플 1개 자동 다운로드 + 추론
+
+      HuggingFace에서 TikTokDress 테스트 샘플 1개를 자동으로 받아서
+      전처리 → inference까지 한번에 실행합니다.
+
+      **사전 조건:**
+      1. [TikTokDress 데이터셋](https://huggingface.co/datasets/nguyenquivinhquang/TikTokDress) 접근 승인
+      2. HuggingFace 토큰 (Colab Secrets에 `HF_TOKEN` 저장 권장)
+      3. 셀 A~D가 이미 실행된 상태 (GPU, clone, patch, install, weights 완료)
+
+  - type: code
+    source: |
+      #@title G-1. HuggingFace 인증 + 샘플 다운로드 { run: "auto" }
+      if MODE != "demo":
+          print("⏭ SKIP — demo 모드에서만 실행됩니다.")
+      else:
+          SAMPLE_ID = "00425"  #@param {type:"string"}
+
+          import os
+          from huggingface_hub import login, hf_hub_download
+
+          # --- HF 인증 ---
+          try:
+              from google.colab import userdata
+              hf_token = userdata.get('HF_TOKEN')
+              print("✓ Colab Secrets에서 HF_TOKEN 로드")
+          except Exception:
+              hf_token = None
+          if not hf_token:
+              hf_token = input("HuggingFace Token 입력 (hf_...): ")
+          login(token=hf_token)
+
+          # --- 데모 디렉토리 구조 생성 ---
+          DEMO_DIR = "/content/demo_data"
+          for d in ["videos", "garments", "videos_mask", "videos_masked", "videos_dwpose"]:
+              os.makedirs(f"{DEMO_DIR}/{d}", exist_ok=True)
+
+          # --- 비디오 다운로드 (.avi → .mp4 변환) ---
+          print(f"\n[1/3] 비디오 다운로드: {SAMPLE_ID}.avi")
+          avi_path = hf_hub_download(
+              repo_id="nguyenquivinhquang/TikTokDress",
+              repo_type="dataset",
+              filename=f"videos_all_normalized/{SAMPLE_ID}.avi",
+          )
+          mp4_path = f"{DEMO_DIR}/videos/{SAMPLE_ID}.mp4"
+          !ffmpeg -y -i "{avi_path}" -c:v libx264 -preset fast -crf 23 -an "{mp4_path}" -loglevel warning
+          print(f"  ✓ {mp4_path}")
+
+          # --- 옷 이미지 다운로드 ---
+          print(f"\n[2/3] 옷 이미지 다운로드: {SAMPLE_ID}.png")
+          gar_path = hf_hub_download(
+              repo_id="nguyenquivinhquang/TikTokDress",
+              repo_type="dataset",
+              filename=f"garments_normalized/{SAMPLE_ID}.png",
+          )
+          import shutil
+          shutil.copy(gar_path, f"{DEMO_DIR}/garments/{SAMPLE_ID}.png")
+          print(f"  ✓ {DEMO_DIR}/garments/{SAMPLE_ID}.png")
+
+          # --- 마스크 zip 다운로드 + 해당 샘플만 추출 ---
+          print(f"\n[3/3] 마스크 데이터 다운로드 (~687MB, 캐시됨)...")
+          mask_zip_path = hf_hub_download(
+              repo_id="nguyenquivinhquang/TikTokDress",
+              repo_type="dataset",
+              filename="images_all_normalized_mask/images_all_normalized_mask_new.zip",
+          )
+          print(f"  ✓ 마스크 zip 다운로드 완료")
+
+          # 해당 샘플의 마스크 프레임만 추출
+          import zipfile
+          mask_frames_dir = f"{DEMO_DIR}/_mask_frames/{SAMPLE_ID}"
+          os.makedirs(mask_frames_dir, exist_ok=True)
+
+          prefix = f"images_all_normalized_mask_new/{SAMPLE_ID}/"
+          with zipfile.ZipFile(mask_zip_path, 'r') as zf:
+              members = [m for m in zf.namelist() if m.startswith(prefix) and m.endswith('.png')]
+              members.sort()
+              for m in members:
+                  fname = os.path.basename(m)
+                  with zf.open(m) as src, open(f"{mask_frames_dir}/{fname}", 'wb') as dst:
+                      dst.write(src.read())
+          print(f"  ✓ 마스크 프레임 {len(members)}개 추출")
+
+          # test_pairs.txt 생성
+          with open(f"{DEMO_DIR}/test_pairs.txt", "w") as f:
+              f.write(f"{SAMPLE_ID}.mp4 {SAMPLE_ID}.png\n")
+          print(f"\n✓ 샘플 다운로드 완료: {DEMO_DIR}")
+
+  - type: code
+    source: |
+      #@title G-2. 전처리: 마스크→비디오 + DWPose 생성 + Masked 비디오 { run: "auto" }
+      if MODE != "demo":
+          print("⏭ SKIP — demo 모드에서만 실행됩니다.")
+      else:
+          import os, glob
+          import numpy as np
+          from PIL import Image
+
+          SAMPLE_ID = "00425"  #@param {type:"string"}
+          DEMO_DIR = "/content/demo_data"
+
+          # --- 원본 비디오 FPS 확인 ---
+          mp4_path = f"{DEMO_DIR}/videos/{SAMPLE_ID}.mp4"
+
+          import subprocess, json
+          probe = subprocess.run(
+              ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", mp4_path],
+              capture_output=True, text=True
+          )
+          streams = json.loads(probe.stdout)["streams"]
+          vid_stream = [s for s in streams if s["codec_type"] == "video"][0]
+          fps_parts = vid_stream["r_frame_rate"].split("/")
+          FPS = round(int(fps_parts[0]) / int(fps_parts[1]))
+          W, H = int(vid_stream["width"]), int(vid_stream["height"])
+          print(f"원본 비디오: {W}x{H} @ {FPS}fps")
+
+          # --- 1. 마스크 프레임 → 마스크 비디오 ---
+          print(f"\n[1/3] 마스크 프레임 → videos_mask/{SAMPLE_ID}.mp4")
+          mask_frames_dir = f"{DEMO_DIR}/_mask_frames/{SAMPLE_ID}"
+          mask_vid_path = f"{DEMO_DIR}/videos_mask/{SAMPLE_ID}.mp4"
+
+          mask_frames = sorted(glob.glob(f"{mask_frames_dir}/*.png"))
+          if mask_frames:
+              !ffmpeg -y -framerate {FPS} -i "{mask_frames_dir}/%04d.png" \
+                  -c:v libx264 -pix_fmt yuv420p -crf 18 "{mask_vid_path}" -loglevel warning
+              print(f"  ✓ {mask_vid_path} ({len(mask_frames)} frames)")
+          else:
+              print("  ✗ 마스크 프레임 없음!")
+
+          # --- 2. Masked (agnostic) 비디오 생성 ---
+          print(f"\n[2/3] Masked 비디오 생성: videos_masked/{SAMPLE_ID}.mp4")
+          masked_frames_dir = f"{DEMO_DIR}/_masked_frames/{SAMPLE_ID}"
+          os.makedirs(masked_frames_dir, exist_ok=True)
+
+          import av
+          container = av.open(mp4_path)
+          orig_frames = []
+          for frame in container.decode(video=0):
+              orig_frames.append(frame.to_ndarray(format='rgb24'))
+          container.close()
+
+          for i, (orig, mask_path) in enumerate(zip(orig_frames, mask_frames)):
+              mask_img = np.array(Image.open(mask_path).convert('L').resize((W, H)))
+              mask_binary = (mask_img > 127).astype(np.uint8)
+              masked = orig.copy()
+              masked[mask_binary == 1] = 128
+              Image.fromarray(masked).save(f"{masked_frames_dir}/{i:04d}.png")
+
+          masked_vid_path = f"{DEMO_DIR}/videos_masked/{SAMPLE_ID}.mp4"
+          !ffmpeg -y -framerate {FPS} -i "{masked_frames_dir}/%04d.png" \
+              -c:v libx264 -pix_fmt yuv420p -crf 18 "{masked_vid_path}" -loglevel warning
+          print(f"  ✓ {masked_vid_path} ({len(orig_frames)} frames)")
+
+          # --- 3. DWPose 비디오 생성 ---
+          print(f"\n[3/3] DWPose 생성: videos_dwpose/{SAMPLE_ID}.mp4")
+
+          swifttry_dir = "/content/SwiftTry"
+          pw = os.path.join(swifttry_dir, "pretrained_weights")
+          if not os.path.exists(pw):
+              os.symlink(os.path.join(swifttry_dir, "pretrained_sd_models"), pw)
+              print(f"  ✓ Symlink: pretrained_weights -> pretrained_sd_models")
+
+          !cd /content/SwiftTry && PYTHONPATH=/content/SwiftTry python tools/vid2pose.py --video_path "{mp4_path}"
+
+          kps_path = f"{DEMO_DIR}/videos/{SAMPLE_ID}_kps.mp4"
+          dwpose_path = f"{DEMO_DIR}/videos_dwpose/{SAMPLE_ID}.mp4"
+          if os.path.exists(kps_path):
+              os.rename(kps_path, dwpose_path)
+              print(f"  ✓ {dwpose_path}")
+          else:
+              print(f"  ✗ DWPose 생성 실패 — {kps_path} 없음")
+
+          # --- 검증 ---
+          print(f"\n{'='*50}")
+          print(f"데모 데이터 준비 완료: {DEMO_DIR}")
+          for d in ["videos", "garments", "videos_mask", "videos_masked", "videos_dwpose"]:
+              path = f"{DEMO_DIR}/{d}"
+              fls = os.listdir(path) if os.path.isdir(path) else []
+              print(f"  {d:20s} → {len(fls)} files")
+
+  - type: code
+    source: |
+      #@title G-3. Demo Inference 실행 { run: "auto" }
+      if MODE != "demo":
+          print("⏭ SKIP — demo 모드에서만 실행됩니다.")
+      else:
+          SAMPLE_ID = "00425"  #@param {type:"string"}
+          DEMO_DIR = "/content/demo_data"
+          DEMO_OUT = "/content/demo_output"
+
+          !cd /content/SwiftTry && PYTHONPATH=/content/SwiftTry python inference.py \
+              --data_dir "{DEMO_DIR}" \
+              --test_pairs "{DEMO_DIR}/test_pairs.txt" \
+              --save_dir "{DEMO_OUT}"
+
+          # 결과 표시
+          import os, glob
+          results = glob.glob(f"{DEMO_OUT}/**/*.mp4", recursive=True)
+          if results:
+              print(f"\n✓ 결과 {len(results)}개 생성:")
+              for r in results:
+                  print(f"  {r}")
+              from IPython.display import HTML
+              from base64 import b64encode
+              with open(results[0], "rb") as f:
+                  video_data = b64encode(f.read()).decode()
+              display(HTML(f'''
+              <h3>Try-On 결과</h3>
+              <video width="384" controls autoplay loop>
+                <source src="data:video/mp4;base64,{video_data}" type="video/mp4">
+              </video>
+              '''))
+          else:
+              print("✗ 결과 파일 없음 — 위 로그에서 에러를 확인하세요.")
+
+  # ================================================================
+  # H) User Mode — 내 영상 + 옷 업로드 → 전처리 → 추론
+  # ================================================================
+  - type: markdown
+    source: |
+      ---
+      ## H. User Mode — 내 영상 + 옷 이미지로 Try-On
+
+      **MODE = "user"** 일 때만 실행됩니다.
+
+      1. H-1: 영상(.mp4)과 옷 이미지(.png/.jpg) 업로드
+      2. H-2: 자동 전처리 (SegFormer 마스크 + DWPose + Masked 비디오)
+      3. H-3: 추론 실행 + 결과 표시
+
+      > 영상은 **상반신이 잘 보이는 정면 영상** 권장 (3~10초).
+      > 옷은 **배경이 깔끔한 정면 사진** 권장.
+
+  - type: code
+    source: |
+      #@title H-1. 영상 + 옷 이미지 업로드 { run: "auto" }
+      if MODE != "user":
+          print("⏭ SKIP — user 모드에서만 실행됩니다.")
+      else:
+          import os, glob
+          from google.colab import files
+          from PIL import Image
+          import io as _io
+
+          import re
+          _sanitize = lambda s: re.sub(r'[^\w\-.]', '_', s)  # 공백/특수문자 → _
+
+          USER_DIR = "/content/user_data"
+          TARGET_W, TARGET_H = 384, 512
+          for d in ["videos", "garments", "videos_mask", "videos_masked", "videos_dwpose"]:
+              os.makedirs(f"{USER_DIR}/{d}", exist_ok=True)
+
+          # --- 영상: 기존 영상 재사용 or 새로 업로드 ---
+          existing_vids = glob.glob(f"{USER_DIR}/videos/*.mp4")
+          if existing_vids:
+              print(f"기존 영상 {len(existing_vids)}개 발견:")
+              for i, v in enumerate(existing_vids):
+                  print(f"  [{i}] {os.path.basename(v)}")
+              choice = input("\n기존 영상 번호 입력 (새로 업로드: Enter): ").strip()
+              if choice.isdigit() and int(choice) < len(existing_vids):
+                  user_vid_path = existing_vids[int(choice)]
+                  vid_stem = _sanitize(os.path.splitext(os.path.basename(user_vid_path))[0])
+                  print(f"  ✓ 기존 영상 재사용: {vid_stem}")
+              else:
+                  choice = ""
+          else:
+              choice = ""
+
+          if not existing_vids or choice == "":
+              print(">>> 영상 파일(.mp4)을 업로드하세요:")
+              uploaded_vid = files.upload()
+              vid_name = list(uploaded_vid.keys())[0]
+              vid_stem = _sanitize(os.path.splitext(vid_name)[0])
+              tmp_path = f"/content/_tmp_upload_{vid_name}"
+              with open(tmp_path, 'wb') as f:
+                  f.write(uploaded_vid[vid_name])
+              user_vid_path = f"{USER_DIR}/videos/{vid_stem}.mp4"
+              !ffmpeg -y -i "{tmp_path}" \
+                  -vf "scale=384:512:force_original_aspect_ratio=increase,crop=384:512" \
+                  -c:v libx264 -preset fast -crf 18 -an "{user_vid_path}" -loglevel warning
+              os.remove(tmp_path)
+              print(f"  ✓ 영상: {user_vid_path} ({TARGET_W}x{TARGET_H})")
+
+          # --- 옷 이미지: 항상 새로 업로드 ---
+          print("\n>>> 옷 이미지(.png/.jpg)를 업로드하세요:")
+          uploaded_gar = files.upload()
+          gar_name = list(uploaded_gar.keys())[0]
+          gar_stem = _sanitize(os.path.splitext(gar_name)[0])
+
+          gar_img = Image.open(_io.BytesIO(uploaded_gar[gar_name]))
+          w, h = gar_img.size
+          scale = max(TARGET_W / w, TARGET_H / h)
+          gar_img = gar_img.convert("RGB").resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+          nw, nh = gar_img.size
+          left = (nw - TARGET_W) // 2
+          top = (nh - TARGET_H) // 2
+          gar_img = gar_img.crop((left, top, left + TARGET_W, top + TARGET_H))
+          # 옷 파일명을 그대로 사용 (덮어쓰기 방지)
+          gar_save_path = f"{USER_DIR}/garments/{gar_stem}.png"
+          gar_img.save(gar_save_path)
+          print(f"  ✓ 옷: {gar_save_path} ({TARGET_W}x{TARGET_H})")
+
+          # test_pairs.txt 생성 (현재 조합)
+          with open(f"{USER_DIR}/test_pairs.txt", "w") as f:
+              f.write(f"{vid_stem}.mp4 {gar_stem}.png\n")
+
+          USER_SAMPLE_ID = vid_stem
+          USER_GARMENT_ID = gar_stem
+          print(f"\n✓ 준비 완료: {vid_stem}.mp4 + {gar_stem}.png")
+
+  - type: code
+    source: |
+      #@title H-2. 자동 전처리 — DWPose + SegFormer 마스크 { run: "auto" }
+      if MODE != "user":
+          print("⏭ SKIP — user 모드에서만 실행됩니다.")
+      else:
+          import os, glob, subprocess, json, sys, time as _time
+          import numpy as np
+          from PIL import Image, ImageDraw
+
+          # ── Colab Form Parameters ──
+          STICK_WIDTH = 4  #@param [4, 8, 12, 16] {type:"raw"}
+
+          # PR-1: Debug dump
+          DEBUG_DUMP = False  #@param {type:"boolean"}
+
+          # PR-2: Person bbox + DWPose hull pre-filter
+          PERSON_BBOX_AND = True   #@param {type:"boolean"}
+          HULL_MASK = True         #@param {type:"boolean"}
+          HULL_EXPAND_PX = 15      #@param {type:"slider", min:0, max:40, step:5}
+          BBOX_PAD_X = 0.10        #@param {type:"number"}
+          BBOX_PAD_Y = 0.05        #@param {type:"number"}
+
+          # PR-3: Hood merge + exclude
+          HOOD_MERGE = True           #@param {type:"boolean"}
+          HOOD_MERGE_RADIUS = 15      #@param {type:"slider", min:5, max:30, step:5}
+          HOOD_FROM_HAIR = True       #@param {type:"boolean"}
+          SCARF_MERGE = False         #@param {type:"boolean"}
+          HAIR_EXCLUDE = True         #@param {type:"boolean"}
+          FACE_EXCLUDE_MODE = "segformer+dwpose"  #@param ["segformer", "segformer+dwpose"]
+
+          # PR-4: Temporal + morphology
+          INCLUDE_ARMS = False     #@param {type:"boolean"}
+          PANTS_EXCLUDE = True     #@param {type:"boolean"}
+          TEMPORAL_WINDOW = 3      #@param [1, 3, 5, 7] {type:"raw"}
+          MORPH_CLOSE_KERNEL = 0   #@param [0, 3, 5, 7] {type:"raw"}
+          FILL_HOLE_MAX_PCT = 10   #@param {type:"slider", min:0, max:50, step:5}
+          DILATION_ITER = 1        #@param {type:"slider", min:0, max:15, step:1}
+          KEEP_LARGEST_BLOB = True #@param {type:"boolean"}
+
+          # PR-5: Dual mask
+          DUAL_MASK = False              #@param {type:"boolean"}
+          UNET_EXTRA_DILATION = 8        #@param {type:"slider", min:0, max:20, step:2}
+          COMP_DILATION = 3              #@param {type:"slider", min:0, max:10, step:1}
+          SEAM_BAND_PX = 5              #@param {type:"slider", min:0, max:15, step:1}
+
+          # v2: Consensus tuning
+          CONSENSUS_PAD_X = 0.08         #@param {type:"number"}
+          CONSENSUS_THRESHOLD = 0.45     #@param {type:"number"}
+          CONSENSUS_MODE = "hull"        #@param ["hull", "interior", "union", "off"]
+
+          # v2: Edge-aware dilation (v3: 기본 off — hull pre-filter가 overflow 방지)
+          EDGE_DILATION = False          #@param {type:"boolean"}
+          EDGE_DILATION_MAX = 5          #@param {type:"slider", min:1, max:15, step:1}
+          EDGE_THRESHOLD = 30            #@param {type:"slider", min:10, max:100, step:10}
+
+          # v2: Garment-adaptive arms — 긴팔 가먼트일 때만 arm 자동 포함
+          GARMENT_ADAPTIVE_ARMS = True   #@param {type:"boolean"}
+
+          USER_DIR = "/content/user_data"
+          sid = USER_SAMPLE_ID
+          mp4_path = f"{USER_DIR}/videos/{sid}.mp4"
+
+          # ── PR-1: Debug helpers ──
+          def dump_mask(arr, dump_dir, step_name, frame_idx, enabled):
+              """Save a mask array as PNG for debug inspection."""
+              if not enabled:
+                  return
+              d = f"{dump_dir}/{step_name}"
+              os.makedirs(d, exist_ok=True)
+              Image.fromarray((arr * 255).astype(np.uint8)).convert('L').save(f"{d}/{frame_idx:05d}.png")
+
+          def dump_overlay(orig, mask, dump_dir, frame_idx, enabled):
+              """Save original+mask blend for debug inspection."""
+              if not enabled:
+                  return
+              d = f"{dump_dir}/overlays"
+              os.makedirs(d, exist_ok=True)
+              ov = orig.copy()
+              ov[mask > 0] = [255, 0, 0]
+              blend = (orig.astype(float) * 0.5 + ov.astype(float) * 0.5).astype(np.uint8)
+              Image.fromarray(blend).save(f"{d}/{frame_idx:05d}.png")
+
+          def compute_metrics(final_masks, raw_masks_list, face_masks_list,
+                              person_bbox_masks_list, W, H):
+              """Compute per-frame + average mask quality metrics."""
+              n = len(final_masks)
+              records = []
+              for i in range(n):
+                  m = final_masks[i].astype(float)
+                  mask_area = float(m.sum())
+                  mask_area_pct = mask_area / (W * H) * 100.0
+                  # leakage outside person bbox
+                  if person_bbox_masks_list is not None:
+                      pb = person_bbox_masks_list[i].astype(float)
+                      outside = float((m * (1.0 - pb)).sum())
+                      leakage = outside / max(mask_area, 1.0)
+                  else:
+                      leakage = 0.0
+                  # face intrusion
+                  if face_masks_list is not None and face_masks_list[i].any():
+                      fi = float((m * face_masks_list[i].astype(float)).sum())
+                      face_intr = fi / max(mask_area, 1.0)
+                  else:
+                      face_intr = 0.0
+                  # hole rate (compare with filled version)
+                  from scipy.ndimage import binary_fill_holes
+                  filled = binary_fill_holes(m).astype(float)
+                  filled_area = filled.sum()
+                  hole_rate = (filled_area - mask_area) / max(filled_area, 1.0)
+                  # temporal IoU
+                  if i > 0:
+                      prev = final_masks[i-1].astype(float)
+                      inter = float((m * prev).sum())
+                      union = float(np.maximum(m, prev).sum())
+                      t_iou = inter / max(union, 1.0)
+                  else:
+                      t_iou = 1.0
+                  records.append({
+                      "frame": i,
+                      "mask_area": mask_area,
+                      "mask_area_pct": round(mask_area_pct, 2),
+                      "leakage_outside_person": round(leakage, 4),
+                      "face_intrusion": round(face_intr, 4),
+                      "hole_rate": round(hole_rate, 4),
+                      "temporal_iou": round(t_iou, 4),
+                  })
+              # averages
+              avg = {}
+              for k in ["mask_area", "mask_area_pct", "leakage_outside_person",
+                         "face_intrusion", "hole_rate", "temporal_iou"]:
+                  vals = [r[k] for r in records]
+                  avg[k] = round(float(np.mean(vals)), 4)
+              avg["flicker_score"] = round(1.0 - avg["temporal_iou"], 4)
+              return {"per_frame": records, "average": avg}
+
+          # ── PR-2: Person mask helpers ──
+          def make_person_bbox_mask(bboxes, W, H, pad_x=0.10, pad_y=0.05):
+              """Create mask from largest person bbox with padding."""
+              mask = np.zeros((H, W), dtype=np.uint8)
+              if bboxes is None or len(bboxes) == 0:
+                  return np.ones((H, W), dtype=np.uint8)
+              # Pick largest bbox by area
+              areas = [(b[2]-b[0])*(b[3]-b[1]) for b in bboxes]
+              best = bboxes[int(np.argmax(areas))]
+              x1, y1, x2, y2 = best[:4]
+              pw, ph = int((x2-x1) * pad_x), int((y2-y1) * pad_y)
+              x1 = max(0, int(x1) - pw)
+              y1 = max(0, int(y1) - ph)
+              x2 = min(W, int(x2) + pw)
+              y2 = min(H, int(y2) + ph)
+              mask[y1:y2, x1:x2] = 1
+              return mask
+
+          def make_upper_body_hull_mask(kps, scores, W, H, expand_px=20):
+              """Create convex hull mask from upper body keypoints."""
+              import cv2
+              # OpenPose body keypoints: 1=neck, 2=R_shoulder, 3=R_elbow, 4=R_wrist,
+              # 5=L_shoulder, 6=L_elbow, 7=L_wrist, 8=R_hip, 11=L_hip
+              UPPER_IDX = [1, 2, 3, 4, 5, 6, 7, 8, 11]
+              mask = np.zeros((H, W), dtype=np.uint8)
+              if kps is None or len(kps) == 0:
+                  return np.ones((H, W), dtype=np.uint8)
+              # Use first person
+              person_kps = kps[0] if len(kps.shape) == 3 else kps
+              person_scores = scores[0] if len(scores.shape) == 2 else scores
+              pts = []
+              for idx in UPPER_IDX:
+                  if idx < len(person_kps) and person_scores[idx] > 0.3:
+                      x, y = int(person_kps[idx][0]), int(person_kps[idx][1])
+                      if 0 <= x < W and 0 <= y < H:
+                          pts.append([x, y])
+              if len(pts) < 3:
+                  return np.ones((H, W), dtype=np.uint8)
+              hull = cv2.convexHull(np.array(pts, dtype=np.int32))
+              cv2.fillConvexPoly(mask, hull, 1)
+              if expand_px > 0:
+                  from scipy.ndimage import binary_dilation
+                  mask = binary_dilation(mask, iterations=expand_px).astype(np.uint8)
+              return mask
+
+          # --- stickwidth 변경 감지 ---
+          sw_file = f"{USER_DIR}/_pose_frames/{sid}/_stickwidth.txt"
+          prev_sw = None
+          if os.path.isfile(sw_file):
+              prev_sw = int(open(sw_file).read().strip())
+          sw_changed = (prev_sw is not None and prev_sw != STICK_WIDTH)
+          if sw_changed:
+              print(f"⚠ stickwidth 변경 감지: {prev_sw} → {STICK_WIDTH}")
+              print(f"  DWPose 프레임 재생성합니다.")
+              import shutil
+              for d in [f"{USER_DIR}/_pose_frames/{sid}", f"{USER_DIR}/videos_dwpose"]:
+                  if os.path.isdir(d):
+                      shutil.rmtree(d)
+
+          # --- 영상이 같으면 전처리 스킵 (옷만 바꿔서 테스트할 때) ---
+          mask_exists = os.path.isfile(f"{USER_DIR}/videos_mask/{sid}.mp4")
+          dwpose_exists = os.path.isfile(f"{USER_DIR}/videos_dwpose/{sid}.mp4")
+          masked_exists = os.path.isfile(f"{USER_DIR}/videos_masked/{sid}.mp4")
+          if mask_exists and dwpose_exists and masked_exists:
+              print(f"✓ {sid} 전처리 결과가 이미 존재합니다. 스킵합니다.")
+              print(f"  videos_mask/{sid}.mp4 ✓")
+              print(f"  videos_dwpose/{sid}.mp4 ✓")
+              print(f"  videos_masked/{sid}.mp4 ✓")
+              print(f"\n  마스크 재생성하려면:")
+              print(f"  !rm -rf {USER_DIR}/videos_mask {USER_DIR}/videos_masked "
+                    f"{USER_DIR}/_mask_frames {USER_DIR}/_frames "
+                    f"{USER_DIR}/_pose_frames {USER_DIR}/videos_dwpose")
+          else:
+              # ========== Step 0: 비디오 정보 + 프레임 추출 ==========
+              probe = subprocess.run(
+                  ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", mp4_path],
+                  capture_output=True, text=True
+              )
+              streams = json.loads(probe.stdout)["streams"]
+              vid_stream = [s for s in streams if s["codec_type"] == "video"][0]
+              fps_parts = vid_stream["r_frame_rate"].split("/")
+              FPS = round(int(fps_parts[0]) / int(fps_parts[1]))
+              W, H = int(vid_stream["width"]), int(vid_stream["height"])
+              print(f"영상 정보: {W}x{H} @ {FPS}fps")
+
+              # PR-1: Debug dump directory
+              debug_dir = f"{USER_DIR}/_mask_debug/{sid}"
+              if DEBUG_DUMP:
+                  os.makedirs(debug_dir, exist_ok=True)
+                  print(f"  DEBUG_DUMP → {debug_dir}")
+
+              # PR-4: Derived constants
+              NECK_MARGIN = int(H * 0.07)  # face dilation → 목 영역 제외
+
+              import av, torch, cv2
+              import torch.nn.functional as F
+
+              frames_dir = f"{USER_DIR}/_frames/{sid}"
+              os.makedirs(frames_dir, exist_ok=True)
+              container = av.open(mp4_path)
+              orig_frames = []
+              for i, frame in enumerate(container.decode(video=0)):
+                  arr = frame.to_ndarray(format='rgb24')
+                  orig_frames.append(arr)
+                  Image.fromarray(arr).save(f"{frames_dir}/{i:05d}.jpg")
+              container.close()
+              n_frames = len(orig_frames)
+              print(f"  프레임 수: {n_frames}")
+
+              # ========== Step 1: DWPose 시각화 + bbox/keypoints 추출 ==========
+              print("\n[Step 1] DWPose 시각화 + 포즈 데이터 추출...")
+
+              # stickwidth 패치 (업스트림 기본 4 → 사용자 지정값)
+              if STICK_WIDTH != 4:
+                  result = subprocess.run(
+                      ["sed", "-i", f"s/stickwidth = 4/stickwidth = {STICK_WIDTH}/",
+                       "/content/SwiftTry/src/dwpose/util.py"],
+                      capture_output=True, text=True
+                  )
+                  print(f"  stickwidth → {STICK_WIDTH}")
+
+              sys.path.insert(0, "/content/SwiftTry")
+              from src.dwpose import DWposeDetector
+
+              detector = DWposeDetector()
+              detector = detector.to("cuda")
+
+              pose_frames_dir = f"{USER_DIR}/_pose_frames/{sid}"
+              os.makedirs(pose_frames_dir, exist_ok=True)
+
+              # PR-2: Collect person bboxes and keypoints
+              person_bboxes_all = []
+              person_keypoints_all = []
+              person_kp_scores_all = []
+
+              for i, frame_arr in enumerate(orig_frames):
+                  pil = Image.fromarray(frame_arr)
+                  pose_img, _ = detector(pil)
+                  pose_img.resize((W, H), Image.LANCZOS).save(f"{pose_frames_dir}/{i:05d}.png")
+
+                  # PR-2: Extract bbox/keypoints from DWPose internals
+                  if PERSON_BBOX_AND or HULL_MASK or FACE_EXCLUDE_MODE == "segformer+dwpose":
+                      bgr = cv2.cvtColor(frame_arr, cv2.COLOR_RGB2BGR)
+                      try:
+                          from src.dwpose.onnxdet import inference_detector as dwpose_detect_persons
+                          bboxes = dwpose_detect_persons(detector.pose_estimation.session_det, bgr)
+                          kps, scores = detector.pose_estimation(bgr)
+                          person_bboxes_all.append(bboxes)
+                          person_keypoints_all.append(kps)
+                          person_kp_scores_all.append(scores)
+                      except Exception as e:
+                          if i == 0:
+                              print(f"  ⚠ DWPose 내부 API 접근 실패: {e}")
+                              print(f"    → PERSON_BBOX_AND/HULL_MASK 비활성화됨")
+                              PERSON_BBOX_AND = False
+                              HULL_MASK = False
+                          person_bboxes_all.append(None)
+                          person_keypoints_all.append(None)
+                          person_kp_scores_all.append(None)
+
+                  if (i + 1) % 10 == 0:
+                      print(f"  {i+1}/{n_frames} frames")
+
+              del detector
+              torch.cuda.empty_cache()
+
+              # stickwidth 기록 (다음 실행 시 변경 감지용)
+              os.makedirs(os.path.dirname(sw_file), exist_ok=True)
+              with open(sw_file, "w") as f:
+                  f.write(str(STICK_WIDTH))
+              print(f"  ✓ DWPose 완료 ({n_frames} frames, stickwidth={STICK_WIDTH})")
+
+              # ========== Step 1.5: Person mask 계산 (PR-2) ==========
+              person_bbox_masks = []
+              person_hull_masks = []
+              if PERSON_BBOX_AND or HULL_MASK:
+                  print("\n[Step 1.5] Person mask 계산...")
+                  for i in range(n_frames):
+                      if PERSON_BBOX_AND:
+                          pbm = make_person_bbox_mask(
+                              person_bboxes_all[i], W, H, BBOX_PAD_X, BBOX_PAD_Y)
+                          person_bbox_masks.append(pbm)
+                      if HULL_MASK:
+                          phm = make_upper_body_hull_mask(
+                              person_keypoints_all[i], person_kp_scores_all[i],
+                              W, H, expand_px=HULL_EXPAND_PX)
+                          person_hull_masks.append(phm)
+                  if PERSON_BBOX_AND:
+                      print(f"  ✓ Person bbox masks: {n_frames}프레임 (pad_x={BBOX_PAD_X}, pad_y={BBOX_PAD_Y})")
+                  if HULL_MASK:
+                      print(f"  ✓ DWPose hull masks: {n_frames}프레임 (expand_px={HULL_EXPAND_PX})")
+
+              # ========== Step 2: SegFormer 퍼-프레임 마스킹 ==========
+              # mattmdjaga/segformer_b2_clothes — 18-class semantic segmentation
+              # 얼굴(11)/머리카락(2) 구조적 제외, 팔(14,15) 픽셀 정확
+              print("\n[Step 2] SegFormer 마스크 생성...")
+              from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
+              from scipy.ndimage import binary_dilation, binary_fill_holes, binary_closing
+              from scipy.ndimage import label as ndimage_label
+
+              seg_processor = SegformerImageProcessor.from_pretrained("mattmdjaga/segformer_b2_clothes")
+              seg_model = SegformerForSemanticSegmentation.from_pretrained("mattmdjaga/segformer_b2_clothes")
+              seg_model = seg_model.to("cuda").eval()
+
+              # Labels: 4=upper-clothes, 7=dress, 14=left-arm, 15=right-arm
+              # 11=face, 1=hat, 2=hair, 17=scarf
+              TARGET_LABELS = {4, 7}
+              if INCLUDE_ARMS:
+                  TARGET_LABELS |= {14, 15}  # 반팔/민소매일 때 팔 피부 포함
+              print(f"  TARGET_LABELS: {TARGET_LABELS}" + (" (+arms)" if INCLUDE_ARMS else " (상의만)"))
+              FACE_LABEL = 11
+              HAT_LABEL = 1
+              HAIR_LABEL = 2
+              SCARF_LABEL = 17
+              UPPER_LABEL = 4
+              PANTS_LABELS = {6, 12, 13}  # 6=Pants, 12=Left-leg, 13=Right-leg
+              BATCH_SIZE = 4
+
+              # 배치 추론 — PR-3: 추가 레이블 수집
+              raw_masks = []
+              face_masks = []
+              hat_masks = []
+              hair_masks = []
+              scarf_masks = []
+              upper_masks = []
+              pants_masks = []
+              arm_masks = []  # 14=left-arm, 15=right-arm
+              for batch_start in range(0, n_frames, BATCH_SIZE):
+                  batch_end = min(batch_start + BATCH_SIZE, n_frames)
+                  batch_pils = [Image.fromarray(orig_frames[i]) for i in range(batch_start, batch_end)]
+                  inputs = seg_processor(images=batch_pils, return_tensors="pt").to("cuda")
+                  with torch.no_grad():
+                      logits = seg_model(**inputs).logits
+                  upsampled = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
+                  preds = upsampled.argmax(dim=1).cpu().numpy()
+                  for pred in preds:
+                      raw_masks.append(np.isin(pred, list(TARGET_LABELS)).astype(np.uint8))
+                      face_masks.append((pred == FACE_LABEL).astype(np.uint8))
+                      hat_masks.append((pred == HAT_LABEL).astype(np.uint8))
+                      hair_masks.append((pred == HAIR_LABEL).astype(np.uint8))
+                      scarf_masks.append((pred == SCARF_LABEL).astype(np.uint8))
+                      upper_masks.append((pred == UPPER_LABEL).astype(np.uint8))
+                      pants_masks.append(np.isin(pred, list(PANTS_LABELS)).astype(np.uint8))
+                      arm_masks.append(np.isin(pred, [14, 15]).astype(np.uint8))
+                  if (batch_end) % 20 == 0 or batch_end == n_frames:
+                      print(f"  {batch_end}/{n_frames} frames")
+
+              # ========== Garment sleeve detection (v2) ==========
+              # 가먼트 이미지를 SegFormer에 돌려서 긴팔/반팔 판정
+              # 긴팔 → INCLUDE_ARMS override → 맨 팔도 마스크에 포함
+              # 반팔 → INCLUDE_ARMS 유지(False) → 원본 팔 피부 보존 (일렁임 방지)
+              if GARMENT_ADAPTIVE_ARMS and not INCLUDE_ARMS:
+                  gar_img_path = f"{USER_DIR}/garments/{USER_GARMENT_ID}.png"
+                  if os.path.isfile(gar_img_path):
+                      gar_pil = Image.open(gar_img_path).convert("RGB")
+                      gar_inputs = seg_processor(images=[gar_pil], return_tensors="pt").to("cuda")
+                      with torch.no_grad():
+                          gar_logits = seg_model(**gar_inputs).logits
+                      gar_up = F.interpolate(gar_logits, size=gar_pil.size[::-1],
+                                             mode="bilinear", align_corners=False)
+                      gar_pred = gar_up.argmax(dim=1).cpu().numpy()[0]
+                      gar_upper_px = int((gar_pred == UPPER_LABEL).sum())
+                      gar_arm_px = int(np.isin(gar_pred, [14, 15]).sum())
+                      # arm 픽셀이 upper의 5% 미만 → 팔 노출 거의 없음 = 긴팔
+                      if gar_upper_px > 0:
+                          arm_ratio = gar_arm_px / gar_upper_px
+                          garment_is_long = (arm_ratio < 0.05)
+                      else:
+                          garment_is_long = False
+                      print(f"\n  [Garment sleeve detection]")
+                      print(f"    upper: {gar_upper_px:,}px, arm: {gar_arm_px:,}px, ratio: {arm_ratio:.3f}")
+                      if garment_is_long:
+                          INCLUDE_ARMS = True
+                          TARGET_LABELS |= {14, 15}
+                          # raw_masks에 arm 픽셀 추가 (이미 추론 완료된 프레임)
+                          arm_added = 0
+                          for i in range(n_frames):
+                              new_px = int(arm_masks[i].sum() - (raw_masks[i] * arm_masks[i]).sum())
+                              if new_px > 0:
+                                  raw_masks[i] = np.maximum(raw_masks[i], arm_masks[i])
+                                  arm_added += new_px
+                          print(f"    → 긴팔 감지 → INCLUDE_ARMS=True 자동 활성화 (+{arm_added:,}px)")
+                      else:
+                          print(f"    → 반팔/민소매 → 원본 팔 피부 유지")
+                  else:
+                      print(f"\n  ⚠ 가먼트 이미지 없음: {gar_img_path}")
+
+              del seg_model, seg_processor
+              torch.cuda.empty_cache()
+
+              # ========== SegFormer 레이블 진단 ==========
+              # 18-class labels: 0=Background, 1=Hat, 2=Hair, 3=Sunglasses, 4=Upper-clothes,
+              # 5=Skirt, 6=Pants, 7=Dress, 8=Belt, 9=Left-shoe, 10=Right-shoe,
+              # 11=Face, 12=Left-leg, 13=Right-leg, 14=Left-arm, 15=Right-arm,
+              # 16=Bag, 17=Scarf
+              hat_total = sum(m.sum() for m in hat_masks)
+              hair_total = sum(m.sum() for m in hair_masks)
+              scarf_total = sum(m.sum() for m in scarf_masks)
+              upper_total = sum(m.sum() for m in upper_masks)
+              pants_total = sum(m.sum() for m in pants_masks)
+              hat_frames = sum(1 for m in hat_masks if m.any())
+              print(f"\n  [SegFormer 레이블 진단]")
+              print(f"    hat(1):    {hat_total:>10,} px total, {hat_frames}/{n_frames} frames")
+              print(f"    hair(2):   {hair_total:>10,} px total")
+              print(f"    upper(4):  {upper_total:>10,} px total")
+              print(f"    pants(6+): {pants_total:>10,} px total")
+              print(f"    scarf(17): {scarf_total:>10,} px total")
+              if hat_frames == 0 and HOOD_MERGE:
+                  print(f"    ⚠ hat(1) 0프레임 — SegFormer가 후드를 hat으로 분류하지 않음")
+                  print(f"      후드가 hair(2) 또는 upper-clothes(4)로 분류된 가능성 높음")
+
+              # ========== Step 2.1: Hood/Scarf 조건부 합성 (PR-3) ==========
+              # hood_hair_preserve: per-frame mask of hair pixels to NOT exclude (they're hood)
+              hood_hair_preserve = [np.zeros((H, W), dtype=np.uint8) for _ in range(n_frames)]
+
+              if HOOD_MERGE or HOOD_FROM_HAIR or SCARF_MERGE:
+                  print(f"\n[Step 2.1] Hood/Scarf 조건부 합성...")
+                  hood_hat_added = 0
+                  hood_hair_added = 0
+                  scarf_added = 0
+                  for i in range(n_frames):
+                      if upper_masks[i].any():
+                          upper_dilated = binary_dilation(
+                              upper_masks[i], iterations=HOOD_MERGE_RADIUS).astype(np.uint8)
+
+                          # A) hat(1) → upper 인접 hat → raw_masks에 합성
+                          if HOOD_MERGE and hat_masks[i].any():
+                              hood_candidate = hat_masks[i] * upper_dilated
+                              new_px = int(hood_candidate.sum() - (raw_masks[i] * hood_candidate).sum())
+                              if new_px > 0:
+                                  raw_masks[i] = np.maximum(raw_masks[i], hood_candidate)
+                                  hood_hat_added += new_px
+
+                          # B) hair(2) → upper 인접 hair = 후드 → raw_masks에 합성 + exclude 보호
+                          if HOOD_FROM_HAIR and hair_masks[i].any():
+                              hair_near_upper = hair_masks[i] * upper_dilated
+                              new_px = int(hair_near_upper.sum() - (raw_masks[i] * hair_near_upper).sum())
+                              if new_px > 0:
+                                  raw_masks[i] = np.maximum(raw_masks[i], hair_near_upper)
+                                  hood_hair_added += new_px
+                              # 이 hair 픽셀은 나중에 HAIR_EXCLUDE에서 보호
+                              hood_hair_preserve[i] = np.maximum(hood_hair_preserve[i], hair_near_upper)
+
+                          # C) scarf(17)
+                          if SCARF_MERGE and scarf_masks[i].any():
+                              scarf_candidate = scarf_masks[i] * upper_dilated
+                              new_px = int(scarf_candidate.sum() - (raw_masks[i] * scarf_candidate).sum())
+                              if new_px > 0:
+                                  raw_masks[i] = np.maximum(raw_masks[i], scarf_candidate)
+                                  scarf_added += new_px
+
+                  if HOOD_MERGE:
+                      print(f"  Hood(hat→upper): +{hood_hat_added:,} px")
+                  if HOOD_FROM_HAIR:
+                      print(f"  Hood(hair→upper): +{hood_hair_added:,} px")
+                  if SCARF_MERGE:
+                      print(f"  Scarf merge: +{scarf_added:,} px")
+
+              # ========== v3: DWPose hull pre-filter ==========
+              # hull 바깥 SegFormer 오탐 제거 → consensus도 깨끗해짐
+              if HULL_MASK and person_hull_masks:
+                  hull_removed = 0
+                  for i in range(n_frames):
+                      before = int(raw_masks[i].sum())
+                      raw_masks[i] = raw_masks[i] * person_hull_masks[i]
+                      hull_removed += before - int(raw_masks[i].sum())
+                  print(f"\n  [v3] DWPose hull pre-filter: {n_frames}프레임, {hull_removed:,}px 제거")
+
+              # --- 컨센서스 마스크 (공간 제한) ---
+              # 프레임별 SegFormer 예측 불일치로 옷 중앙에 구멍 생기는 문제 해결
+              # + 턱/원거리 의자 오감지를 body bbox로 제한
+              stacked = np.stack(raw_masks, axis=0)  # (n_frames, H, W)
+
+              # Median mask (50% threshold) — 안정적인 clothing region
+              median_mask = (stacked.mean(axis=0) >= 0.5).astype(np.uint8)
+
+              # Largest connected component = 본인 의류
+              labeled, n_components = ndimage_label(median_mask)
+              if n_components > 0:
+                  comp_sizes = [np.sum(labeled == (c+1)) for c in range(n_components)]
+                  largest_id = np.argmax(comp_sizes) + 1
+                  main_clothing = (labeled == largest_id).astype(np.uint8)
+              else:
+                  main_clothing = median_mask
+
+              # Body bbox with padding — v2: configurable CONSENSUS_PAD_X (was hardcoded 0.20)
+              ys, xs = np.where(main_clothing > 0)
+              if len(ys) > 0:
+                  PAD_X, PAD_Y = int(W * CONSENSUS_PAD_X), int(H * 0.05)
+                  y_min = max(0, ys.min() - PAD_Y)
+                  y_max = min(H, ys.max() + PAD_Y)
+                  x_min = max(0, xs.min() - PAD_X)
+                  x_max = min(W, xs.max() + PAD_X)
+
+                  body_bbox = np.zeros((H, W), dtype=np.uint8)
+                  body_bbox[y_min:y_max, x_min:x_max] = 1
+                  print(f"  Body bbox: x=[{x_min},{x_max}] y=[{y_min},{y_max}]  (pad_x={CONSENSUS_PAD_X}, {n_components} components)")
+              else:
+                  body_bbox = np.ones((H, W), dtype=np.uint8)  # fallback
+
+              # Consensus를 bbox 내부로만 제한 — v2: configurable threshold (was 0.3)
+              consensus_raw = (stacked.mean(axis=0) >= CONSENSUS_THRESHOLD).astype(np.uint8)
+              consensus = consensus_raw * body_bbox
+              print(f"  컨센서스 마스크: {consensus.mean()*100:.1f}% coverage ({CONSENSUS_THRESHOLD*100:.0f}%+ threshold, mode={CONSENSUS_MODE})")
+
+              # ========== Per-frame 마스크 생성 루프 ==========
+              mask_frames_dir = f"{USER_DIR}/_mask_frames/{sid}"
+              os.makedirs(mask_frames_dir, exist_ok=True)
+
+              # PR-1: collect final masks for metrics
+              final_masks = []
+
+              half_win = TEMPORAL_WINDOW // 2  # PR-4: configurable window
+
+              for i in range(n_frames):
+                  # PR-4: temporal smoothing with configurable window
+                  win_start = max(0, i - half_win)
+                  win_end = min(n_frames - 1, i + half_win)
+                  window = list(range(win_start, win_end + 1))
+                  smoothed = np.median(np.stack([raw_masks[j] for j in window]), axis=0).astype(np.uint8)
+                  dump_mask(smoothed, debug_dir, "step2_raw", i, DEBUG_DUMP)
+
+                  # v3: CONSENSUS_MODE controls how consensus is applied
+                  if CONSENSUS_MODE == "hull":
+                      # v3: DWPose hull을 consensus 버퍼로 — 배 구멍 해결 + 외곽 차단
+                      # DWPose hull은 neck→shoulders→elbows→wrists→hips convex polygon
+                      # → 배가 hull 내부 → consensus가 배 구멍을 채움
+                      # → hull 바깥 consensus는 차단 → overflow 방지
+                      if HULL_MASK and person_hull_masks:
+                          consensus_buf = person_hull_masks[i]
+                      else:
+                          # fallback: smoothed contours convex hull (v2 방식)
+                          consensus_buf = np.zeros((H, W), dtype=np.uint8)
+                          contours, _ = cv2.findContours(smoothed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                          for cnt in contours:
+                              if len(cnt) >= 3:
+                                  hull = cv2.convexHull(cnt)
+                                  cv2.fillConvexPoly(consensus_buf, hull, 1)
+                      consensus_interior = consensus * consensus_buf
+                      merged = np.maximum(smoothed, consensus_interior)
+                      if i == 0:
+                          exterior_blocked = int(consensus.sum() - consensus_interior.sum())
+                          src_name = "DWPose hull" if (HULL_MASK and person_hull_masks) else "contour hull"
+                          print(f"  [frame 0] consensus hull ({src_name}): {exterior_blocked:,} exterior px blocked")
+                  elif CONSENSUS_MODE == "interior":
+                      # v2: consensus를 smoothed의 convex hull 내부에서만 적용
+                      hull_buf = np.zeros((H, W), dtype=np.uint8)
+                      contours, _ = cv2.findContours(smoothed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                      for cnt in contours:
+                          if len(cnt) >= 3:
+                              hull = cv2.convexHull(cnt)
+                              cv2.fillConvexPoly(hull_buf, hull, 1)
+                      consensus_interior = consensus * hull_buf
+                      merged = np.maximum(smoothed, consensus_interior)
+                      if i == 0:
+                          exterior_blocked = int(consensus.sum() - consensus_interior.sum())
+                          print(f"  [frame 0] consensus interior (convex hull): {exterior_blocked:,} exterior px blocked")
+                  elif CONSENSUS_MODE == "union":
+                      # 기존 동작: consensus 전체를 매 프레임에 강제 주입
+                      merged = np.maximum(smoothed, consensus)
+                  else:
+                      # off: consensus 미적용
+                      merged = smoothed.copy()
+                  dump_mask(merged, debug_dir, "step2_consensus", i, DEBUG_DUMP)
+
+                  # 크기 제한 hole fill: 작은 구멍만 채움 (팔↔몸통 틈은 보존)
+                  filled_full = binary_fill_holes(merged).astype(np.uint8)
+                  holes = filled_full - merged  # 채워진 구멍들
+                  if holes.any() and FILL_HOLE_MAX_PCT > 0:
+                      hole_labeled, n_holes = ndimage_label(holes)
+                      mask_area = max(int(merged.sum()), 1)
+                      max_hole_px = int(mask_area * FILL_HOLE_MAX_PCT / 100.0)
+                      filled = merged.copy()
+                      for h_id in range(1, n_holes + 1):
+                          hole_size = int(np.sum(hole_labeled == h_id))
+                          if hole_size <= max_hole_px:
+                              filled[hole_labeled == h_id] = 1
+                      if i == 0:
+                          total_holes = int(holes.sum())
+                          filled_holes = int((filled - merged).sum())
+                          print(f"  [frame 0] fill_holes: {n_holes} holes, filled {filled_holes}/{total_holes} px (max={max_hole_px}px)")
+                  else:
+                      filled = merged.copy()
+
+                  # PR-4: optional morphological closing
+                  if MORPH_CLOSE_KERNEL > 0:
+                      struct = np.ones((MORPH_CLOSE_KERNEL, MORPH_CLOSE_KERNEL), dtype=np.uint8)
+                      filled = binary_closing(filled, structure=struct).astype(np.uint8)
+
+                  dump_mask(filled, debug_dir, "step2_filled", i, DEBUG_DUMP)
+
+                  # v2: Edge-aware dilation — stops at image edges (clothing boundary)
+                  if EDGE_DILATION:
+                      gray = cv2.cvtColor(orig_frames[i], cv2.COLOR_RGB2GRAY)
+                      edges = cv2.Canny(gray, EDGE_THRESHOLD, int(EDGE_THRESHOLD * 2.5))
+                      edge_barrier = binary_dilation(edges.astype(bool), iterations=1).astype(np.uint8)
+                      dilated = filled.copy()
+                      for _step in range(EDGE_DILATION_MAX):
+                          candidates = binary_dilation(dilated, iterations=1).astype(np.uint8) - dilated
+                          candidates = candidates * (1 - edge_barrier)
+                          if not candidates.any():
+                              break
+                          dilated = np.maximum(dilated, candidates)
+                      if i == 0:
+                          print(f"  [frame 0] edge-aware dilation: {_step+1}/{EDGE_DILATION_MAX} steps (edge_threshold={EDGE_THRESHOLD})")
+                  else:
+                      dilated = binary_dilation(filled, iterations=DILATION_ITER).astype(np.uint8)
+                  dump_mask(dilated, debug_dir, "step2_dilated", i, DEBUG_DUMP)
+
+                  # PR-2: Person bbox AND — 배경 의류 제거
+                  if PERSON_BBOX_AND and person_bbox_masks:
+                      dilated = dilated * person_bbox_masks[i]
+
+                  # v3: hull은 pre-filter로 적용됨 (raw_masks 단계)
+                  # post-dilation hull AND 제거 — dilation 후 재클리핑은 경계 아티팩트 유발
+
+                  # PR-3: Face/Hair/Neck/Pants 제외
+                  exclude_zone = np.zeros((H, W), dtype=np.uint8)
+                  # SegFormer face label → 확장하여 목 커버
+                  if face_masks[i].any():
+                      face_zone = binary_dilation(face_masks[i], iterations=NECK_MARGIN).astype(np.uint8)
+                      exclude_zone = np.maximum(exclude_zone, face_zone)
+
+                  # PR-3: DWPose face keypoints → 타원 근사 (추가 제외)
+                  if FACE_EXCLUDE_MODE == "segformer+dwpose" and person_keypoints_all:
+                      kps_i = person_keypoints_all[i]
+                      sco_i = person_kp_scores_all[i]
+                      if kps_i is not None and len(kps_i) > 0:
+                          pk = kps_i[0] if len(kps_i.shape) == 3 else kps_i
+                          ps = sco_i[0] if len(sco_i.shape) == 2 else sco_i
+                          # nose=0, L_eye=14/15, L_ear=16/17
+                          face_kp_idx = [0, 14, 15, 16, 17]
+                          face_pts = []
+                          for fi in face_kp_idx:
+                              if fi < len(pk) and ps[fi] > 0.3:
+                                  face_pts.append(pk[fi][:2])
+                          if len(face_pts) >= 3:
+                              fc = np.mean(face_pts, axis=0).astype(int)
+                              dists = [np.linalg.norm(np.array(p) - fc) for p in face_pts]
+                              radius = int(max(dists) * 1.5) + 10
+                              dw_face = np.zeros((H, W), dtype=np.uint8)
+                              cv2.ellipse(dw_face, (int(fc[0]), int(fc[1])),
+                                          (radius, int(radius * 1.3)),
+                                          0, 0, 360, 1, -1)
+                              exclude_zone = np.maximum(exclude_zone, dw_face)
+
+                  # PR-3: Hair exclude (후드로 판정된 hair 픽셀은 보호)
+                  if HAIR_EXCLUDE and hair_masks[i].any():
+                      hair_to_exclude = hair_masks[i].copy()
+                      if HOOD_FROM_HAIR and hood_hair_preserve[i].any():
+                          hair_to_exclude = hair_to_exclude * (1 - hood_hair_preserve[i])
+                      exclude_zone = np.maximum(exclude_zone, hair_to_exclude)
+
+                  # Pants/legs exclude (SegFormer 윤곽대로 바지/다리 제외)
+                  if PANTS_EXCLUDE and pants_masks[i].any():
+                      exclude_zone = np.maximum(exclude_zone, pants_masks[i])
+
+                  # 의류 원본 픽셀 보호: SegFormer가 의류로 분류한 영역은 제외하지 않음
+                  # (face exclude가 후드/칼라 등 의류 영역을 삭제하는 것 방지)
+                  clothing_protect = raw_masks[i]  # SegFormer 원본 의류 예측
+                  if HOOD_FROM_HAIR and hood_hair_preserve[i].any():
+                      clothing_protect = np.maximum(clothing_protect, hood_hair_preserve[i])
+                  effective_exclude = exclude_zone * (1 - clothing_protect)
+
+                  before_excl = int(dilated.sum())
+                  dilated = dilated * (1 - effective_exclude)
+                  after_excl = int(dilated.sum())
+                  if i == 0:
+                      print(f"  [frame 0] face/hair exclude: {before_excl:,} → {after_excl:,} px (removed {before_excl - after_excl:,})")
+
+                  dump_mask(dilated, debug_dir, "step2_face_excl", i, DEBUG_DUMP)
+
+                  # 최대 connected component만 유지 (의자 등 분리된 blob 제거)
+                  if KEEP_LARGEST_BLOB and dilated.any():
+                      lbl, n_blobs = ndimage_label(dilated)
+                      if n_blobs > 1:
+                          blob_sizes = [int(np.sum(lbl == (b+1))) for b in range(n_blobs)]
+                          keep_id = np.argmax(blob_sizes) + 1
+                          removed_px = int(dilated.sum()) - blob_sizes[keep_id - 1]
+                          dilated = (lbl == keep_id).astype(np.uint8)
+                          if i == 0:
+                              print(f"  [frame 0] largest blob: kept 1/{n_blobs} blobs (removed {removed_px:,} px)")
+
+                  final_masks.append(dilated)
+                  Image.fromarray((dilated * 255).astype(np.uint8)).convert('L').save(f"{mask_frames_dir}/{i:05d}.png")
+
+              if EDGE_DILATION:
+                  print(f"  ✓ SegFormer 마스크 {n_frames}프레임 완료 (edge_dilation={EDGE_DILATION_MAX}, edge_threshold={EDGE_THRESHOLD}, neck_margin={NECK_MARGIN})")
+              else:
+                  print(f"  ✓ SegFormer 마스크 {n_frames}프레임 완료 (dilation={DILATION_ITER}, neck_margin={NECK_MARGIN})")
+              if PERSON_BBOX_AND:
+                  print(f"    + person bbox AND (pad_x={BBOX_PAD_X}, pad_y={BBOX_PAD_Y})")
+              if HULL_MASK:
+                  print(f"    + DWPose hull pre-filter (expand_px={HULL_EXPAND_PX})")
+              if HOOD_MERGE:
+                  print(f"    + hood merge from hat (radius={HOOD_MERGE_RADIUS})")
+              if HOOD_FROM_HAIR:
+                  print(f"    + hood from hair (radius={HOOD_MERGE_RADIUS})")
+              if HAIR_EXCLUDE:
+                  print(f"    + hair exclude (hood-protected)")
+              if INCLUDE_ARMS:
+                  print(f"    + arms included (TARGET_LABELS has 14/15)")
+              print(f"    consensus: mode={CONSENSUS_MODE}, pad_x={CONSENSUS_PAD_X}, threshold={CONSENSUS_THRESHOLD}")
+
+              # PR-1: Metrics 계산 + 저장
+              if DEBUG_DUMP:
+                  print("\n[Metrics] 마스크 품질 지표 계산...")
+                  metrics = compute_metrics(
+                      final_masks, raw_masks, face_masks,
+                      person_bbox_masks if person_bbox_masks else None, W, H)
+                  metrics_path = f"{debug_dir}/metrics.json"
+                  with open(metrics_path, "w") as mf:
+                      json.dump(metrics, mf, indent=2)
+                  avg = metrics["average"]
+                  print(f"  mask_area_pct:          {avg['mask_area_pct']:.2f}%")
+                  print(f"  leakage_outside_person: {avg['leakage_outside_person']:.4f}")
+                  print(f"  face_intrusion:         {avg['face_intrusion']:.4f}")
+                  print(f"  hole_rate:              {avg['hole_rate']:.4f}")
+                  print(f"  temporal_iou:           {avg['temporal_iou']:.4f}")
+                  print(f"  flicker_score:          {avg['flicker_score']:.4f}")
+                  print(f"  → {metrics_path}")
+
+                  # Debug overlays (sample frames)
+                  sample_idxs = sorted(set([0, n_frames//4, n_frames//2, 3*n_frames//4, n_frames-1]))
+                  sample_idxs = [s for s in sample_idxs if s < n_frames][:8]
+                  for si in sample_idxs:
+                      dump_overlay(orig_frames[si], final_masks[si], debug_dir, si, True)
+                  print(f"  ✓ {len(sample_idxs)}프레임 오버레이 → {debug_dir}/overlays/")
+
+              # 시각화: 첫 프레임 마스크 확인
+              from IPython.display import display as _display
+              vis_mask = np.array(Image.open(f"{mask_frames_dir}/00000.png").convert('L'))
+              overlay = orig_frames[0].copy()
+              overlay[vis_mask > 127] = [255, 0, 0]
+              blend = (orig_frames[0].astype(float) * 0.5 + overlay.astype(float) * 0.5).astype(np.uint8)
+              _display(Image.fromarray(blend))
+              print("  (빨간 영역 = SegFormer 마스크 — 얼굴/머리카락 제외 확인)")
+
+              # ========== Step 2.7: Dual mask (PR-5) ==========
+              if DUAL_MASK:
+                  print(f"\n[Step 2.7] Dual mask 생성...")
+                  # mask_unet_agnostic: broader mask for model input
+                  unet_mask_dir = f"{USER_DIR}/_mask_unet/{sid}"
+                  os.makedirs(unet_mask_dir, exist_ok=True)
+                  for i in range(n_frames):
+                      if UNET_EXTRA_DILATION > 0:
+                          unet_m = binary_dilation(
+                              final_masks[i], iterations=UNET_EXTRA_DILATION).astype(np.uint8)
+                      else:
+                          unet_m = final_masks[i].copy()
+                      Image.fromarray((unet_m * 255).astype(np.uint8)).convert('L').save(f"{unet_mask_dir}/{i:05d}.png")
+
+                  # mask_comp_garment: tighter mask for repaint compositing
+                  comp_mask_dir = f"{USER_DIR}/_mask_comp/{sid}"
+                  os.makedirs(comp_mask_dir, exist_ok=True)
+                  for i in range(n_frames):
+                      if COMP_DILATION < DILATION_ITER:
+                          # Re-derive from filled (pre-dilation) state
+                          win_start = max(0, i - half_win)
+                          win_end = min(n_frames - 1, i + half_win)
+                          window = list(range(win_start, win_end + 1))
+                          sm = np.median(np.stack([raw_masks[j] for j in window]), axis=0).astype(np.uint8)
+                          mg = np.maximum(sm, consensus)
+                          fl = binary_fill_holes(mg).astype(np.uint8)
+                          comp_m = binary_dilation(fl, iterations=COMP_DILATION).astype(np.uint8)
+                          # Apply same exclusions
+                          if PERSON_BBOX_AND and person_bbox_masks:
+                              comp_m = comp_m * person_bbox_masks[i]
+                          if HULL_MASK and person_hull_masks:
+                              comp_m = comp_m * person_hull_masks[i]
+                          exc = np.zeros((H, W), dtype=np.uint8)
+                          if face_masks[i].any():
+                              exc = np.maximum(exc, binary_dilation(face_masks[i], iterations=NECK_MARGIN).astype(np.uint8))
+                          if HAIR_EXCLUDE and hair_masks[i].any():
+                              exc = np.maximum(exc, hair_masks[i])
+                          comp_m = comp_m * (1 - exc)
+                      else:
+                          comp_m = final_masks[i].copy()
+                      # Seam band: smooth transition at mask boundary
+                      if SEAM_BAND_PX > 0:
+                          outer = binary_dilation(comp_m, iterations=SEAM_BAND_PX).astype(np.uint8)
+                          inner = binary_dilation(1 - comp_m, iterations=SEAM_BAND_PX).astype(np.uint8)
+                          # band = dilated XOR eroded region
+                          band = (outer * inner).astype(np.float32)
+                          # Blur the band for smooth transition
+                          band_blurred = cv2.GaussianBlur(band, (SEAM_BAND_PX*2+1, SEAM_BAND_PX*2+1), 0)
+                          comp_float = comp_m.astype(np.float32)
+                          # Blend: keep core, smooth edges
+                          comp_float = np.where(band > 0, band_blurred * 0.5 + comp_float * 0.5, comp_float)
+                          comp_m = (comp_float >= 0.5).astype(np.uint8)
+                      Image.fromarray((comp_m * 255).astype(np.uint8)).convert('L').save(f"{comp_mask_dir}/{i:05d}.png")
+
+                  # UNet agnostic → videos_mask (model input)
+                  os.makedirs(f"{USER_DIR}/videos_mask", exist_ok=True)
+                  mask_vid_path = f"{USER_DIR}/videos_mask/{sid}.mp4"
+                  !ffmpeg -y -framerate {FPS} -i "{unet_mask_dir}/%05d.png" \
+                      -c:v libx264 -pix_fmt yuv420p -crf 18 "{mask_vid_path}" -loglevel warning
+                  print(f"  ✓ UNet agnostic mask → {mask_vid_path}")
+
+                  # Comp garment → videos_mask_comp (repaint)
+                  os.makedirs(f"{USER_DIR}/videos_mask_comp", exist_ok=True)
+                  comp_vid_path = f"{USER_DIR}/videos_mask_comp/{sid}.mp4"
+                  !ffmpeg -y -framerate {FPS} -i "{comp_mask_dir}/%05d.png" \
+                      -c:v libx264 -pix_fmt yuv420p -crf 18 "{comp_vid_path}" -loglevel warning
+                  print(f"  ✓ Comp garment mask → {comp_vid_path}")
+                  print(f"  UNet extra dilation: {UNET_EXTRA_DILATION}, Comp dilation: {COMP_DILATION}, Seam band: {SEAM_BAND_PX}px")
+              else:
+                  # Single mask → videos_mask (기존 동작)
+                  os.makedirs(f"{USER_DIR}/videos_mask", exist_ok=True)
+                  mask_vid_path = f"{USER_DIR}/videos_mask/{sid}.mp4"
+                  !ffmpeg -y -framerate {FPS} -i "{mask_frames_dir}/%05d.png" \
+                      -c:v libx264 -pix_fmt yuv420p -crf 18 "{mask_vid_path}" -loglevel warning
+                  print(f"  ✓ {mask_vid_path}")
+
+              # ========== Step 3: DWPose 비디오 + Masked 비디오 ==========
+              print(f"\n[Step 3] DWPose + Masked 비디오 생성...")
+
+              # DWPose 시각화 비디오 (Step 1에서 저장한 프레임 사용 — 재추론 불필요)
+              os.makedirs(f"{USER_DIR}/videos_dwpose", exist_ok=True)
+              dwpose_vid_path = f"{USER_DIR}/videos_dwpose/{sid}.mp4"
+              !ffmpeg -y -framerate {FPS} -i "{pose_frames_dir}/%05d.png" \
+                  -c:v libx264 -pix_fmt yuv420p -crf 18 "{dwpose_vid_path}" -loglevel warning
+              print(f"  ✓ {dwpose_vid_path}")
+
+              # Masked (agnostic) 비디오 — uses videos_mask (unet_agnostic if DUAL_MASK)
+              masked_frames_dir = f"{USER_DIR}/_masked_frames/{sid}"
+              os.makedirs(masked_frames_dir, exist_ok=True)
+              mask_pngs = sorted(glob.glob(f"{mask_frames_dir}/*.png"))
+              for i, (orig, mask_path) in enumerate(zip(orig_frames, mask_pngs)):
+                  mask_img = np.array(Image.open(mask_path).convert('L').resize((W, H)))
+                  mask_binary = (mask_img > 127).astype(np.uint8)
+                  masked = orig.copy()
+                  masked[mask_binary == 1] = 128
+                  Image.fromarray(masked).save(f"{masked_frames_dir}/{i:04d}.png")
+              os.makedirs(f"{USER_DIR}/videos_masked", exist_ok=True)
+              masked_vid_path = f"{USER_DIR}/videos_masked/{sid}.mp4"
+              !ffmpeg -y -framerate {FPS} -i "{masked_frames_dir}/%04d.png" \
+                  -c:v libx264 -pix_fmt yuv420p -crf 18 "{masked_vid_path}" -loglevel warning
+              print(f"  ✓ {masked_vid_path}")
+
+          # --- 검증 ---
+          print(f"\n{'='*50}")
+          print(f"전처리 완료: {USER_DIR}")
+          for d in ["videos", "garments", "videos_mask", "videos_masked", "videos_dwpose"]:
+              path = f"{USER_DIR}/{d}"
+              fls = os.listdir(path) if os.path.isdir(path) else []
+              print(f"  {d:20s} → {len(fls)} files")
+
+  # ── H-2.5. 마스크 품질 진단 ──
+  - type: markdown
+    source: |
+      ### H-2.5. 마스크 품질 진단 — model input vs repaint 마스크 불일치 검증
+
+      mp4 H.264 손실 압축 + Pillow BICUBIC resize로 마스크 경계에 gray 중간값이 생기면:
+      - **Model input**: `>= 0.5` binarize → gray 경계 픽셀이 0으로 탈락 → 모델이 인페인트 안 함
+      - **Repaint**: 연속값(0~1) + blur → gray 경계에서 부분 블렌딩 → 인페인트 안 된 영역을 노출
+
+      이 셀은 두 경로의 면적 차이를 수치로 검증합니다.
+
+  - type: code
+    source: |
+      #@title H-2.5. 마스크 품질 진단 { run: "auto" }
+      if MODE != "user":
+          print("⏭ SKIP — user 모드에서만 실행됩니다.")
+      else:
+          import os, glob
+          import numpy as np
+          from PIL import Image, ImageFilter
+          import av
+
+          USER_DIR = "/content/user_data"
+          sid = USER_SAMPLE_ID
+          W, H = 384, 512
+
+          mask_vid = f"{USER_DIR}/videos_mask/{sid}.mp4"
+          png_dir = f"{USER_DIR}/_mask_frames/{sid}"
+
+          # === 1. Load masks: PNG (lossless) vs MP4 round-trip ===
+          png_paths = sorted(glob.glob(f"{png_dir}/*.png"))
+          png_masks = [Image.open(p).convert('L').resize((W, H), Image.NEAREST) for p in png_paths]
+
+          # MP4 decode → convert('L') → resize (BICUBIC, inference.py 동일)
+          container = av.open(mask_vid)
+          mp4_bicubic = []
+          mp4_nearest = []
+          for frame in container.decode(video=0):
+              pil = frame.to_image()  # RGB PIL
+              mp4_bicubic.append(pil.convert('L').resize((W, H)))               # BICUBIC (default)
+              mp4_nearest.append(pil.convert('L').resize((W, H), Image.NEAREST))
+          container.close()
+
+          n = min(len(png_masks), len(mp4_bicubic))
+          kernal_size = H // 50
+          if kernal_size % 2 == 0:
+              kernal_size += 1
+
+          # === 2. Per-frame analysis ===
+          print(f"[설정] {W}x{H}, repaint_kernel={kernal_size}, frames={n}")
+          print(f"\n{'t':>4} | {'PNG':>8} | {'Model(bin)':>10} | {'Rp(cont)':>10} | {'Rp(bin)':>8} | {'Diff':>8} | {'Gray%':>6}")
+          print("-" * 72)
+
+          stats = {'diff': [], 'gray': [], 'png_area': [], 'model_area': []}
+
+          for t in range(n):
+              mp4_arr = np.array(mp4_bicubic[t])  # uint8
+              png_arr = np.array(png_masks[t])
+
+              png_area = int(np.sum(png_arr >= 128))
+              model_area = int(np.sum(mp4_arr >= 128))        # model binarize
+
+              blurred = mp4_bicubic[t].filter(ImageFilter.GaussianBlur(kernal_size))
+              rp_arr = np.array(blurred).astype(float) / 255.0
+              rp_cont = float(np.sum(rp_arr))
+              rp_bin = int(np.sum(rp_arr >= 0.5))
+
+              diff = rp_bin - model_area
+              gray_pct = np.sum((mp4_arr > 10) & (mp4_arr < 245)) / mp4_arr.size * 100
+
+              stats['diff'].append(diff)
+              stats['gray'].append(gray_pct)
+              stats['png_area'].append(png_area)
+              stats['model_area'].append(model_area)
+
+              if t < 3 or t == n - 1 or t % max(1, n // 5) == 0:
+                  print(f"{t:>4} | {png_area:>8,} | {model_area:>10,} | {rp_cont:>10,.1f} | {rp_bin:>8,} | {diff:>+8,} | {gray_pct:>5.1f}%")
+
+          print("-" * 72)
+          md, mg = np.mean(stats['diff']), np.mean(stats['gray'])
+          png_loss = np.mean(stats['png_area']) - np.mean(stats['model_area'])
+          print(f"MEAN | {np.mean(stats['png_area']):>8,.0f} | {np.mean(stats['model_area']):>10,.0f} | {'':>10} | {'':>8} | {md:>+8,.0f} | {mg:>5.1f}%")
+          print(f"\nPNG→MP4 면적 손실: {png_loss:+,.0f} px (mp4 압축으로 binarize 시 탈락)")
+
+          # === 3. Histogram ===
+          print(f"\n[히스토그램] MP4 마스크 프레임 0 (inference.py가 보는 것)")
+          arr0 = np.array(mp4_bicubic[0])
+          bins = [0, 1, 10, 50, 100, 128, 200, 245, 255, 256]
+          hist, _ = np.histogram(arr0, bins=bins)
+          labels = ["=0", "1-9", "10-49", "50-99", "100-127", "128-199", "200-244", "245-254", "=255"]
+          for lbl, cnt in zip(labels, hist):
+              pct = cnt / arr0.size * 100
+              bar = '#' * min(40, max(1, int(pct)))
+              if cnt > 0:
+                  print(f"  {lbl:>8}: {cnt:>8,} ({pct:>5.1f}%) {bar}")
+
+          total = arr0.size
+          pure_0 = np.sum(arr0 == 0)
+          pure_255 = np.sum(arr0 == 255)
+          gray = total - pure_0 - pure_255
+          print(f"\n  Pure 0: {pure_0:,}  Pure 255: {pure_255:,}  Gray(1-254): {gray:,} ({gray/total*100:.2f}%)")
+
+          # === 4. NEAREST vs BICUBIC ===
+          print(f"\n[NEAREST vs BICUBIC] 프레임 0")
+          bc_gray = np.sum((np.array(mp4_bicubic[0]) > 10) & (np.array(mp4_bicubic[0]) < 245))
+          nn_gray = np.sum((np.array(mp4_nearest[0]) > 10) & (np.array(mp4_nearest[0]) < 245))
+          print(f"  BICUBIC gray: {bc_gray:,}   NEAREST gray: {nn_gray:,}")
+
+          # === 5. Visualization ===
+          vis_dir = f"{USER_DIR}/_mask_debug"
+          os.makedirs(vis_dir, exist_ok=True)
+
+          orig_vid = f"{USER_DIR}/videos/{sid}.mp4"
+          _c = av.open(orig_vid)
+          orig_all = [f.to_image().resize((W, H)) for f in _c.decode(video=0)]
+          _c.close()
+
+          samples = sorted(set([0, 1, 2, n//4, n//2, 3*n//4, max(0, n-1)]))
+          samples = [s for s in samples if s < n][:8]
+
+          for t in samples:
+              mp4_arr = np.array(mp4_bicubic[t])
+              model_bin = ((mp4_arr >= 128) * 255).astype(np.uint8)
+              blurred = mp4_bicubic[t].filter(ImageFilter.GaussianBlur(kernal_size))
+              rp_arr = np.array(blurred)
+              rp_bin = ((rp_arr >= 128) * 255).astype(np.uint8)
+              xor = np.abs(rp_bin.astype(int) - model_bin.astype(int)).astype(np.uint8)
+
+              orig_img = orig_all[t] if t < len(orig_all) else Image.new('RGB', (W, H))
+              strip = Image.new('RGB', (W * 4, H))
+              strip.paste(orig_img, (0, 0))
+              strip.paste(Image.fromarray(model_bin).convert('L').convert('RGB'), (W, 0))
+              strip.paste(Image.fromarray(rp_arr).convert('L').convert('RGB'), (W * 2, 0))
+              xor_vis = np.array(orig_img.copy())
+              xor_vis[xor > 0] = [255, 0, 0]
+              blend = (np.array(orig_img).astype(float) * 0.5 + xor_vis.astype(float) * 0.5).astype(np.uint8)
+              strip.paste(Image.fromarray(blend), (W * 3, 0))
+              strip.save(f"{vis_dir}/frame_{t:03d}.png")
+
+          print(f"\n✓ {len(samples)}프레임 시각화 → {vis_dir}/")
+          print("  [원본] [model_binary] [repaint_blur] [XOR 차이(빨강)]")
+
+          from IPython.display import display as _display
+          _display(Image.open(f"{vis_dir}/frame_{samples[0]:03d}.png"))
+
+          # === 6. Verdict ===
+          print(f"\n{'='*60}")
+          print("진단 결과")
+          print("=" * 60)
+          if gray > 100:
+              print(f"  ⚠ MP4 gray 경계 오염: {gray:,}px ({gray/total*100:.2f}%)")
+              print(f"    → H.264 압축이 binary mask 경계를 오염")
+          if abs(png_loss) > 50:
+              print(f"  ⚠ PNG→MP4 binarize 면적 손실: {png_loss:+,.0f}px")
+              print(f"    → mp4 경계 gray → threshold 탈락 → model이 본 영역 축소")
+          if abs(md) > 50:
+              print(f"  ⚠ Model vs Repaint 면적 차: {md:+,.0f}px")
+          if mg < 0.01 and abs(png_loss) < 50:
+              print(f"  ✓ 마스크 오염 미미 — 다른 원인 탐색 필요")
+          print(f"\n  → H-3에서 REPAINT_BINARIZE / MASK_RESIZE_NEAREST 활성화 권장")
+
+  # ── H-3. User Inference ──
+  - type: code
+    source: |
+      #@title H-3. User Inference 실행 + 결과 표시 { run: "auto" }
+      if MODE != "user":
+          print("⏭ SKIP — user 모드에서만 실행됩니다.")
+      else:
+          REPAINT_KERNEL = 1  #@param [1, 3, 5, 10] {type:"raw"}
+          REPAINT_BINARIZE = True  #@param {type:"boolean"}
+          MASK_RESIZE_NEAREST = True  #@param {type:"boolean"}
+          USE_COMP_MASK_REPAINT = False  #@param {type:"boolean"}
+
+          import os, re, shutil, subprocess
+          USER_DIR = "/content/user_data"
+          USER_OUT = "/content/user_output"
+
+          # --- inference.py 패치 (원본 복원 후 적용 → 멱등성 보장) ---
+          inf_path = "/content/SwiftTry/inference.py"
+          subprocess.run(["git", "checkout", "inference.py"],
+                         cwd="/content/SwiftTry", capture_output=True)
+
+          with open(inf_path) as f:
+              code = f.read()
+
+          # Patch 1: repaint kernal_size
+          code = re.sub(r'kernal_size = .*', f'kernal_size = {REPAINT_KERNEL}', code)
+          print(f"  [patch] kernal_size → {REPAINT_KERNEL}")
+
+          # Patch 2: repaint 직전 mask binarize (gray 경계 → 0/255 정리)
+          if REPAINT_BINARIZE:
+              code = code.replace(
+                  'mask = mask.filter(ImageFilter.GaussianBlur(kernal_size))',
+                  'mask = mask.point(lambda p: 255 if p >= 128 else 0)\n    mask = mask.filter(ImageFilter.GaussianBlur(kernal_size))'
+              )
+              print(f"  [patch] repaint binarize → ON")
+
+          # Patch 3: mask resize NEAREST (BICUBIC gray 방지)
+          if MASK_RESIZE_NEAREST:
+              code = code.replace(
+                  "mask_pil.convert('L').resize((width, height))",
+                  "mask_pil.convert('L').resize((width, height), Image.NEAREST)"
+              )
+              print(f"  [patch] mask resize → NEAREST")
+
+          # Patch 4 (PR-5): Use comp_garment mask for repaint instead of model mask
+          sid = USER_SAMPLE_ID
+          comp_vid = f"{USER_DIR}/videos_mask_comp/{sid}.mp4"
+          if USE_COMP_MASK_REPAINT and os.path.isfile(comp_vid):
+              # Patch repaint() to load comp mask instead of model mask
+              # inference.py repaint reads from videos_mask/{sid}.mp4
+              # We redirect to videos_mask_comp/{sid}.mp4
+              code = code.replace(
+                  'os.path.join(data_dir, "videos_mask"',
+                  'os.path.join(data_dir, "videos_mask_comp"'
+              )
+              print(f"  [patch] repaint mask → videos_mask_comp/ (comp_garment)")
+          elif USE_COMP_MASK_REPAINT:
+              print(f"  ⚠ USE_COMP_MASK_REPAINT=True but {comp_vid} not found")
+              print(f"    → H-2에서 DUAL_MASK=True로 재실행 필요")
+
+          with open(inf_path, 'w') as f:
+              f.write(code)
+
+          # 이전 결과 정리 (이전 실행 결과와 혼동 방지)
+          if os.path.exists(USER_OUT):
+              shutil.rmtree(USER_OUT)
+          os.makedirs(USER_OUT, exist_ok=True)
+
+          # test_pairs.txt 확인 (디버깅용)
+          print(f"\ntest_pairs.txt:")
+          !cat "{USER_DIR}/test_pairs.txt"
+          print()
+
+          !cd /content/SwiftTry && PYTHONPATH=/content/SwiftTry python inference.py \
+              --data_dir "{USER_DIR}" \
+              --test_pairs "{USER_DIR}/test_pairs.txt" \
+              --save_dir "{USER_OUT}"
+
+          # 결과 표시
+          import os, glob
+          from IPython.display import HTML, display
+          from base64 import b64encode
+          from PIL import Image
+
+          results = glob.glob(f"{USER_OUT}/**/*.mp4", recursive=True)
+          if results:
+              print(f"\n✓ 결과 {len(results)}개 생성:")
+              for r in results:
+                  print(f"  {r}")
+
+              gar_path = f"{USER_DIR}/garments/{USER_GARMENT_ID}.png"
+              gar_html = ""
+              if os.path.exists(gar_path):
+                  gar_data = b64encode(open(gar_path, 'rb').read()).decode()
+                  gar_html = f'<div style="display:inline-block;margin:10px;text-align:center"><p>입력 옷</p><img src="data:image/png;base64,{gar_data}" height="300"></div>'
+
+              with open(results[0], "rb") as f:
+                  video_data = b64encode(f.read()).decode()
+
+              display(HTML(f'''
+              <div style="display:flex;align-items:flex-start;gap:20px">
+                {gar_html}
+                <div style="text-align:center">
+                  <p>Try-On 결과</p>
+                  <video height="300" controls autoplay loop>
+                    <source src="data:video/mp4;base64,{video_data}" type="video/mp4">
+                  </video>
+                </div>
+              </div>
+              '''))
+          else:
+              print("✗ 결과 파일 없음 — 위 로그에서 에러를 확인하세요.")
+
+# Legacy format fields (kept for backward compat with basic generator)
+install: []
+files: []
+run: ""

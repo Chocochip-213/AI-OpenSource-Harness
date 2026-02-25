@@ -1,49 +1,3 @@
-# Context Pack
-
-**Active Recipe**: `swifttry`
-**Generated**: auto
-
-## Recipe Docs
-
-### plan.md
-
-```
-# Plan — SwiftTry
-
-## Goal
-Colab-ready inference recipe for **SwiftTry** (AAAI 2025): given a person video and a garment image, produce a try-on result video using diffusion-based video inpainting.
-
-## Scope
-**In scope**
-- Video virtual try-on inference (`inference.py`)
-- Automated weight download (5 HF repos + SD-Inpainting)
-- Two install strategies: opt2_modern (default) / opt1_legacy (fallback)
-- A100 notebook with user-configurable data paths
-
-**Out of scope**
-- Training (Stage 1 / Stage 2)
-- Dataset redistribution (TikTokDress, VVT)
-- Training (Stage 1 / Stage 2)와 데이터셋 전처리 파이프라인 (별도 도구)
-- Image-only try-on (`inference_image.py`)
-
-## Approach
-1. Clone upstream at pinned commit SHA
-2. Install deps via opt2_modern (keep Colab torch, install compatible diffusers stack)
-3. Download weights via upstream `tools/download_weights.py` + separate SD-Inpainting snapshot
-4. Symlink `weights/tiktokdress -> pretrained_sd_models/swift_try` to bridge config path mismatch
-5. User provides DATA_DIR with pre-processed videos; notebook runs `inference.py`
-6. User 모드: 업로드된 동영상/의류에 대해 DWPose + SegFormer 기반 자동 전처리 (포즈 추출, 마스크 생성)
-
-## Success Criteria
-- `install.sh` completes without error on fresh Colab A100 runtime
-- `python tools/download_weights.py` downloads all 5 weight sets
-- `python inference.py --data_dir ... --test_pairs ... --save_dir ...` produces output MP4s
-- Notebook cells run top-to-bottom with only DATA_DIR edit required
-```
-
-### context.md
-
-```
 # Context — SwiftTry
 
 ## Architecture
@@ -104,91 +58,55 @@ Colab baseline as of 2026-01-20: torch 2.9.0, torchvision 0.24.0, torchaudio 2.9
 - **Pose Hull AND (옵션)** — 상체 keypoints(neck, shoulders, elbows, wrists, hips) convex hull + expand 20px. person bbox보다 타이트하여 정밀 제한 가능하나 기본 비활성화(오탐 위험).
 - **Hood 조건부 합성** — SegFormer hat(1) 레이블이 후드를 포함하나 TARGET_LABELS에 미포함이었음. 무조건 포함 시 배경 모자까지 마스킹. 해결: upper-clothes(4) 인접(dilation radius=15) hat 픽셀만 조건부 합성. PERSON_BBOX_AND가 최종 단계에서 배경 hat도 필터링.
 - **Face/Hair/Neck 제외 강화** — 기존 SegFormer face(11) dilation만으로 부족. (1) DWPose face keypoints(nose, eyes, ears) → 타원 근사 → exclude 추가, (2) hair(2) 완전 제외 추가. FACE_EXCLUDE_MODE="segformer+dwpose"가 기본.
-... (55 more lines)
+- **Temporal/Morphology 파라미터화** — TEMPORAL_WINDOW(1/3/5/7), MORPH_CLOSE_KERNEL(0/3/5/7), DILATION_ITER(0~15). 기존 하드코딩 값을 Colab form으로 노출하여 실험 용이.
+- **2-Mask 전략 (unet_agnostic vs comp_garment)** — model input(prepare_mask_and_masked_image)은 broader mask가 유리(더 넓은 인페인트 영역), repaint compositing은 tighter mask가 유리(원본 피부 보존). DUAL_MASK=True 시 Step 2.7에서 두 변형 생성: unet_agnostic(base + UNET_EXTRA_DILATION) → videos_mask/, comp_garment(base + COMP_DILATION + seam band) → videos_mask_comp/. H-3에서 USE_COMP_MASK_REPAINT=True로 repaint 경로를 comp mask로 전환.
+- **Debug Dump + Metrics** — DEBUG_DUMP=True 시 파이프라인 각 단계(raw→consensus→filled→dilated→face_excl) 마스크 PNG + overlay + metrics.json 저장. 지표: leakage_outside_person, face_intrusion, hole_rate, temporal_iou, flicker_score.
+- **SAM2 여전히 사용 불가 (2026-02 기준)** — GitHub Issue #695 (facebookresearch/sam2), Ultralytics #16089/#16705 모두 확인. Video Predictor가 negative points를 완전 무시하여 얼굴 항상 포함. SAM2Long (ICCV 2025 memory tree), SAM2Plus (Kalman filter)가 drift 완화하나 negative point 근본 해결 아님. VRAM ~2GB, 속도 ~70초/200프레임 → SegFormer 대비 2.4배 VRAM, 4.7배 느림.
+- **SAM3 관찰 대상 (2025-11 출시)** — 네이티브 텍스트 프롬프트("upper body clothing"), negative box prompt(이미지 모드) 지원. 그러나 비디오 트래킹에 negative box 미포함, box prompt 버그 보고 (Issue #204), gated model→HuggingFace 승인 필요, 프로덕션 검증 3개월 미만. 향후 마이그레이션 후보로 관찰, 현재는 위험도 높음.
+- **Consensus bbox PAD_X 0.20→0.08 축소** — W=384에서 PAD_X=77px(20%)이 consensus bbox를 전체 프레임 너비로 확장하여 양쪽에 오분류 주입. 8%로 축소(31px)하여 consensus bbox 범위 절감. CONSENSUS_PAD_X, CONSENSUS_THRESHOLD Colab form 파라미터로 노출.
+- **Consensus threshold 0.30→0.45 상향** — 30% threshold는 불안정 프레임의 오분류까지 consensus에 포함. 45%로 상향하여 더 안정적인 프레임에서만 consensus에 반영.
+- **Edge-aware dilation (uniform dilation 대체)** — `binary_dilation(iterations=3)`이 이미지 에지와 무관하게 모든 방향으로 동일 확장하여 의류 경계 바깥으로 1-2cm 삐져나옴. cv2.Canny로 이미지 에지 검출 후, 1px씩 반복 확장하되 강한 에지에 도달하면 확장 중단. 추가 의존성 없음 (cv2 이미 사용 중). EDGE_DILATION=True 기본, EDGE_DILATION_MAX=5, EDGE_THRESHOLD=30 Colab form 파라미터.
+- **Arm symmetry correction (반팔 비대칭 보정)** — 반팔일 때 한쪽 소매만 SegFormer upper-clothes로 분류되고 다른 쪽은 arm으로 분류되는 문제. person bbox 중앙 기준 좌우 마스크 면적 비교 → 한쪽이 30% 미만이면 큰 쪽을 수평 반전하여 union. heuristic이며 완벽하지 않으나 비대칭 개선에 효과적. ARM_SYMMETRY=True 기본.
+- **Garment-adaptive arm masking (v2 최종)** — 가먼트 소매 길이에 따라 INCLUDE_ARMS 자동 결정. 타겟 가먼트를 SegFormer에 추론 → arm(14/15)/upper(4) 비율로 긴팔/반팔 판정 (arm_ratio < 0.05 = 긴팔). **긴팔 가먼트 → INCLUDE_ARMS=True**: 영상 속 맨 팔도 마스크 포함하여 모델이 소매 생성 가능. **반팔 가먼트 → INCLUDE_ARMS=False 유지**: 원본 팔 피부 보존하여 일렁임/아티팩트 방지. 이전 시도(INCLUDE_ARMS 항상 True, ARM_SYMMETRY 미러링, SLEEVE_ARM_MERGE) 모두 제거 — 반팔→반팔에서 불필요한 팔 재생성이 오히려 퀄리티 저하.
+- **Consensus interior-only mode** — `merged = np.maximum(smoothed, consensus)` (union)가 마스크 외부 오분류 픽셀을 매 프레임에 강제 주입하여 1-2cm 삐져나옴의 근본 원인. 수정: consensus를 smoothed 마스크 내부(+3px 버퍼)에서만 적용하여 내부 빈틈은 채우되 외부 확장은 차단. CONSENSUS_MODE="interior" 기본, "union"(기존 동작)/"off" 선택 가능.
+- **[v3] DWPose-Guided 파이프라인 재설계** — v2의 edge-aware dilation, consensus interior, arm symmetry 모두 실패 (배 구멍 여전, 외곽 악화, 30+ 파라미터 복잡도). 근본 원인 3가지: (1) 학습 데이터(SAM2+DWPose로 생성한 타이트 마스크)와의 분포 불일치 — SegFormer+dilation+consensus가 너무 느슨, (2) SegFormer waistline 불안정 — upper-clothes(4)/pants(6)/belt(8) 경계 프레임마다 달라져 배 구멍 발생, (3) 후처리 과잉 — SegFormer 오류를 후처리로 메우려 했지만 새 문제 생성. **해결**: `make_upper_body_hull_mask()` (neck→shoulders→elbows→wrists→hips convex hull)이 이미 구현되어 있었으나 비활성화. 이를 파이프라인의 공간적 뼈대로 승격: (A) hull pre-filter — SegFormer 추론 직후, consensus 전에 raw_masks × hull → 외곽 오탐 제거, (B) hull consensus mode — DWPose hull을 consensus 버퍼로 사용 → 배가 hull 내부 → 구멍 채움, (C) dilation 최소화(3→1) + edge dilation 기본 off. HULL_MASK=True, HULL_EXPAND_PX=15 기본.
+- **[v3] SAM2 Image Predictor 재평가** — Video Predictor만 실패한 것을 SAM2 전체 포기로 확대한 것은 과잉 반응. Image Predictor는 negative point 작동, per-frame 사용 가능. 그러나 VRAM ~2GB(SegFormer의 2.4배), 속도 ~70초/200프레임(4.7배), 아키텍처 변경 대규모 → Phase 2 옵션으로 보류. DWPose hull + SegFormer 하이브리드로 먼저 해결 시도.
+- **[v3] POSE_HULL_AND 제거 → HULL_MASK 대체** — 기존 POSE_HULL_AND는 dilation 후 hull로 재클리핑하는 방식이었으나, v3에서는 raw_masks 단계에서 hull pre-filter로 적용. pre-filter가 AND보다 효과적: consensus 전에 오탐 제거 → consensus 자체가 깨끗.
+- **[v3] CONSENSUS_MODE="hull" 추가** — DWPose hull을 consensus 버퍼로 사용. 기존 "interior" 모드는 smoothed contours의 convex hull을 사용했으나, smoothed가 배 구멍을 이미 포함하면 convex hull도 그만큼 움푹함. DWPose hull은 항상 full torso 포함 → 배 구멍에 consensus 확실히 적용.
+- **Data not bundled** — TikTokDress dataset is not redistributable. Notebook provides path variables for user to mount their own data.
+- **Colab baseline 2026-01-20** — torch 2.9.0, diffusers 0.36.0→downgraded to 0.24.0, accelerate 1.12.0 (kept). The diffusers downgrade is intentional and required; upstream patches `UNet2DConditionModel` internals.
 
+## Data Requirements
+```
+DATA_DIR/
+├── videos/           # Original person videos (.mp4)
+├── garments/         # Garment images (.png), one per test pair
+├── videos_mask/      # Binary segmentation masks (.mp4)
+├── videos_masked/    # Inpainted/masked person videos (.mp4)
+├── videos_dwpose/    # DWPose skeleton videos (.mp4)
+└── test_pairs.txt    # Space-separated: "video_name.mp4 garment_name.png"
 ```
 
-### tasks.md
+Preprocessing tools exist in `tools/` (extract_dwpose_from_vid.py, etc.) but are out of scope for this inference-only recipe.
 
-```
-# Tasks — SwiftTry
+## Pretrained Weights (auto-downloaded)
+| Component | HuggingFace Repo | Local Path |
+|-----------|-----------------|------------|
+| SD v1.5 UNet | runwayml/stable-diffusion-v1-5 | pretrained_sd_models/stable-diffusion-v1-5/ |
+| SD Inpainting | runwayml/stable-diffusion-inpainting | pretrained_sd_models/stable-diffusion-inpainting/ |
+| Image Encoder | lambdalabs/sd-image-variations-diffusers | pretrained_sd_models/image_encoder/ |
+| DWPose | yzd-v/DWPose | pretrained_sd_models/DWPose/ |
+| VAE | stabilityai/sd-vae-ft-mse | pretrained_sd_models/sd-vae-ft-mse/ |
+| SwiftTry | NMHung/SwiftTry | pretrained_sd_models/swift_try/ |
 
-## Setup
-- [x] Copy _template to `recipes/swifttry`
-- [x] Update `recipe.yaml` with upstream info and pinned SHA
-- [x] Fill out `docs/plan.md`
-- [x] Fill out `docs/context.md`
-- [x] Set `.claude/last_recipe.txt` to swifttry
+## References
+- Paper: https://arxiv.org/abs/2412.10178
+- Project: https://swift-try.github.io/
+- Code: https://github.com/VinAIResearch/SwiftTry
+- Weights: https://huggingface.co/NMHung/SwiftTry
+- Dataset: https://huggingface.co/datasets/nguyenquivinhquang/TikTokDress
 
-## Implementation
-- [x] Create `requirements_opt2_modern.txt` (Colab 기본 유지, 없는 것만 설치)
-- [x] Create `requirements_opt1_legacy.txt` (upstream-pinned fallback)
-- [x] Write `install.sh` with opt2 default + verification
-- [x] Write `run.sh` with env-var-driven data paths
-- [x] Create `patches/fix_diffusers_compat.py` — 5 breaking import fixes for diffusers 0.36
-- [x] Write `notebook_manifest.yaml` with all required cells
-- [x] Enhance `generate_notebook.py` to support `cells` list format + --recipe/--out flags
-- [x] Generate `outputs/notebooks/swifttry_A100.ipynb`
-- [x] Add demo section G (auto-download 1 sample from HF TikTokDress)
+---
 
-## Colab Compat Fixes
-- [x] Remove numpy<2.0 pin (torch 2.9 ABI requires numpy 2.x)
-- [x] Remove scipy/scikit-learn/tqdm/Pillow version pins (use Colab defaults)
-- [x] Fix torchsde==0.2.5 → >=0.2.6 (pip metadata bug)
-- [x] Remove diffusers pin → use Colab 0.36.0 + patch
-- [x] Remove CLIP GitHub zip → use open-clip-torch + ftfy
-
-## Visual Artifact Fixes
-- [x] H-3: repaint blur 축소 — `sed -i` 로 inference.py의 `kernal_size = h // 50` → `kernal_size = 3`
-- [x] H-2: 얼굴 링 아티팩트 수정 — `face_exclude` dilation(15) + clothing_mask 보호
-- [x] H-2 v2: SegFormer→DWPose 키포인트 기반 SAM2 프롬프팅 (실패 — SAM2 구조적 한계)
-- [x] H-2 v3: SAM2 완전 제거 → SegFormer 퍼-프레임 시맨틱 세그멘테이션 교체
-
-## Garment Shrink Fix
-- [x] H-2: 마스크 과보상 제거 — consensus mask, binary_closing 삭제, dilation 12→5
-- [x] H-3: kernal_size sed 패치 삭제 (업스트림 기본값 h//50 유지)
-- [x] H-2: STICK_WIDTH 파라미터 추가 (4/8/12/16 Colab form)
-- [x] H-2: stickwidth 변경 시 DWPose 프레임 자동 재생성
-- [x] context.md: 과보상 제거 + stickwidth 파라미터화 기록
-
-## Garment Shrink Fix v2
-- [x] H-3: REPAINT_KERNEL 파라미터 추가 (1/3/5/10 Colab form) + sed 패치 복원
-- [x] H-2: consensus 마스크 공간 제한 — median→connected components→largest bbox
-- [x] context.md: stickwidth 무효 기록, REPAINT_KERNEL/consensus bbox 결정 기록
-- [x] H-3: REPAINT_KERNEL 기본값 3→1 (하드엣지 — 가상옷 크기 최대 보존)
-- [x] H-2: 얼굴/목 영역 제외 — face label(11) dilation(H*0.07) 차감
-- [x] context.md: 목 제외 + REPAINT_KERNEL=1 결정 기록
-
-## Mask Mismatch Fix (model input vs repaint)
-- [x] SwiftTry 소스 분석 — prepare_mask_and_masked_image() binarize vs repaint() 연속값 경로 확인
-- [x] H-2.5: 마스크 품질 진단 셀 — mp4 round-trip gray 오염, 면적 차이, 히스토그램, 시각화
-- [x] H-3: REPAINT_BINARIZE + MASK_RESIZE_NEAREST 옵션 추가 (Python patching, git checkout 멱등성)
-- [x] H-3: sed 방식 → Python re.sub/replace 방식으로 교체 (복잡한 패치 지원)
-- [x] context.md: 마스크 경로 불일치 근본 원인 분석 + Fix 결정 기록
-- [ ] Colab 테스트: H-2.5 진단 → 가설 검증 (예/아니오)
-- [ ] Colab 테스트: Fix 적용 후 가상옷 수축 개선 확인
-
-## Mask Precision PRs
-
-### PR-1: Debug Dump + Metrics
-... (121 more lines)
-
-```
-
-## Git Status
-
-```
-M .claude/_context_pack.md
-?? .claude/hooks/__pycache__/
-?? __pycache__/
-?? recipes/swifttry/patches/__pycache__/
-?? scripts/__pycache__/
-?? tools/__pycache__/
-```
-
-## Git Diff (stat)
-
-```
-.claude/_context_pack.md | 35 ++---------------------------------
- 1 file changed, 2 insertions(+), 33 deletions(-)
-```
+> **Rule**: When a decision is made during implementation, add it to "Key Decisions" with the reasoning.
+> This file is the permanent record — don't let knowledge stay only in chat history.

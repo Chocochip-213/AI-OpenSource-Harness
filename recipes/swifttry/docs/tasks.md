@@ -15,7 +15,7 @@
 - [x] Create `patches/fix_diffusers_compat.py` — 5 breaking import fixes for diffusers 0.36
 - [x] Write `notebook_manifest.yaml` with all required cells
 - [x] Enhance `generate_notebook.py` to support `cells` list format + --recipe/--out flags
-- [x] Generate `outputs/notebooks/swifttry_A100.ipynb`
+- [x] Generate `outputs/notebooks/swifttry.ipynb`
 - [x] Add demo section G (auto-download 1 sample from HF TikTokDress)
 
 ## Colab Compat Fixes
@@ -168,6 +168,59 @@
 - [x] context.md: SAM2/SAM3 리서치 결과 기록
 - [x] context.md: edge-aware dilation, consensus 수정, arm symmetry 결정 기록
 - [x] tasks.md: Edge-Aware Refinement 섹션 추가
+
+## Performance v5 — H100 최적화 + SegFormer 폐기
+
+### SegFormer 폐기
+- [x] MASK_ENGINE 기본값 "segforter"→"sam2", segformer 옵션 제거
+- [x] context.md: SegFormer 폐기 결정 기록
+
+### DWPose 이중 호출 제거
+- [x] draw_bodypose() 직접 호출 시도 → 실패 (시그니처 불일치: candidate/subset 구조)
+- [x] detector(pil) 시각화 유지 + inference_detector()+pose_estimation() bbox/kps 추출
+- [x] pose 프레임 저장 async I/O로 전환
+
+### scipy→OpenCV 후처리
+- [x] binary_dilation→cv2.dilate, binary_fill_holes→cv2.floodFill
+- [x] binary_closing→cv2.morphologyEx, ndimage_label→cv2.connectedComponents
+- [x] make_upper_body_hull_mask의 scipy import 제거
+- [x] compute_metrics의 scipy import 제거
+- [x] cv2_fill_holes 버그 수정: (0,0) 단일 flood → 4-corner flood (마스크 깜빡임 해결)
+- [x] cv2_label connectivity 수정: 8-conn(cv2 기본) → 4-conn(scipy 기본 일치)
+
+### 비동기 I/O
+- [x] ThreadPoolExecutor(4 workers) 프레임 저장 async
+- [x] Step 3 전 flush + masked frames async
+- [x] 검증 전 pool shutdown
+
+### H100 CUDA 최적화
+- [x] cudnn.benchmark=True, allow_tf32=True
+- [x] SAM2 model.half() + torch.autocast FP16
+- [x] GPU 이름 감지 출력
+
+### 타이밍 계측
+- [x] Step 1 (DWPose), Step 2 (SAM2), Post-processing, Step 3 (Video) 각각 time.time()
+- [x] 파이프라인 종료 시 타이밍 요약 출력
+
+### SAM2 모드 조정
+- [x] DILATION_ITER cap 제거: min(val, 1) → form 값 그대로 (기본 3)
+
+### 추론 모델 캐싱 (H-3)
+- [x] 1차 시도 → 실패: clip_length 미설정으로 1 clip(16f)만 처리
+- [x] 1차 실패 후 subprocess 복원
+- [x] inference.py upstream 분석: __main__이 clip_length=10000 전달 → tryon_video() 내부에서 clamp → 전체 프레임 처리. 슬라이딩 윈도우는 TryOnVideoPipeline.__call__() 내부 context_scheduler가 처리
+- [x] 2차 구현: Pipeline Transplant 전략 — 모듈 reimport(패치 반영) + GPU pipeline 객체 이식
+- [x] globals()에 _swifttry_controller 캐싱, 재실행 시 _cached_pipeline 이식으로 모델 로딩 스킵
+- [x] clip_length=10000으로 전체 비디오 처리 (upstream __main__과 동일)
+- [x] CWD 보존 (config 상대 경로 해석용 os.chdir + finally 복원)
+- [ ] Colab 테스트: 첫 실행 모델 로딩 + 추론 정상 확인
+- [ ] Colab 테스트: 재실행 시 "캐시된 파이프라인 발견" 메시지 + 로딩 스킵 확인
+
+### 검증
+- [ ] Colab: 타이밍 출력 확인
+- [ ] Colab: SAM2 FP16 마스크 품질 확인
+- [ ] Colab: OpenCV 후처리 마스크 품질 확인
+- [ ] Colab: 모델 캐싱 재실행 테스트
 
 ## Validation
 - [x] Run `compileall` — no syntax errors

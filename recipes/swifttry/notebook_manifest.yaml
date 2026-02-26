@@ -654,16 +654,17 @@ cells:
 
   - type: code
     source: |
-      #@title H-2. 자동 전처리 — DWPose + 마스크 (SegFormer/SAM2) { run: "auto" }
+      #@title H-2. 자동 전처리 — DWPose + SAM2 마스크 (H100 최적화) { run: "auto" }
       if MODE != "user":
           print("⏭ SKIP — user 모드에서만 실행됩니다.")
       else:
           import os, glob, subprocess, json, sys, time as _time
           import numpy as np
           from PIL import Image, ImageDraw
+          from concurrent.futures import ThreadPoolExecutor
 
           # ── Colab Form Parameters ──
-          MASK_ENGINE = "segformer"  #@param ["segformer", "sam2"]
+          MASK_ENGINE = "sam2"  #@param ["sam2"] {type:"string"}
           SAM2_MODEL = "facebook/sam2.1-hiera-large"  #@param ["facebook/sam2.1-hiera-large", "facebook/sam2.1-hiera-base-plus", "facebook/sam2.1-hiera-small", "facebook/sam2.1-hiera-tiny"]
 
           STICK_WIDTH = 4  #@param [4, 8, 12, 16] {type:"raw"}
@@ -761,8 +762,7 @@ cells:
                   else:
                       face_intr = 0.0
                   # hole rate (compare with filled version)
-                  from scipy.ndimage import binary_fill_holes
-                  filled = binary_fill_holes(m).astype(float)
+                  filled = cv2_fill_holes(m.astype(np.uint8)).astype(float)
                   filled_area = filled.sum()
                   hole_rate = (filled_area - mask_area) / max(filled_area, 1.0)
                   # temporal IoU
@@ -832,8 +832,8 @@ cells:
               hull = cv2.convexHull(np.array(pts, dtype=np.int32))
               cv2.fillConvexPoly(mask, hull, 1)
               if expand_px > 0:
-                  from scipy.ndimage import binary_dilation
-                  mask = binary_dilation(mask, iterations=expand_px).astype(np.uint8)
+                  kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                  mask = cv2.dilate(mask, kern, iterations=expand_px)
               return mask
 
           # --- stickwidth 변경 감지 ---
@@ -888,6 +888,24 @@ cells:
               import av, torch, cv2
               import torch.nn.functional as F
 
+              # perf: H100 CUDA optimizations
+              if torch.cuda.is_available():
+                  torch.backends.cudnn.benchmark = True
+                  torch.backends.cuda.matmul.allow_tf32 = True
+                  torch.backends.cudnn.allow_tf32 = True
+                  _gpu_name = torch.cuda.get_device_name(0)
+                  print(f"  GPU: {_gpu_name}")
+                  if "H100" in _gpu_name or "H200" in _gpu_name:
+                      print(f"  → H100/H200 감지: TF32 + cuDNN benchmark 활성화")
+
+              _t_total = _time.time()
+
+              # perf: async I/O — overlap frame saves with GPU compute
+              _io_pool = ThreadPoolExecutor(max_workers=4)
+              _io_futures = []
+              def _save_async(arr, path, mode='RGB'):
+                  Image.fromarray(arr).convert(mode).save(path)
+
               frames_dir = f"{USER_DIR}/_frames/{sid}"
               os.makedirs(frames_dir, exist_ok=True)
               container = av.open(mp4_path)
@@ -895,12 +913,13 @@ cells:
               for i, frame in enumerate(container.decode(video=0)):
                   arr = frame.to_ndarray(format='rgb24')
                   orig_frames.append(arr)
-                  Image.fromarray(arr).save(f"{frames_dir}/{i:05d}.jpg")
+                  _io_futures.append(_io_pool.submit(_save_async, arr, f"{frames_dir}/{i:05d}.jpg"))
               container.close()
               n_frames = len(orig_frames)
               print(f"  프레임 수: {n_frames}")
 
               # ========== Step 1: DWPose 시각화 + bbox/keypoints 추출 ==========
+              _t1 = _time.time()
               print("\n[Step 1] DWPose 시각화 + 포즈 데이터 추출...")
 
               # stickwidth 패치 (업스트림 기본 4 → 사용자 지정값)
@@ -926,30 +945,37 @@ cells:
               person_keypoints_all = []
               person_kp_scores_all = []
 
+              # perf: detector(pil) 시각화 유지 + bbox/kps는 1회 추가 ONNX만
+              # detector(pil) 내부: YOLOX detect + pose estimate + draw (결과 미노출)
+              # 추가 호출: inference_detector(1회) + pose_estimation(1회) = bbox/kps 추출
+              # 총 ONNX: 4회/frame (기존과 동일 — draw_bodypose 직접호출 불가로 절약 불가)
+              from src.dwpose.onnxdet import inference_detector as dwpose_detect_persons
+
               for i, frame_arr in enumerate(orig_frames):
+                  # 시각화: detector(pil) 사용 (stickwidth는 sed 패치로 적용됨)
                   pil = Image.fromarray(frame_arr)
                   pose_img, _ = detector(pil)
-                  pose_img.resize((W, H), Image.LANCZOS).save(f"{pose_frames_dir}/{i:05d}.png")
+                  pose_resized = pose_img.resize((W, H), Image.LANCZOS)
+                  _io_futures.append(_io_pool.submit(
+                      pose_resized.save, f"{pose_frames_dir}/{i:05d}.png"))
 
-                  # PR-2: Extract bbox/keypoints from DWPose internals
-                  if PERSON_BBOX_AND or HULL_MASK or FACE_EXCLUDE_MODE == "segformer+dwpose" or MASK_ENGINE == "sam2":
-                      bgr = cv2.cvtColor(frame_arr, cv2.COLOR_RGB2BGR)
-                      try:
-                          from src.dwpose.onnxdet import inference_detector as dwpose_detect_persons
-                          bboxes = dwpose_detect_persons(detector.pose_estimation.session_det, bgr)
-                          kps, scores = detector.pose_estimation(bgr)
-                          person_bboxes_all.append(bboxes)
-                          person_keypoints_all.append(kps)
-                          person_kp_scores_all.append(scores)
-                      except Exception as e:
-                          if i == 0:
-                              print(f"  ⚠ DWPose 내부 API 접근 실패: {e}")
-                              print(f"    → PERSON_BBOX_AND/HULL_MASK 비활성화됨")
-                              PERSON_BBOX_AND = False
-                              HULL_MASK = False
-                          person_bboxes_all.append(None)
-                          person_keypoints_all.append(None)
-                          person_kp_scores_all.append(None)
+                  # bbox/keypoints 추출 (SAM2 포인트 프롬프트 + person mask용)
+                  bgr = cv2.cvtColor(frame_arr, cv2.COLOR_RGB2BGR)
+                  try:
+                      bboxes = dwpose_detect_persons(detector.pose_estimation.session_det, bgr)
+                      kps, scores = detector.pose_estimation(bgr)
+                      person_bboxes_all.append(bboxes)
+                      person_keypoints_all.append(kps)
+                      person_kp_scores_all.append(scores)
+                  except Exception as e:
+                      if i == 0:
+                          print(f"  ⚠ DWPose 내부 API 접근 실패: {e}")
+                          print(f"    → PERSON_BBOX_AND/HULL_MASK 비활성화됨")
+                          PERSON_BBOX_AND = False
+                          HULL_MASK = False
+                      person_bboxes_all.append(None)
+                      person_keypoints_all.append(None)
+                      person_kp_scores_all.append(None)
 
                   if (i + 1) % 10 == 0:
                       print(f"  {i+1}/{n_frames} frames")
@@ -961,7 +987,7 @@ cells:
               os.makedirs(os.path.dirname(sw_file), exist_ok=True)
               with open(sw_file, "w") as f:
                   f.write(str(STICK_WIDTH))
-              print(f"  ✓ DWPose 완료 ({n_frames} frames, stickwidth={STICK_WIDTH})")
+              print(f"  ✓ DWPose 완료 ({n_frames} frames, stickwidth={STICK_WIDTH}, {_time.time()-_t1:.1f}s)")
 
               # ========== Step 1.5: Person mask 계산 (PR-2) ==========
               person_bbox_masks = []
@@ -984,9 +1010,45 @@ cells:
                       print(f"  ✓ DWPose hull masks: {n_frames}프레임 (expand_px={HULL_EXPAND_PX})")
 
               # ========== Step 2: 마스크 생성 (SAM2 / SegFormer) ==========
+              _t2 = _time.time()
               sam2_mode = (MASK_ENGINE == "sam2")
-              from scipy.ndimage import binary_dilation, binary_fill_holes, binary_closing
-              from scipy.ndimage import label as ndimage_label
+
+              # perf: OpenCV morphology (3-5x faster than scipy)
+              def cv2_dilate(mask, iterations=1):
+                  """binary_dilation replacement using cv2."""
+                  if iterations <= 0:
+                      return mask.copy()
+                  kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                  return cv2.dilate(mask.astype(np.uint8), kern, iterations=iterations)
+
+              def cv2_fill_holes(mask):
+                  """binary_fill_holes replacement using cv2.floodFill.
+                  Flood from ALL 4 corners to handle masks touching borders."""
+                  m = mask.astype(np.uint8)
+                  h, w = m.shape
+                  # Invert: background=255, mask=0
+                  inv = (255 - m * 255)
+                  flood = inv.copy()
+                  flood_mask = np.zeros((h + 2, w + 2), np.uint8)
+                  # Flood fill background from all 4 corners
+                  for seed in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
+                      if flood[seed[1], seed[0]] == 255:
+                          cv2.floodFill(flood, flood_mask, seed, 0)
+                  # Remaining 255 pixels in flood = interior holes
+                  holes = (flood == 255).astype(np.uint8)
+                  return m | holes
+
+              def cv2_closing(mask, kernel_size=3):
+                  """binary_closing replacement using cv2.morphologyEx."""
+                  kern = np.ones((kernel_size, kernel_size), np.uint8)
+                  return cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, kern)
+
+              def cv2_label(mask):
+                  """ndimage_label replacement using cv2.connectedComponents.
+                  Uses 4-connectivity to match scipy.ndimage.label default."""
+                  n_labels, labels = cv2.connectedComponents(
+                      mask.astype(np.uint8), connectivity=4)
+                  return labels, n_labels - 1  # subtract background label
 
               # Labels: 4=upper-clothes, 7=dress, 14=left-arm, 15=right-arm
               # 11=face, 1=hat, 2=hair, 17=scarf
@@ -1089,11 +1151,17 @@ cells:
 
               # ── SAM2 Image Predictor 퍼-프레임 ──
               if sam2_mode:
+                  _t_sam2 = _time.time()
                   print(f"\n[Step 2] SAM2 Image Predictor 마스크 생성...")
                   print(f"  model: {SAM2_MODEL}")
                   print(f"  INCLUDE_ARMS: {INCLUDE_ARMS}")
                   from sam2.sam2_image_predictor import SAM2ImagePredictor
                   sam2_predictor = SAM2ImagePredictor.from_pretrained(SAM2_MODEL)
+
+                  # perf: H100 — force FP16 for SAM2 ViT encoder (2-3x faster)
+                  if torch.cuda.is_available() and hasattr(sam2_predictor, 'model'):
+                      sam2_predictor.model = sam2_predictor.model.half()
+                      print(f"  → SAM2 FP16 모드 활성화")
 
                   # DWPose keypoint indices (wholebody 18-point format)
                   # 0=nose, 1=neck, 2=R_shoulder, 3=R_elbow, 4=R_wrist,
@@ -1106,7 +1174,8 @@ cells:
 
                   for i in range(n_frames):
                       img = orig_frames[i]
-                      sam2_predictor.set_image(img)
+                      with torch.autocast("cuda", dtype=torch.float16):
+                          sam2_predictor.set_image(img)
 
                       # Build positive/negative points from DWPose keypoints
                       pos_points = []
@@ -1153,11 +1222,12 @@ cells:
                       if pos_points:
                           all_points = np.array(pos_points + neg_points, dtype=np.float32)
                           labels = np.array([1]*len(pos_points) + [0]*len(neg_points), dtype=np.int32)
-                          masks_pred, scores_pred, _ = sam2_predictor.predict(
-                              point_coords=all_points,
-                              point_labels=labels,
-                              multimask_output=True,
-                          )
+                          with torch.autocast("cuda", dtype=torch.float16):
+                              masks_pred, scores_pred, _ = sam2_predictor.predict(
+                                  point_coords=all_points,
+                                  point_labels=labels,
+                                  multimask_output=True,
+                              )
                           best_idx = int(np.argmax(scores_pred))
                           mask = masks_pred[best_idx].astype(np.uint8)
                       else:
@@ -1196,12 +1266,13 @@ cells:
 
                   del sam2_predictor
                   torch.cuda.empty_cache()
-                  print(f"  ✓ SAM2 마스크 {n_frames}프레임 완료")
+                  _t_sam2_done = _time.time()
+                  print(f"  ✓ SAM2 마스크 {n_frames}프레임 완료 ({_t_sam2_done-_t_sam2:.1f}s)")
 
               # ── sam2_mode 후처리 오버라이드 ──
               if sam2_mode:
                   CONSENSUS_MODE = "off"
-                  DILATION_ITER = min(DILATION_ITER, 1)
+                  # DILATION_ITER: form 값 그대로 사용 (기본 3)
                   print(f"  [sam2_mode] CONSENSUS_MODE=off, DILATION_ITER={DILATION_ITER}")
 
               # ── SegFormer 레이블 진단 (segformer only) ──
@@ -1233,7 +1304,7 @@ cells:
                   scarf_added = 0
                   for i in range(n_frames):
                       if upper_masks[i].any():
-                          upper_dilated = binary_dilation(
+                          upper_dilated = cv2_dilate(
                               upper_masks[i], iterations=HOOD_MERGE_RADIUS).astype(np.uint8)
 
                           # A) hat(1) → upper 인접 hat → raw_masks에 합성
@@ -1288,7 +1359,7 @@ cells:
               median_mask = (stacked.mean(axis=0) >= 0.5).astype(np.uint8)
 
               # Largest connected component = 본인 의류
-              labeled, n_components = ndimage_label(median_mask)
+              labeled, n_components = cv2_label(median_mask)
               if n_components > 0:
                   comp_sizes = [np.sum(labeled == (c+1)) for c in range(n_components)]
                   largest_id = np.argmax(comp_sizes) + 1
@@ -1317,6 +1388,7 @@ cells:
               print(f"  컨센서스 마스크: {consensus.mean()*100:.1f}% coverage ({CONSENSUS_THRESHOLD*100:.0f}%+ threshold, mode={CONSENSUS_MODE})")
 
               # ========== Per-frame 마스크 생성 루프 ==========
+              _t_post = _time.time()
               mask_frames_dir = f"{USER_DIR}/_mask_frames/{sid}"
               os.makedirs(mask_frames_dir, exist_ok=True)
 
@@ -1377,10 +1449,10 @@ cells:
                   dump_mask(merged, debug_dir, "step2_consensus", i, DEBUG_DUMP)
 
                   # 크기 제한 hole fill: 작은 구멍만 채움 (팔↔몸통 틈은 보존)
-                  filled_full = binary_fill_holes(merged).astype(np.uint8)
+                  filled_full = cv2_fill_holes(merged).astype(np.uint8)
                   holes = filled_full - merged  # 채워진 구멍들
                   if holes.any() and FILL_HOLE_MAX_PCT > 0:
-                      hole_labeled, n_holes = ndimage_label(holes)
+                      hole_labeled, n_holes = cv2_label(holes)
                       mask_area = max(int(merged.sum()), 1)
                       max_hole_px = int(mask_area * FILL_HOLE_MAX_PCT / 100.0)
                       filled = merged.copy()
@@ -1397,8 +1469,7 @@ cells:
 
                   # PR-4: optional morphological closing
                   if MORPH_CLOSE_KERNEL > 0:
-                      struct = np.ones((MORPH_CLOSE_KERNEL, MORPH_CLOSE_KERNEL), dtype=np.uint8)
-                      filled = binary_closing(filled, structure=struct).astype(np.uint8)
+                      filled = cv2_closing(filled, kernel_size=MORPH_CLOSE_KERNEL)
 
                   dump_mask(filled, debug_dir, "step2_filled", i, DEBUG_DUMP)
 
@@ -1406,10 +1477,10 @@ cells:
                   if EDGE_DILATION:
                       gray = cv2.cvtColor(orig_frames[i], cv2.COLOR_RGB2GRAY)
                       edges = cv2.Canny(gray, EDGE_THRESHOLD, int(EDGE_THRESHOLD * 2.5))
-                      edge_barrier = binary_dilation(edges.astype(bool), iterations=1).astype(np.uint8)
+                      edge_barrier = cv2_dilate(edges.astype(bool), iterations=1).astype(np.uint8)
                       dilated = filled.copy()
                       for _step in range(EDGE_DILATION_MAX):
-                          candidates = binary_dilation(dilated, iterations=1).astype(np.uint8) - dilated
+                          candidates = cv2_dilate(dilated, iterations=1).astype(np.uint8) - dilated
                           candidates = candidates * (1 - edge_barrier)
                           if not candidates.any():
                               break
@@ -1417,7 +1488,7 @@ cells:
                       if i == 0:
                           print(f"  [frame 0] edge-aware dilation: {_step+1}/{EDGE_DILATION_MAX} steps (edge_threshold={EDGE_THRESHOLD})")
                   else:
-                      dilated = binary_dilation(filled, iterations=DILATION_ITER).astype(np.uint8)
+                      dilated = cv2_dilate(filled, iterations=DILATION_ITER).astype(np.uint8)
                   dump_mask(dilated, debug_dir, "step2_dilated", i, DEBUG_DUMP)
 
                   # PR-2: Person bbox AND — 배경 의류 제거
@@ -1431,7 +1502,7 @@ cells:
                   exclude_zone = np.zeros((H, W), dtype=np.uint8)
                   # SegFormer face label → 확장하여 목 커버
                   if face_masks[i].any():
-                      face_zone = binary_dilation(face_masks[i], iterations=NECK_MARGIN).astype(np.uint8)
+                      face_zone = cv2_dilate(face_masks[i], iterations=NECK_MARGIN).astype(np.uint8)
                       exclude_zone = np.maximum(exclude_zone, face_zone)
 
                   # PR-3: DWPose face keypoints → 타원 근사 (추가 제외)
@@ -1485,7 +1556,7 @@ cells:
 
                   # 최대 connected component만 유지 (의자 등 분리된 blob 제거)
                   if KEEP_LARGEST_BLOB and dilated.any():
-                      lbl, n_blobs = ndimage_label(dilated)
+                      lbl, n_blobs = cv2_label(dilated)
                       if n_blobs > 1:
                           blob_sizes = [int(np.sum(lbl == (b+1))) for b in range(n_blobs)]
                           keep_id = np.argmax(blob_sizes) + 1
@@ -1495,8 +1566,11 @@ cells:
                               print(f"  [frame 0] largest blob: kept 1/{n_blobs} blobs (removed {removed_px:,} px)")
 
                   final_masks.append(dilated)
-                  Image.fromarray((dilated * 255).astype(np.uint8)).convert('L').save(f"{mask_frames_dir}/{i:05d}.png")
+                  _io_futures.append(_io_pool.submit(
+                      _save_async, (dilated * 255).astype(np.uint8),
+                      f"{mask_frames_dir}/{i:05d}.png", 'L'))
 
+              _t_post_done = _time.time()
               _engine_label = "SAM2" if sam2_mode else "SegFormer"
               if EDGE_DILATION:
                   print(f"  ✓ {_engine_label} 마스크 {n_frames}프레임 완료 (edge_dilation={EDGE_DILATION_MAX}, edge_threshold={EDGE_THRESHOLD}, neck_margin={NECK_MARGIN})")
@@ -1559,7 +1633,7 @@ cells:
                   os.makedirs(unet_mask_dir, exist_ok=True)
                   for i in range(n_frames):
                       if UNET_EXTRA_DILATION > 0:
-                          unet_m = binary_dilation(
+                          unet_m = cv2_dilate(
                               final_masks[i], iterations=UNET_EXTRA_DILATION).astype(np.uint8)
                       else:
                           unet_m = final_masks[i].copy()
@@ -1576,8 +1650,8 @@ cells:
                           window = list(range(win_start, win_end + 1))
                           sm = np.median(np.stack([raw_masks[j] for j in window]), axis=0).astype(np.uint8)
                           mg = np.maximum(sm, consensus)
-                          fl = binary_fill_holes(mg).astype(np.uint8)
-                          comp_m = binary_dilation(fl, iterations=COMP_DILATION).astype(np.uint8)
+                          fl = cv2_fill_holes(mg).astype(np.uint8)
+                          comp_m = cv2_dilate(fl, iterations=COMP_DILATION).astype(np.uint8)
                           # Apply same exclusions
                           if PERSON_BBOX_AND and person_bbox_masks:
                               comp_m = comp_m * person_bbox_masks[i]
@@ -1585,7 +1659,7 @@ cells:
                               comp_m = comp_m * person_hull_masks[i]
                           exc = np.zeros((H, W), dtype=np.uint8)
                           if face_masks[i].any():
-                              exc = np.maximum(exc, binary_dilation(face_masks[i], iterations=NECK_MARGIN).astype(np.uint8))
+                              exc = np.maximum(exc, cv2_dilate(face_masks[i], iterations=NECK_MARGIN).astype(np.uint8))
                           if HAIR_EXCLUDE and hair_masks[i].any():
                               exc = np.maximum(exc, hair_masks[i])
                           comp_m = comp_m * (1 - exc)
@@ -1593,8 +1667,8 @@ cells:
                           comp_m = final_masks[i].copy()
                       # Seam band: smooth transition at mask boundary
                       if SEAM_BAND_PX > 0:
-                          outer = binary_dilation(comp_m, iterations=SEAM_BAND_PX).astype(np.uint8)
-                          inner = binary_dilation(1 - comp_m, iterations=SEAM_BAND_PX).astype(np.uint8)
+                          outer = cv2_dilate(comp_m, iterations=SEAM_BAND_PX).astype(np.uint8)
+                          inner = cv2_dilate(1 - comp_m, iterations=SEAM_BAND_PX).astype(np.uint8)
                           # band = dilated XOR eroded region
                           band = (outer * inner).astype(np.float32)
                           # Blur the band for smooth transition
@@ -1627,7 +1701,13 @@ cells:
                       -c:v libx264 -pix_fmt yuv420p -crf 18 "{mask_vid_path}" -loglevel warning
                   print(f"  ✓ {mask_vid_path}")
 
+              # perf: flush async I/O before Step 3 (mask PNGs must exist for ffmpeg)
+              for fut in _io_futures:
+                  fut.result()
+              _io_futures.clear()
+
               # ========== Step 3: DWPose 비디오 + Masked 비디오 ==========
+              _t3 = _time.time()
               print(f"\n[Step 3] DWPose + Masked 비디오 생성...")
 
               # DWPose 시각화 비디오 (Step 1에서 저장한 프레임 사용 — 재추론 불필요)
@@ -1646,12 +1726,30 @@ cells:
                   mask_binary = (mask_img > 127).astype(np.uint8)
                   masked = orig.copy()
                   masked[mask_binary == 1] = 128
-                  Image.fromarray(masked).save(f"{masked_frames_dir}/{i:04d}.png")
+                  _io_futures.append(_io_pool.submit(
+                      _save_async, masked, f"{masked_frames_dir}/{i:04d}.png"))
+              # flush before ffmpeg
+              for fut in _io_futures:
+                  fut.result()
+              _io_futures.clear()
               os.makedirs(f"{USER_DIR}/videos_masked", exist_ok=True)
               masked_vid_path = f"{USER_DIR}/videos_masked/{sid}.mp4"
               !ffmpeg -y -framerate {FPS} -i "{masked_frames_dir}/%04d.png" \
                   -c:v libx264 -pix_fmt yuv420p -crf 18 "{masked_vid_path}" -loglevel warning
               print(f"  ✓ {masked_vid_path}")
+
+          # perf: shutdown I/O pool
+          _io_pool.shutdown(wait=True)
+          _t3_done = _time.time()
+
+          # --- 타이밍 요약 ---
+          print(f"\n{'='*50}")
+          print(f"  Pipeline timing ({n_frames} frames)")
+          print(f"  Step 1 (DWPose):        {_t2 - _t1:.1f}s")
+          print(f"  Step 2 (SAM2 encode):   {_t_post - _t2:.1f}s")
+          print(f"  Post-processing:        {_t_post_done - _t_post:.1f}s")
+          print(f"  Step 3 (Video encode):  {_t3_done - _t3:.1f}s")
+          print(f"  Total:                  {_t3_done - _t_total:.1f}s")
 
           # --- 검증 ---
           print(f"\n{'='*50}")
@@ -1834,7 +1932,7 @@ cells:
           MASK_RESIZE_NEAREST = True  #@param {type:"boolean"}
           USE_COMP_MASK_REPAINT = False  #@param {type:"boolean"}
 
-          import os, re, shutil, subprocess
+          import os, re, shutil, subprocess, sys, time, importlib
           USER_DIR = "/content/user_data"
           USER_OUT = "/content/user_output"
 
@@ -1885,23 +1983,91 @@ cells:
           with open(inf_path, 'w') as f:
               f.write(code)
 
-          # 이전 결과 정리 (이전 실행 결과와 혼동 방지)
+          # --- 2. 모델 캐싱: 파이프라인 보존 + 패치된 모듈 재로드 ---
+          _cached_pipeline = None
+          if '_swifttry_controller' in globals():
+              _ctrl = globals()['_swifttry_controller']
+              if _ctrl is not None and hasattr(_ctrl, 'pipeline') and _ctrl.pipeline is not None:
+                  _cached_pipeline = _ctrl.pipeline
+                  print(f"  ✓ 캐시된 파이프라인 발견 — 모델 로딩 건너뜀")
+
+          # sys.path에 SwiftTry 추가 (중복 방지)
+          _swifttry_root = "/content/SwiftTry"
+          if _swifttry_root not in sys.path:
+              sys.path.insert(0, _swifttry_root)
+
+          # 패치된 inference.py 모듈 (재)로드
+          if 'inference' in sys.modules:
+              del sys.modules['inference']
+          import inference as _swifttry_inf
+
+          # 컨트롤러 생성 + 캐시 파이프라인 이식
+          _config_path = os.path.join(_swifttry_root,
+                                      "configs/prompts/tryon_video_tiktok.yaml")
+          _swifttry_controller = _swifttry_inf.TryOnController(_config_path)
+          if _cached_pipeline is not None:
+              _swifttry_controller.pipeline = _cached_pipeline
+              print(f"  ✓ 파이프라인 이식 완료 — GPU 모델 재사용")
+
+          # --- 3. 이전 결과 정리 ---
           if os.path.exists(USER_OUT):
               shutil.rmtree(USER_OUT)
           os.makedirs(USER_OUT, exist_ok=True)
 
-          # test_pairs.txt 확인 (디버깅용)
+          # test_pairs.txt 확인
           print(f"\ntest_pairs.txt:")
-          !cat "{USER_DIR}/test_pairs.txt"
+          with open(f"{USER_DIR}/test_pairs.txt") as _f:
+              _pairs_content = _f.read().strip()
+              print(_pairs_content)
           print()
 
-          !cd /content/SwiftTry && PYTHONPATH=/content/SwiftTry python inference.py \
-              --data_dir "{USER_DIR}" \
-              --test_pairs "{USER_DIR}/test_pairs.txt" \
-              --save_dir "{USER_OUT}"
+          # --- 4. 추론 실행 (inline — 모델 GPU 상주) ---
+          _t_inf_start = time.time()
+          _prev_cwd = os.getcwd()
+          os.chdir(_swifttry_root)  # config 내 상대 경로 해석용
 
-          # 결과 표시
-          import os, glob
+          try:
+              test_pairs = [p.split() for p in _pairs_content.split('\n') if p.strip()]
+              for video_id, cloth_id in test_pairs:
+                  cloth_path = os.path.join(USER_DIR, "garments", cloth_id)
+                  cloth_name = os.path.basename(cloth_path)
+
+                  canvas_path = os.path.join(USER_OUT, 'canvas',
+                                             f"{video_id}-{cloth_name}.mp4")
+                  if os.path.exists(canvas_path):
+                      print(f"  ⏭ {video_id}-{cloth_name}.mp4 이미 처리됨")
+                      continue
+
+                  print(f"  ▶ 추론 시작: {video_id} × {cloth_id}")
+                  _t_pair = time.time()
+
+                  out_path = _swifttry_controller.tryon_video(
+                      ref_cloth_image=cloth_path,
+                      video_path=os.path.join(USER_DIR, "videos", video_id),
+                      masked_video_path=os.path.join(USER_DIR, "videos_masked",
+                                                     video_id),
+                      mask_video_path=os.path.join(USER_DIR, "videos_mask",
+                                                   video_id),
+                      pose_video_path=os.path.join(USER_DIR, "videos_dwpose",
+                                                   video_id),
+                      clip_length=10000,
+                      repaint=True,
+                      save_dir=USER_OUT,
+                      overlap_value=0,
+                  )
+                  print(f"    ✓ 완료 ({time.time()-_t_pair:.1f}s) → {out_path}")
+          finally:
+              os.chdir(_prev_cwd)
+
+          _t_inf_total = time.time() - _t_inf_start
+          print(f"\n✓ 전체 추론 완료 ({_t_inf_total:.1f}s)")
+          if _cached_pipeline is not None:
+              print(f"  (캐시된 모델 사용 — 로딩 시간 절약)")
+          else:
+              print(f"  (첫 실행 — 다음부터 모델 캐시 사용)")
+
+          # --- 5. 결과 표시 ---
+          import glob
           from IPython.display import HTML, display
           from base64 import b64encode
           from PIL import Image

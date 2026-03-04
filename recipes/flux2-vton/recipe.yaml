@@ -1,0 +1,31 @@
+name: flux2-vton
+version: "0.1.0"
+description: >
+  FLUX.2 Klein 9B Virtual Try-On with FITSPEC Prompt Engineering.
+  Uses cm-level size chart data + fit profiles to control garment fit
+  via pure prompt engineering — no masking/segmentation needed.
+
+model:
+  base: black-forest-labs/FLUX.2-klein-9B
+  lora: fal/flux-klein-9b-virtual-tryon-lora
+  text_encoder: Qwen3-8B (sentencepiece)
+
+runtime:
+  gpu: A100-80GB
+  vram_estimate: ~40GB
+  precision: bfloat16
+
+# Which requirements file to use (opt1 = bleeding edge, opt2 = stable)
+requirements: requirements_opt1.txt
+
+# Entry point
+main: run.sh
+
+# Colab notebook generation
+notebook_manifest: notebook_manifest.yaml
+
+# Docs triad (SSOT)
+docs:
+  plan: docs/plan.md
+  context: docs/context.md
+  tasks: docs/tasks.md

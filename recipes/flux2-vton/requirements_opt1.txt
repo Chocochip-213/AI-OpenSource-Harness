@@ -1,0 +1,9 @@
+# Option 1: diffusers git HEAD (bleeding edge)
+# Required when Flux2KleinPipeline is not yet in stable PyPI release
+git+https://github.com/huggingface/diffusers.git
+transformers>=4.47.0
+accelerate>=1.2.0
+sentencepiece
+protobuf
+safetensors
+peft>=0.14.0

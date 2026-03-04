@@ -1,0 +1,1835 @@
+title: "FLUX.2 Klein 9B — Virtual Try-On with Size Control"
+
+cells:
+  # ================================================================
+  # HEADER — Title Banner + Global Settings
+  # ================================================================
+  - type: markdown
+    source: |
+      # FLUX.2 Klein 9B — Virtual Try-On with Size Control
+
+      **두 가지 파이프라인** (Global Settings에서 `PIPELINE` 선택):
+
+      | Pipeline | 방식 | 장점 | 단점 |
+      |----------|------|------|------|
+      | **A** — Prompt-Only | multi-reference + FITSPEC v4 프롬프트 | 빠름, 마스크 없음 | 사이즈 제어 불가 (테스트용) |
+      | **D** — Two-Pass VTON | Pass 1(품질 VTON) → 마스크 확장 → Pass 2(사이즈 제어) | **마스크 기반 사이즈 강제** | 2x 추론 시간 |
+
+      - **Base**: `black-forest-labs/FLUX.2-klein-9B` (9B params, 4-step distilled)
+      - **LoRA**: `fal/flux-klein-9b-virtual-tryon-lora` (동일 아키텍처, 호환)
+      - **GPU**: A100 80GB 권장
+
+      ---
+
+  - type: code
+    source: |
+      #@title Global Settings { run: "auto" }
+
+      #@markdown ### Pipeline 선택
+      PIPELINE = "D"  #@param ["A", "D"] {type:"string"}
+      #@markdown - **A**: Prompt-Only (FITSPEC v4, 마스크 없음, 빠른 테스트용)
+      #@markdown - **D**: Two-Pass (품질 VTON → 마스크 확장 → 사이즈 제어) ← **주력**
+
+      USE_LORA = True   #@param {type:"boolean"}
+      LORA_SCALE = 1.0  #@param {type:"slider", min:0.0, max:1.5, step:0.1}
+      SEED = 42         #@param {type:"integer"}
+
+      print(f">>> PIPELINE={PIPELINE}, USE_LORA={USE_LORA}, LORA_SCALE={LORA_SCALE}, SEED={SEED}")
+
+  # ================================================================
+  # A) GPU Check & VRAM Verification
+  # ================================================================
+  - type: markdown
+    source: |
+      ## A. GPU & VRAM Check
+      RTX 6000 Blackwell 96GB / A100 80GB 권장. 40GB GPU에서는 CPU offload fallback.
+
+  - type: code
+    source: |
+      #@title A. GPU Check
+      !nvidia-smi
+
+      import torch, sys, platform
+      print(f"\nPython {sys.version}")
+      if torch.cuda.is_available():
+          gpu_name = torch.cuda.get_device_name(0)
+          vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+          print(f"PyTorch {torch.__version__}  CUDA {torch.version.cuda}")
+          print(f"GPU: {gpu_name}  VRAM: {vram_gb:.1f} GB")
+          if vram_gb < 40:
+              print("⚠️ VRAM < 40GB — CPU offload will be enabled automatically")
+          else:
+              print("✓ Sufficient VRAM for full GPU inference")
+      else:
+          raise RuntimeError("No GPU detected! Enable GPU runtime: Runtime → Change runtime type → A100")
+
+  # ================================================================
+  # B) Flux2KleinPipeline Probe → Auto-Upgrade → Deps Install
+  # ================================================================
+  - type: markdown
+    source: |
+      ## B. Install Dependencies
+      `Flux2KleinPipeline`이 stable PyPI에 없을 수 있으므로,
+      probe → upgrade → Colab 재시작 패턴을 사용합니다.
+
+  - type: code
+    source: |
+      #@title B. Probe & Install diffusers + deps
+      import importlib, subprocess, sys, os
+
+      def pip_install(*args):
+          subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *args])
+
+      # Step 1: Probe Flux2KleinPipeline
+      _need_restart = False
+      try:
+          from diffusers import Flux2KleinPipeline
+          print(f"✓ Flux2KleinPipeline found in diffusers {importlib.metadata.version('diffusers')}")
+      except ImportError:
+          print("Flux2KleinPipeline not in current diffusers — installing git HEAD...")
+          pip_install("git+https://github.com/huggingface/diffusers.git")
+          _need_restart = True
+
+      # Step 2: Install additional deps
+      for pkg in ["transformers>=4.47.0", "accelerate>=1.2.0", "sentencepiece",
+                   "protobuf", "safetensors", "peft>=0.14.0"]:
+          pip_install(pkg)
+      print("✓ Additional dependencies installed")
+
+      # Step 3: Restart if diffusers was upgraded
+      if _need_restart:
+          print("\n🔄 Restarting runtime to pick up new diffusers...")
+          import signal
+          os.kill(os.getpid(), signal.SIGKILL)
+      else:
+          # Verify after install
+          from diffusers import Flux2KleinPipeline
+          print(f"\n✓ All ready — diffusers {importlib.metadata.version('diffusers')}")
+
+  # ================================================================
+  # C) HuggingFace Authentication
+  # ================================================================
+  - type: markdown
+    source: |
+      ## C. HuggingFace Authentication
+      FLUX.2 Klein 9B는 gated model — HF 토큰이 필요합니다.
+      Colab Secrets에 `HF_TOKEN`을 등록하세요.
+
+  - type: code
+    source: |
+      #@title C. HuggingFace Login
+      import os
+
+      # Try Colab Secrets first
+      try:
+          from google.colab import userdata
+          hf_token = userdata.get("HF_TOKEN")
+          print("✓ HF_TOKEN loaded from Colab Secrets")
+      except Exception:
+          hf_token = os.environ.get("HF_TOKEN", "")
+          if hf_token:
+              print("✓ HF_TOKEN loaded from environment")
+          else:
+              print("⚠️ No HF_TOKEN found — enter manually below")
+              hf_token = input("HF Token: ").strip()
+
+      if not hf_token:
+          raise ValueError("HF_TOKEN required for gated model access")
+
+      os.environ["HF_TOKEN"] = hf_token
+
+      from huggingface_hub import login
+      login(token=hf_token)
+      print("✓ Logged in to HuggingFace Hub")
+
+  # ================================================================
+  # D) Image Upload — Person + Garment
+  # ================================================================
+  - type: markdown
+    source: |
+      ## D. Image Upload
+      - **D-1**: Person image (기준 사이즈 착용)
+      - **D-2**: Garment image (입히고 싶은 옷 제품사진)
+
+  - type: code
+    source: |
+      #@title D-1. Person Image Upload
+      from PIL import Image
+      from IPython.display import display
+      import os
+
+      #@markdown 직접 경로 입력 또는 파일 업로드:
+      PERSON_IMAGE_PATH = ""  #@param {type:"string"}
+
+      if PERSON_IMAGE_PATH and os.path.exists(PERSON_IMAGE_PATH):
+          person_image = Image.open(PERSON_IMAGE_PATH).convert("RGB")
+          print(f"✓ Loaded from path: {PERSON_IMAGE_PATH}")
+      else:
+          from google.colab import files
+          print("Person image를 업로드하세요 (정면 전신 사진 권장):")
+          uploaded = files.upload()
+          fname = list(uploaded.keys())[0]
+          person_image = Image.open(fname).convert("RGB")
+          PERSON_IMAGE_PATH = fname
+          print(f"✓ Uploaded: {fname}")
+
+      print(f"  Size: {person_image.size}")
+      display(person_image.resize((384, 512)))
+
+  - type: code
+    source: |
+      #@title D-2. Garment Image Upload
+      from PIL import Image
+      from IPython.display import display
+      import os
+
+      #@markdown 직접 경로 입력 또는 파일 업로드:
+      GARMENT_IMAGE_PATH = ""  #@param {type:"string"}
+
+      if GARMENT_IMAGE_PATH and os.path.exists(GARMENT_IMAGE_PATH):
+          garment_image = Image.open(GARMENT_IMAGE_PATH).convert("RGB")
+          print(f"✓ Loaded from path: {GARMENT_IMAGE_PATH}")
+      else:
+          from google.colab import files
+          print("Garment image를 업로드하세요 (옷 제품사진, 흰 배경 권장):")
+          uploaded = files.upload()
+          fname = list(uploaded.keys())[0]
+          garment_image = Image.open(fname).convert("RGB")
+          GARMENT_IMAGE_PATH = fname
+          print(f"✓ Uploaded: {fname}")
+
+      print(f"  Size: {garment_image.size}")
+      display(garment_image.resize((384, 512)))
+
+  # ================================================================
+  # E) FITSPEC + build_fitspec_prompt()
+  # ================================================================
+  - type: markdown
+    source: |
+      ## E. FITSPEC v4 — Body-Garment Ratio Semantic Engine
+
+      **인체 치수 + 의류 실측 → 비율(ratio) → 패션 시각 현상 자동 번역**
+
+      v1~v3 교훈:
+      - v1: cm 절대값 직접 전달 → AI가 수치를 시각화 못함 (NeurIPS 2024)
+      - v2: 랜드마크("5cm past shoulder") → cm 잔존, 프롬프트 비대(400자+)
+      - v3: 패션 어휘 하드코딩 → 사이즈별 고정 묘사, 개인 체형 반영 불가
+
+      **v4 혁신: 인체 대비 의류 비율(ratio) 기반 동적 생성**
+      - 어깨너비 45cm 사람 + 어깨 64cm 옷 → ratio 1.42 → "극단적 드롭숄더"
+      - 가슴둘레 95cm 사람 + 가슴단면 66.5cm(×2=133cm) 옷 → ease 38cm → "텐트형 실루엣"
+      - 키 175cm 사람 + 총장 73cm 옷 → 체고비 0.42 → "hem at mid-hip"
+
+      Qwen3 연구 기반 원칙:
+      1. **자연어 서술** > 키워드 나열 (Qwen3는 LLM — 문맥 이해)
+      2. **앞에 오는 단어가 더 강함** (decoder-only positional bias)
+      3. **패션 레지스터 영어** (잡지/이커머스 어휘)
+      4. **100단어 이내** (Klein 최적, Qwen3 512토큰)
+      5. **negative prompt 없음** (FLUX.2 미지원)
+      6. **JSON = 시맨틱 앵커** (Qwen3가 구조화 데이터 이해, 프롬프트에는 자연어 출력)
+
+  - type: code
+    source: |
+      #@title E-1. Body Measurements — 인체 치수 입력
+      #@markdown ### 착용자 신체 측정값 (cm/kg)
+      #@markdown 정확한 값을 모르면 대략적인 추정치도 OK.
+      #@markdown 비율(ratio) 계산에 사용되므로 상대적 정확도가 중요.
+
+      BODY_HEIGHT_CM = 175  #@param {type:"number"}
+      BODY_WEIGHT_KG = 70  #@param {type:"number"}
+      BODY_SHOULDER_WIDTH_CM = 45  #@param {type:"number"}
+      BODY_SHOULDER_CIRC_CM = 110  #@param {type:"number"}
+      BODY_CHEST_CIRC_CM = 95  #@param {type:"number"}
+      BODY_HIP_WIDTH_CM = 33  #@param {type:"number"}
+      BODY_HIP_CIRC_CM = 95  #@param {type:"number"}
+      BODY_ARM_LENGTH_CM = 60  #@param {type:"number"}
+      BODY_LEG_LENGTH_CM = 80  #@param {type:"number"}
+      BODY_TORSO_LENGTH_CM = 45  #@param {type:"number"}
+      BODY_INSEAM_CM = 75  #@param {type:"number"}
+
+      BODY = {
+          "height": BODY_HEIGHT_CM,
+          "weight": BODY_WEIGHT_KG,
+          "shoulder_width": BODY_SHOULDER_WIDTH_CM,
+          "shoulder_circ": BODY_SHOULDER_CIRC_CM,
+          "chest_circ": BODY_CHEST_CIRC_CM,
+          "hip_width": BODY_HIP_WIDTH_CM,
+          "hip_circ": BODY_HIP_CIRC_CM,
+          "arm_length": BODY_ARM_LENGTH_CM,
+          "leg_length": BODY_LEG_LENGTH_CM,
+          "torso_length": BODY_TORSO_LENGTH_CM,
+          "inseam": BODY_INSEAM_CM,
+      }
+
+      # BMI for build descriptor
+      bmi = BODY_WEIGHT_KG / (BODY_HEIGHT_CM / 100) ** 2
+      if bmi < 18.5:
+          build_desc = "slim"
+      elif bmi < 23:
+          build_desc = "average"
+      elif bmi < 27:
+          build_desc = "athletic"
+      else:
+          build_desc = "broad"
+      BODY["build"] = build_desc
+
+      print("Body measurements:")
+      for k, v in BODY.items():
+          unit = "kg" if k == "weight" else ("" if k == "build" else "cm")
+          print(f"  {k:20s}: {v} {unit}")
+      print(f"\n  BMI: {bmi:.1f} -> build: {build_desc}")
+
+  - type: code
+    source: |
+      #@title E-2. Garment Size Chart — 의류 실측 데이터
+      #@markdown ### 타겟 사이즈 선택
+      TARGET_SIZE = "XL(105)"  #@param ["M(95)", "L(100)", "XL(105)", "2XL(110-115)"] {type:"string"}
+
+      #@markdown ### 의류 종류 (프롬프트에 명시됨 — 정확히 선택!)
+      GARMENT_TYPE = "hoodie"  #@param ["hoodie", "t-shirt", "sweatshirt", "jacket", "cardigan", "shirt", "polo", "sweater", "vest", "coat"] {type:"string"}
+
+      #@markdown ### 의류 실측 데이터 (무신사 등 사이즈표에서 수집)
+      #@markdown 각 사이즈별 cm 실측. 실제 제품에 맞게 수정하세요.
+
+      GARMENT_SIZES = {
+          "M(95)": {
+              "total_length": 69,
+              "shoulder_width": 60,
+              "chest_width_flat": 62.5,
+              "sleeve_length": 56,
+          },
+          "L(100)": {
+              "total_length": 71,
+              "shoulder_width": 62,
+              "chest_width_flat": 64.5,
+              "sleeve_length": 58,
+          },
+          "XL(105)": {
+              "total_length": 73,
+              "shoulder_width": 64,
+              "chest_width_flat": 66.5,
+              "sleeve_length": 60,
+          },
+          "2XL(110-115)": {
+              "total_length": 75,
+              "shoulder_width": 66,
+              "chest_width_flat": 68.5,
+              "sleeve_length": 62,
+          },
+      }
+
+      # Fit profile per size (드레이프/질감 제어)
+      FIT_PROFILES = {
+          "skinny":    {"handfeel": "soft",           "stretch": "high",  "sheerness": "noticeable", "thickness": "thin",           "season": "spring/summer"},
+          "slim":      {"handfeel": "slightly soft",  "stretch": "some",  "sheerness": "slight",     "thickness": "slightly thin",  "season": "summer"},
+          "regular":   {"handfeel": "normal",         "stretch": "normal","sheerness": "none",       "thickness": "normal",         "season": "all-season"},
+          "relaxed":   {"handfeel": "slightly stiff", "stretch": "low",   "sheerness": "none",       "thickness": "slightly thick", "season": "fall/winter"},
+          "oversized": {"handfeel": "stiff",          "stretch": "none",  "sheerness": "none",       "thickness": "thick",          "season": "winter"},
+      }
+
+      # Auto-map size to fit profile
+      SIZE_TO_FIT = {
+          "M(95)":        "regular",
+          "L(100)":       "relaxed",
+          "XL(105)":      "oversized",
+          "2XL(110-115)": "oversized",
+      }
+      FIT_CATEGORY = SIZE_TO_FIT.get(TARGET_SIZE, "regular")
+
+      FITSPEC = {
+          "body": BODY,
+          "garment_type": GARMENT_TYPE,
+          "garment_sizes": GARMENT_SIZES,
+          "target_size": TARGET_SIZE,
+          "fit_category": FIT_CATEGORY,
+          "fit_profiles": FIT_PROFILES,
+          "size_to_fit": SIZE_TO_FIT,
+      }
+
+      # Show body-garment ratios for target size
+      g = GARMENT_SIZES[TARGET_SIZE]
+      print(f"Target: {TARGET_SIZE} (fit: {FIT_CATEGORY})")
+      print(f"\nBody vs Garment ratios:")
+      shoulder_ratio = g["shoulder_width"] / BODY["shoulder_width"]
+      chest_ease = (g["chest_width_flat"] * 2) - BODY["chest_circ"]
+      length_to_torso = g["total_length"] / BODY["torso_length"]
+      sleeve_to_arm = g["sleeve_length"] / BODY["arm_length"]
+      print(f"  Shoulder: garment {g['shoulder_width']}cm / body {BODY['shoulder_width']}cm = {shoulder_ratio:.2f}x")
+      print(f"  Chest ease: garment flat {g['chest_width_flat']}cm x2={g['chest_width_flat']*2}cm - body {BODY['chest_circ']}cm = +{chest_ease:.0f}cm")
+      print(f"  Length/torso: {g['total_length']}cm / {BODY['torso_length']}cm = {length_to_torso:.2f}x")
+      print(f"  Sleeve/arm: {g['sleeve_length']}cm / {BODY['arm_length']}cm = {sleeve_to_arm:.2f}x")
+
+  - type: code
+    source: |
+      #@title E-3. build_fitspec_prompt() v4 — Body-Garment Ratio Prompt Builder
+
+      def build_fitspec_prompt(fitspec, size_override=None):
+          """Build prompt from body-garment ratio analysis.
+
+          v4 approach (Qwen3 + FLUX.2 optimized):
+          1. Calculate body-garment ratios (shoulder, chest, length, sleeve)
+          2. Map ratios to fashion visual descriptors dynamically
+          3. Add fabric behavior from fit_profile (drape, stretch, thickness)
+          4. Output natural-language prose, fit category FIRST
+          5. Under 100 words (Qwen3 512-token / Klein optimal)
+          6. No negative prompt (FLUX.2 unsupported)
+          7. No raw cm numbers in prompt (ratio -> visual cue only)
+
+          Returns: prompt string.
+          """
+          body = fitspec["body"]
+          size = size_override or fitspec["target_size"]
+          g = fitspec["garment_sizes"][size]
+          fit_key = fitspec["size_to_fit"].get(size, "regular")
+          fp = fitspec["fit_profiles"][fit_key]
+
+          # --- 1. Ratio calculations ---
+          shoulder_ratio = g["shoulder_width"] / body["shoulder_width"]
+          chest_ease = (g["chest_width_flat"] * 2) - body["chest_circ"]
+          length_ratio = g["total_length"] / body["torso_length"]
+          sleeve_ratio = g["sleeve_length"] / body["arm_length"]
+
+          # --- 2. Shoulder cue ---
+          if shoulder_ratio >= 1.40:
+              shoulder_cue = "extreme drop-shoulder with seams falling to mid-upper-arm"
+          elif shoulder_ratio >= 1.30:
+              shoulder_cue = "prominent drop-shoulder falling well past natural shoulder line"
+          elif shoulder_ratio >= 1.15:
+              shoulder_cue = "slightly dropped shoulders with relaxed shoulder seam"
+          elif shoulder_ratio >= 1.0:
+              shoulder_cue = "shoulders sitting at natural shoulder point"
+          else:
+              shoulder_cue = "narrow fitted shoulders hugging the frame tightly"
+
+          # --- 3. Chest/torso cue ---
+          if chest_ease >= 35:
+              chest_cue = "massive tent-like volume around torso, fabric billowing dramatically away from body"
+          elif chest_ease >= 20:
+              chest_cue = "boxy silhouette with visible excess fabric floating around torso"
+          elif chest_ease >= 10:
+              chest_cue = "comfortable ease with fabric gently skimming the torso"
+          elif chest_ease >= 0:
+              chest_cue = "garment following body contour closely with clean lines"
+          else:
+              chest_cue = "skin-tight chest with fabric clinging to every contour, tension wrinkles visible"
+
+          # --- 4. Hem length cue ---
+          if length_ratio >= 1.65:
+              hem_cue = "extra-long hem reaching mid-thigh"
+          elif length_ratio >= 1.55:
+              hem_cue = "elongated hem falling past hip crease"
+          elif length_ratio >= 1.45:
+              hem_cue = "hem at hip level"
+          else:
+              hem_cue = "cropped hem sitting above hip bone"
+
+          # --- 5. Sleeve cue ---
+          if sleeve_ratio >= 1.05:
+              sleeve_cue = "sleeves extending past wrist, partially covering hands"
+          elif sleeve_ratio >= 0.95:
+              sleeve_cue = "sleeves reaching the wrist"
+          elif sleeve_ratio >= 0.80:
+              sleeve_cue = "sleeves ending at mid-forearm"
+          else:
+              sleeve_cue = "short sleeves above the elbow"
+
+          # --- 6. Fabric behavior from fit profile ---
+          fabric_parts = []
+          if fp["thickness"] in ("thick", "slightly thick"):
+              fabric_parts.append("heavy structured fabric holding its shape")
+          elif fp["thickness"] == "thin":
+              fabric_parts.append("lightweight fabric draping softly")
+          if fp["stretch"] in ("high", "some"):
+              fabric_parts.append("stretchy material conforming to body movement")
+          if fp["handfeel"] == "stiff":
+              fabric_parts.append("stiff canvas-like material with minimal drape")
+          fabric_cue = ", ".join(fabric_parts) if fabric_parts else ""
+
+          # --- 7. Garment type (critical — prevents garment drift) ---
+          gtype = fitspec.get("garment_type", "garment")
+
+          # --- 8. Assemble prompt ---
+          # Structure: [TRYON + garment type] [fit] [visual cues] [preserve]
+          # Garment type FIRST (Qwen3 positional bias — most important token earliest)
+          # Keep under 80 words for Klein optimal performance
+          parts = [
+              f"TRYON the same person wearing the reference {gtype} in {fit_key} fit.",
+              f"{shoulder_cue}, {chest_cue}.",
+              f"{hem_cue}, {sleeve_cue}.",
+          ]
+          if fabric_cue:
+              parts.append(f"{fabric_cue}.")
+          parts.append(f"The {gtype} is fully worn on the body, properly fitted.")
+          parts.append("Preserve exact face, hairstyle, pants, shoes, background, and pose.")
+
+          prompt = " ".join(parts)
+          return prompt
+
+      # --- Test: show prompt + ratios for all sizes ---
+      print("=" * 70)
+      print("FITSPEC v4 — Body-Garment Ratio Prompts")
+      print("=" * 70)
+      for sz in ["M(95)", "L(100)", "XL(105)", "2XL(110-115)"]:
+          g = FITSPEC["garment_sizes"][sz]
+          fit = FITSPEC["size_to_fit"].get(sz, "regular")
+          sr = g["shoulder_width"] / BODY["shoulder_width"]
+          ce = (g["chest_width_flat"] * 2) - BODY["chest_circ"]
+          prompt = build_fitspec_prompt(FITSPEC, size_override=sz)
+          wc = len(prompt.split())
+          print(f"\n[{sz}] fit={fit}, shoulder={sr:.2f}x, ease=+{ce:.0f}cm, {wc} words:")
+          print(f"  {prompt[:200]}...")
+      print(f"\n--- Current target: {TARGET_SIZE} ---")
+      print(build_fitspec_prompt(FITSPEC))
+
+  # ================================================================
+  # F) Model Loading — Flux2KleinPipeline + LoRA
+  # ================================================================
+  - type: markdown
+    source: |
+      ## F. Load Model
+      Flux2KleinPipeline + VTON LoRA 로딩. LoRA는 fuse하여 추론 최적화.
+
+      > ⚠️ LoRA ON/OFF 전환 시 이 셀을 다시 실행하세요.
+
+  - type: code
+    source: |
+      #@title F. Load Flux2KleinPipeline + LoRA
+      if PIPELINE not in ("A", "D"):
+          print(">>> Skipped (unsupported pipeline)")
+      else:
+          import torch, gc, time
+
+          t0 = time.time()
+
+          from diffusers import Flux2KleinPipeline
+
+          MODEL_ID = "black-forest-labs/FLUX.2-klein-9B"
+          LORA_ID = "fal/flux-klein-9b-virtual-tryon-lora"
+
+          print(f"Loading {MODEL_ID}...")
+          pipe = Flux2KleinPipeline.from_pretrained(
+              MODEL_ID,
+              torch_dtype=torch.bfloat16,
+          )
+
+          # GPU placement with OOM fallback
+          vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+          if vram_gb >= 40:
+              pipe = pipe.to("cuda")
+              print(f"✓ Pipeline on CUDA (VRAM: {vram_gb:.1f} GB)")
+          else:
+              pipe.enable_model_cpu_offload()
+              print(f"⚠️ CPU offload enabled (VRAM: {vram_gb:.1f} GB < 40GB)")
+
+          # LoRA loading
+          if USE_LORA:
+              print(f"\nLoading LoRA: {LORA_ID} (scale={LORA_SCALE})...")
+              try:
+                  pipe.load_lora_weights(LORA_ID, weight_name="flux-klein-tryon.safetensors")
+                  print("  ✓ load_lora_weights OK")
+              except Exception as e1:
+                  print(f"  load_lora_weights failed: {e1}")
+                  print("  Trying load_attn_procs fallback...")
+                  try:
+                      pipe.unet.load_attn_procs(LORA_ID)
+                      print("  ✓ load_attn_procs fallback OK")
+                  except Exception as e2:
+                      print(f"  ⚠️ LoRA load failed entirely: {e2}")
+                      print("  Continuing without LoRA")
+                      USE_LORA = False
+
+              if USE_LORA:
+                  # Fuse LoRA into base weights for speed
+                  pipe.fuse_lora(lora_scale=LORA_SCALE)
+                  pipe.unload_lora_weights()
+                  print(f"  ✓ LoRA fused (scale={LORA_SCALE}) + weights unloaded")
+          else:
+              print("\nLoRA disabled — using base model only")
+
+          gc.collect()
+          torch.cuda.empty_cache()
+
+          elapsed = time.time() - t0
+          vram_used = torch.cuda.memory_allocated() / 1e9
+          print(f"\n✓ Model ready in {elapsed:.1f}s  |  VRAM used: {vram_used:.1f} GB")
+
+  # ================================================================
+  # G) Single Inference
+  # ================================================================
+  - type: markdown
+    source: |
+      ## G. Single Try-On Inference
+      Person + Garment + FITSPEC → 결과 이미지 생성.
+
+  - type: code
+    source: |
+      #@title G. Run Inference (v4 Body-Garment Ratio Prompt)
+      if PIPELINE != "A":
+          print(">>> Skipped (Pipeline D uses Q-2 for Pass 1)")
+      else:
+          import torch, time, inspect
+          from PIL import Image
+          from IPython.display import display
+
+          #@markdown ### Inference Settings (증류: 4-8 steps / LoRA: 20-30 steps)
+          NUM_STEPS = 28  #@param {type:"slider", min:4, max:50, step:1}
+          GUIDANCE = 4.0  #@param {type:"slider", min:1.0, max:10.0, step:0.5}
+
+          # 3rd ref = person image itself (preserves pants — gray placeholder causes pants removal)
+          blank_bottom = person_image
+
+          # Build v4 prompt (body-garment ratio based)
+          prompt = build_fitspec_prompt(FITSPEC)
+          print(f"Prompt ({len(prompt.split())} words): {prompt[:100]}...")
+
+          # Detect supported kwargs
+          sig = inspect.signature(pipe.__call__)
+          supported_params = set(sig.parameters.keys())
+
+          # Match output resolution to person image aspect ratio
+          pw, ph = person_image.size
+          max_dim = 1024
+          scale = max_dim / max(pw, ph)
+          out_w = int(pw * scale) // 8 * 8  # must be multiple of 8
+          out_h = int(ph * scale) // 8 * 8
+          print(f"Output resolution: {out_w}x{out_h} (from input {pw}x{ph})")
+
+          kwargs = dict(
+              prompt=prompt,
+              image=[person_image, garment_image, blank_bottom],
+              height=out_h,
+              width=out_w,
+              num_inference_steps=NUM_STEPS,
+              guidance_scale=GUIDANCE,
+              generator=torch.Generator("cuda").manual_seed(SEED),
+          )
+          if "max_sequence_length" in supported_params:
+              kwargs["max_sequence_length"] = 512
+
+          print(f"Running: {NUM_STEPS} steps, guidance={GUIDANCE}")
+
+          t0 = time.time()
+          try:
+              result = pipe(**kwargs)
+          except TypeError as e:
+              print(f"TypeError: {e} — retrying minimal params...")
+              result = pipe(
+                  prompt=prompt,
+                  image=[person_image, garment_image, blank_bottom],
+                  height=out_h, width=out_w,
+                  num_inference_steps=NUM_STEPS,
+                  guidance_scale=GUIDANCE,
+                  generator=torch.Generator("cuda").manual_seed(SEED),
+              )
+
+          elapsed = time.time() - t0
+          result_image = result.images[0]
+          print(f"\n Done in {elapsed:.1f}s  |  {result_image.size}")
+
+          # Display side-by-side: person | garment | result
+          from PIL import ImageDraw, ImageFont
+
+          def make_comparison(person, garment, result, labels=None):
+              """Create a side-by-side comparison image."""
+              h = 512
+              imgs = []
+              for img in [person, garment, result]:
+                  ratio = h / img.height
+                  w = int(img.width * ratio)
+                  imgs.append(img.resize((w, h), Image.LANCZOS))
+
+              total_w = sum(im.width for im in imgs) + 20  # 10px gaps
+              canvas = Image.new("RGB", (total_w, h + 30), (255, 255, 255))
+              x = 0
+              default_labels = ["Person (input)", "Garment (input)", "Result"]
+              for i, im in enumerate(imgs):
+                  canvas.paste(im, (x, 30))
+                  # Label
+                  draw = ImageDraw.Draw(canvas)
+                  label = (labels or default_labels)[i]
+                  draw.text((x + 5, 5), label, fill=(0, 0, 0))
+                  x += im.width + 10
+              return canvas
+
+          comparison = make_comparison(person_image, garment_image, result_image)
+          display(comparison)
+
+  # ================================================================
+  # H) 4-Size Comparison Grid
+  # ================================================================
+  - type: markdown
+    source: |
+      ## H. 4-Size Comparison Grid (v4 — Body-Garment Ratio)
+      동일 person + garment에 대해 M / L / XL / 2XL을 **인체-의류 비율 기반**으로 생성.
+      각 사이즈의 실측과 착용자 체형의 비율에서 시각적 차이가 자동 계산됩니다.
+      - M → 어깨비 ~1.33x, ease +30cm → regular-fit
+      - L → 어깨비 ~1.38x, ease +34cm → relaxed-fit
+      - XL → 어깨비 ~1.42x, ease +38cm → oversized
+      - 2XL → 어깨비 ~1.47x, ease +42cm → oversized (극단)
+
+  - type: code
+    source: |
+      #@title H. Generate 4-Size Grid (v4: body-garment ratio prompts)
+      if PIPELINE != "A":
+          print(">>> Skipped (Pipeline D uses Q-6 for 4-Size grid)")
+      else:
+          import torch, time
+          from PIL import Image, ImageDraw
+          from IPython.display import display
+
+          SIZES = ["M(95)", "L(100)", "XL(105)", "2XL(110-115)"]
+          results = {}
+
+          # 3rd ref = person image itself (preserves pants)
+          blank_bottom = person_image
+
+          # Match output resolution to person image
+          pw, ph = person_image.size
+          max_dim = 1024
+          scale = max_dim / max(pw, ph)
+          out_w = int(pw * scale) // 8 * 8
+          out_h = int(ph * scale) // 8 * 8
+
+          print(f"Output: {out_w}x{out_h} (from {pw}x{ph})")
+          print("Generating 4-size grid (v4: body-garment ratio)...")
+          print("=" * 60)
+
+          for i, size in enumerate(SIZES):
+              prompt = build_fitspec_prompt(FITSPEC, size_override=size)
+              fit = FITSPEC["size_to_fit"].get(size, "regular")
+
+              gen_kwargs = dict(
+                  prompt=prompt,
+                  image=[person_image, garment_image, blank_bottom],
+                  height=out_h,
+                  width=out_w,
+                  num_inference_steps=NUM_STEPS,
+                  guidance_scale=GUIDANCE,
+                  generator=torch.Generator("cuda").manual_seed(SEED),
+              )
+              if "supported_params" in dir() and "max_sequence_length" in supported_params:
+                  gen_kwargs["max_sequence_length"] = 512
+
+              t0 = time.time()
+              try:
+                  res = pipe(**gen_kwargs)
+              except TypeError:
+                  gen_kwargs_min = dict(
+                      prompt=prompt,
+                      image=[person_image, garment_image, blank_bottom],
+                      height=out_h, width=out_w,
+                      num_inference_steps=gen_kwargs["num_inference_steps"],
+                      guidance_scale=gen_kwargs["guidance_scale"],
+                      generator=torch.Generator("cuda").manual_seed(SEED),
+                  )
+                  res = pipe(**gen_kwargs_min)
+
+              elapsed = time.time() - t0
+              results[size] = res.images[0]
+              print(f"  [{i+1}/4] {size} ({fit}): {elapsed:.1f}s")
+
+          # Build 2x2 grid with size + fit labels
+          print("\nBuilding comparison grid...")
+          cell_h, cell_w = 512, 384
+          padding = 10
+          label_h = 30
+          grid_w = cell_w * 2 + padding * 3
+          grid_h = (cell_h + label_h) * 2 + padding * 3
+
+          grid = Image.new("RGB", (grid_w, grid_h), (255, 255, 255))
+          draw = ImageDraw.Draw(grid)
+
+          for idx, size in enumerate(SIZES):
+              row, col = divmod(idx, 2)
+              x = padding + col * (cell_w + padding)
+              y = padding + row * (cell_h + label_h + padding)
+
+              fit_label = FITSPEC["size_to_fit"].get(size, "regular")
+              draw.text((x + 5, y + 2), f"{size} [{fit_label}]", fill=(0, 0, 0))
+
+              img = results[size].resize((cell_w, cell_h), Image.LANCZOS)
+              grid.paste(img, (x, y + label_h))
+
+          display(grid)
+          print("\n4-Size grid complete")
+
+  # ================================================================
+  # I) Composite Post-Processing — 원본 보존 합성
+  # ================================================================
+  - type: markdown
+    source: |
+      ## I. Composite Post-Processing — 원본 사진 보존
+
+      생성 결과에서 **옷 영역만 추출** → **원본 사진에 합성**.
+      SegFormer(upper-clothes mask) + Poisson Blending으로 얼굴/포즈/배경 100% 보존.
+
+      - **SegFormer B2 Clothes**: label 4 = upper-clothes (IoU 0.78)
+      - **Mask preparation**: erode → feather → exclude arms/face
+      - **Blending**: OpenCV seamlessClone (Poisson) 또는 feathered alpha
+
+  - type: code
+    source: |
+      #@title I. Composite: Garment-Only Transfer onto Original Photo
+      if PIPELINE != "A":
+          print(">>> Skipped (Pipeline A only — Pipeline D uses Pass 2 re-inpainting)")
+      else:
+          import numpy as np
+          import cv2
+          import torch
+          import torch.nn.functional as F
+          from PIL import Image
+          from IPython.display import display
+
+          #@markdown ### Composite Settings
+          COMPOSITE_ENABLED = True  #@param {type:"boolean"}
+          FEATHER_PX = 15  #@param {type:"slider", min:5, max:30, step:5}
+          BLEND_MODE = "poisson"  #@param ["poisson", "alpha"] {type:"string"}
+
+          if not COMPOSITE_ENABLED:
+              print("Composite disabled — using raw generation output")
+          else:
+              # --- 1. SegFormer: extract upper-clothes mask from ORIGINAL person ---
+              print("Loading SegFormer for garment segmentation...")
+              from transformers import SegformerImageProcessor, AutoModelForSemanticSegmentation
+
+              seg_proc = SegformerImageProcessor.from_pretrained("mattmdjaga/segformer_b2_clothes")
+              seg_model = AutoModelForSemanticSegmentation.from_pretrained(
+                  "mattmdjaga/segformer_b2_clothes").to("cuda")
+
+              inputs = seg_proc(images=[person_image], return_tensors="pt").to("cuda")
+              with torch.no_grad():
+                  logits = seg_model(**inputs).logits
+              up = F.interpolate(logits, size=person_image.size[::-1],
+                                 mode="bilinear", align_corners=False)
+              seg_map = up.argmax(dim=1).cpu().numpy()[0]
+
+              # Label 4 = upper-clothes, exclude 11=face, 14/15=arms
+              garment_mask = (seg_map == 4).astype(np.uint8) * 255
+
+              # Exclude face/arms with buffer zone
+              protected = np.zeros_like(seg_map, dtype=bool)
+              for cls_id in [11, 14, 15]:  # face, left-arm, right-arm
+                  protected |= (seg_map == cls_id)
+              protect_dilated = cv2.dilate(
+                  (protected * 255).astype(np.uint8),
+                  cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+                  iterations=2)
+              garment_mask[protect_dilated > 0] = 0
+
+              # Morphological cleanup
+              kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+              garment_mask = cv2.morphologyEx(garment_mask, cv2.MORPH_CLOSE, kernel)
+              garment_mask = cv2.morphologyEx(garment_mask, cv2.MORPH_OPEN, kernel)
+
+              # Erode slightly to stay inside garment boundary
+              garment_mask = cv2.erode(garment_mask, kernel, iterations=2)
+
+              mask_pct = np.mean(garment_mask > 0) * 100
+              print(f"Garment mask: {mask_pct:.1f}% of image")
+
+              # Free SegFormer
+              del seg_model
+              torch.cuda.empty_cache()
+
+              # --- 2. Blend generated garment onto original ---
+              original_np = np.array(person_image.resize(result_image.size, Image.LANCZOS))
+              generated_np = np.array(result_image)
+
+              # Resize mask to match output size
+              mask_resized = cv2.resize(garment_mask,
+                  (result_image.width, result_image.height),
+                  interpolation=cv2.INTER_NEAREST)
+
+              if BLEND_MODE == "poisson":
+                  # Poisson seamless clone
+                  contours, _ = cv2.findContours(
+                      mask_resized, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                  if contours:
+                      moments = cv2.moments(max(contours, key=cv2.contourArea))
+                      if moments["m00"] > 0:
+                          cx = int(moments["m10"] / moments["m00"])
+                          cy = int(moments["m01"] / moments["m00"])
+                          # Convert RGB→BGR for OpenCV
+                          src_bgr = cv2.cvtColor(generated_np, cv2.COLOR_RGB2BGR)
+                          dst_bgr = cv2.cvtColor(original_np, cv2.COLOR_RGB2BGR)
+                          blended_bgr = cv2.seamlessClone(
+                              src_bgr, dst_bgr, mask_resized, (cx, cy),
+                              cv2.NORMAL_CLONE)
+                          composite_np = cv2.cvtColor(blended_bgr, cv2.COLOR_BGR2RGB)
+                          print(f"Poisson blend applied (center: {cx},{cy})")
+                      else:
+                          composite_np = original_np
+                          print("Warning: empty mask — skipping blend")
+                  else:
+                      composite_np = original_np
+                      print("Warning: no contours — skipping blend")
+              else:
+                  # Feathered alpha blend
+                  feathered = cv2.GaussianBlur(
+                      mask_resized, (FEATHER_PX*2+1, FEATHER_PX*2+1),
+                      FEATHER_PX).astype(np.float32) / 255.0
+                  alpha = np.stack([feathered]*3, axis=-1)
+                  composite_np = (generated_np * alpha +
+                                  original_np * (1 - alpha)).astype(np.uint8)
+                  print(f"Alpha blend applied (feather: {FEATHER_PX}px)")
+
+              composite_image = Image.fromarray(composite_np)
+
+              # Display: original | raw generation | composite
+              h = 512
+              imgs_compare = []
+              for img in [person_image, result_image, composite_image]:
+                  ratio = h / img.height
+                  w = int(img.width * ratio)
+                  imgs_compare.append(img.resize((w, h), Image.LANCZOS))
+
+              total_w = sum(im.width for im in imgs_compare) + 20
+              canvas = Image.new("RGB", (total_w, h + 30), (255, 255, 255))
+              draw = ImageDraw.Draw(canvas)
+              labels = ["Original", "Generated", "Composite"]
+              x = 0
+              for idx, im in enumerate(imgs_compare):
+                  draw.text((x+5, 5), labels[idx], fill=(0,0,0))
+                  canvas.paste(im, (x, 30))
+                  x += im.width + 10
+              display(canvas)
+
+              # Replace result_image with composite for downstream use
+              result_image = composite_image
+              print("result_image updated to composite")
+
+  # ================================================================
+  # Q) Pipeline D: Two-Pass VTON with Mask-Based Size Control
+  # ================================================================
+  - type: markdown
+    source: |
+      ---
+      # Pipeline D: Two-Pass VTON with Mask-Based Size Control
+
+      **핵심 전략**: FLUX.2 Klein 9B의 **품질**은 유지하면서, **이미지 공간 합성**으로 사이즈를 강제.
+
+      ```
+      Pass 1: Quality VTON → 옷 정체성(텍스처/색상/디자인) 확보
+      Pass 2: Geometric Warp + Poisson Blend → garment 영역 확대 합성
+      ```
+
+      - **SV-VTON Dual-Factor**: garment image 비례 확대 + 마스크 방향별 확장
+      - **SiCo 규칙**: 상단 고정(어깨 앵커), 좌/우/하단만 확장
+      - **Image-Space Compositing**: 기하학적 확대 + Poisson MIXED_CLONE (아우라/고스팅 없음)
+
+      > 선행 조건: Cells E-1~E-3 (FITSPEC) + Cell F (모델 로딩) 실행 필요
+
+  - type: code
+    source: |
+      #@title Q-0. Pipeline D Setup — SegFormer + Helper Functions
+      if PIPELINE != "D":
+          print(">>> Skipped (Pipeline A selected — use Cells G/H instead)")
+      else:
+          import numpy as np
+          import cv2
+          import torch
+          import torch.nn.functional as F
+          from PIL import Image
+          from IPython.display import display
+
+          # --- Load SegFormer for garment segmentation ---
+          print("Loading SegFormer B2 Clothes...")
+          from transformers import SegformerImageProcessor, AutoModelForSemanticSegmentation
+
+          seg_proc = SegformerImageProcessor.from_pretrained("mattmdjaga/segformer_b2_clothes")
+          seg_model = AutoModelForSemanticSegmentation.from_pretrained(
+              "mattmdjaga/segformer_b2_clothes"
+          ).to("cuda")
+          print("  SegFormer ready")
+
+          # --- Size constants ---
+          GARMENT_SCALE = {
+              "M(95)": 1.00, "L(100)": 1.08,
+              "XL(105)": 1.15, "2XL(110-115)": 1.25,
+          }
+
+          SIZE_DELTA_LEVEL = {
+              "M(95)": 0, "L(100)": 1,
+              "XL(105)": 2, "2XL(110-115)": 3,
+          }
+
+          SIZE_TO_FIT_D = {
+              "M(95)": "regular",
+              "L(100)": "loose",
+              "XL(105)": "oversized",
+              "2XL(110-115)": "oversized",
+          }
+
+          def build_size_refinement_prompt(garment_type, size_key):
+              """Pass 2 prompt: size/fit description only.
+              Pass 1 already secured garment identity, so here
+              we focus on silhouette and draping cues.
+              """
+              fit_key = SIZE_TO_FIT_D.get(size_key, "regular")
+              cues = {
+                  "skinny": "tight-fitting, body contour visible, fabric clinging",
+                  "slim": "natural fit following body lines, minimal ease",
+                  "regular": "comfortable fit, standard ease, clean drape",
+                  "loose": "relaxed fit, fabric draping away from body, visible air gap",
+                  "oversized": (
+                      "baggy oversized fit, dropped shoulders, "
+                      "fabric hanging loosely, extra volume around torso"
+                  ),
+              }
+              return (
+                  f"The same person wearing the reference {garment_type} "
+                  f"in {fit_key} fit. {cues[fit_key]}. "
+                  f"High quality, photorealistic, natural fabric wrinkles and draping. "
+                  f"Preserve exact face, skin tone, hairstyle, pants, shoes, "
+                  f"background, lighting, and pose."
+              )
+
+          print("Pipeline D setup complete")
+          print(f"  Garment scales: {GARMENT_SCALE}")
+          print(f"  Delta levels: {SIZE_DELTA_LEVEL}")
+
+  - type: code
+    source: |
+      #@title Q-1. Garment Pre-Scaling (SV-VTON Dual-Factor)
+      if PIPELINE != "D":
+          print(">>> Skipped (Pipeline A selected)")
+      else:
+          from PIL import Image
+          from IPython.display import display
+
+          def scale_garment(garment_img, target_size):
+              """SV-VTON: garment proportion adjustment.
+              Bigger size -> garment image scaled up ->
+              model sees 'bigger garment' visual cue.
+              """
+              scale = GARMENT_SCALE[target_size]
+              if scale == 1.0:
+                  return garment_img
+              w, h = garment_img.size
+              new_w, new_h = int(w * scale), int(h * scale)
+              scaled = garment_img.resize((new_w, new_h), Image.LANCZOS)
+              # Center-crop back to original canvas
+              result = Image.new("RGB", (w, h), (128, 128, 128))
+              paste_x = (w - new_w) // 2
+              paste_y = (h - new_h) // 2
+              result.paste(scaled, (paste_x, paste_y))
+              return result
+
+          # Preview all scales
+          print("Garment pre-scaling preview (SV-VTON dual-factor):")
+          preview_imgs = []
+          for sz in ["M(95)", "L(100)", "XL(105)", "2XL(110-115)"]:
+              scaled_g = scale_garment(garment_image, sz)
+              sc = GARMENT_SCALE[sz]
+              print(f"  {sz}: scale={sc:.2f}x -> {scaled_g.size}")
+              preview_imgs.append((sz, scaled_g))
+
+          # Display 4 garments side-by-side
+          cell_w, cell_h = 192, 256
+          grid_w = cell_w * 4 + 30
+          from PIL import ImageDraw
+          g_grid = Image.new("RGB", (grid_w, cell_h + 25), (255, 255, 255))
+          draw = ImageDraw.Draw(g_grid)
+          for i, (sz, img) in enumerate(preview_imgs):
+              x = 5 + i * (cell_w + 8)
+              draw.text((x + 2, 2), f"{sz} ({GARMENT_SCALE[sz]:.2f}x)", fill=(0, 0, 0))
+              g_grid.paste(img.resize((cell_w, cell_h), Image.LANCZOS), (x, 25))
+          display(g_grid)
+
+  - type: code
+    source: |
+      #@title Q-2. Pass 1: Quality VTON (Fitted Result)
+      if PIPELINE != "D":
+          print(">>> Skipped (Pipeline A selected)")
+      else:
+          import torch, time, inspect
+          from PIL import Image
+          from IPython.display import display
+
+          #@markdown ### Pass 1 Settings
+          NUM_STEPS = 28  #@param {type:"slider", min:4, max:50, step:1}
+          GUIDANCE = 4.0  #@param {type:"slider", min:1.0, max:10.0, step:0.5}
+
+          # Use M-scale garment for Pass 1 (fitted baseline)
+          pass1_garment = scale_garment(garment_image, "M(95)")
+
+          # Build fitted prompt (M size = baseline)
+          pass1_prompt = build_fitspec_prompt(FITSPEC, size_override="M(95)")
+          print(f"Pass 1 prompt ({len(pass1_prompt.split())} words):")
+          print(f"  {pass1_prompt[:120]}...")
+
+          # 3rd ref = person image (preserves pants)
+          blank_bottom = person_image
+
+          # Match output resolution to person image aspect ratio
+          pw, ph = person_image.size
+          max_dim = 1024
+          scale = max_dim / max(pw, ph)
+          out_w = int(pw * scale) // 8 * 8
+          out_h = int(ph * scale) // 8 * 8
+          print(f"Output resolution: {out_w}x{out_h}")
+
+          sig = inspect.signature(pipe.__call__)
+          supported_params = set(sig.parameters.keys())
+
+          kwargs = dict(
+              prompt=pass1_prompt,
+              image=[person_image, pass1_garment, blank_bottom],
+              height=out_h, width=out_w,
+              num_inference_steps=NUM_STEPS,
+              guidance_scale=GUIDANCE,
+              generator=torch.Generator("cuda").manual_seed(SEED),
+          )
+          if "max_sequence_length" in supported_params:
+              kwargs["max_sequence_length"] = 512
+
+          print(f"Running Pass 1: {NUM_STEPS} steps, guidance={GUIDANCE}")
+          t0 = time.time()
+          try:
+              result = pipe(**kwargs)
+          except TypeError as e:
+              print(f"TypeError: {e} — retrying minimal params...")
+              result = pipe(
+                  prompt=pass1_prompt,
+                  image=[person_image, pass1_garment, blank_bottom],
+                  height=out_h, width=out_w,
+                  num_inference_steps=NUM_STEPS,
+                  guidance_scale=GUIDANCE,
+                  generator=torch.Generator("cuda").manual_seed(SEED),
+              )
+
+          elapsed = time.time() - t0
+          pass1_result = result.images[0]
+          print(f"\nPass 1 done in {elapsed:.1f}s  |  {pass1_result.size}")
+
+          # Display: person | garment | Pass 1 result
+          from PIL import ImageDraw
+          h = 512
+          imgs = []
+          for img in [person_image, garment_image, pass1_result]:
+              ratio = h / img.height
+              w = int(img.width * ratio)
+              imgs.append(img.resize((w, h), Image.LANCZOS))
+          total_w = sum(im.width for im in imgs) + 20
+          canvas = Image.new("RGB", (total_w, h + 30), (255, 255, 255))
+          draw = ImageDraw.Draw(canvas)
+          labels = ["Person", "Garment", "Pass 1 (fitted)"]
+          x = 0
+          for i, im in enumerate(imgs):
+              draw.text((x + 5, 5), labels[i], fill=(0, 0, 0))
+              canvas.paste(im, (x, 30))
+              x += im.width + 10
+          display(canvas)
+
+  - type: code
+    source: |
+      #@title Q-3. Garment Segmentation — SegFormer Mask from Pass 1
+      if PIPELINE != "D":
+          print(">>> Skipped (Pipeline A selected)")
+      else:
+          import numpy as np
+          import cv2
+          import torch
+          import torch.nn.functional as F
+          from PIL import Image
+          from IPython.display import display
+
+          print("Extracting garment mask from Pass 1 result...")
+
+          # SegFormer on Pass 1 result (not original person)
+          inputs = seg_proc(images=[pass1_result], return_tensors="pt").to("cuda")
+          with torch.no_grad():
+              logits = seg_model(**inputs).logits
+          up = F.interpolate(
+              logits, size=pass1_result.size[::-1],
+              mode="bilinear", align_corners=False
+          )
+          seg_map = up.argmax(dim=1).cpu().numpy()[0]
+
+          # Label 4 = upper-clothes
+          garment_mask = (seg_map == 4).astype(np.uint8) * 255
+
+          # Exclude face(11), arms(14,15) with dilated buffer
+          protected = np.zeros_like(seg_map, dtype=bool)
+          for cls_id in [11, 14, 15]:
+              protected |= (seg_map == cls_id)
+          protect_dilated = cv2.dilate(
+              (protected * 255).astype(np.uint8),
+              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+              iterations=2
+          )
+          garment_mask[protect_dilated > 0] = 0
+
+          # Morphological cleanup
+          kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+          garment_mask = cv2.morphologyEx(garment_mask, cv2.MORPH_CLOSE, kernel)
+          garment_mask = cv2.morphologyEx(garment_mask, cv2.MORPH_OPEN, kernel)
+          garment_mask = cv2.erode(garment_mask, kernel, iterations=1)
+
+          # Fill interior holes (logo/pattern misidentified as skin)
+          contours_fill, _ = cv2.findContours(
+              garment_mask, cv2.RETR_EXTERNAL,
+              cv2.CHAIN_APPROX_SIMPLE,
+          )
+          if contours_fill:
+              cv2.drawContours(
+                  garment_mask, contours_fill, -1, 255, cv2.FILLED,
+              )
+              print(f"  Filled {len(contours_fill)} contour(s)")
+
+          # Convert to binary 0/1
+          BASE_MASK = (garment_mask > 127).astype(np.uint8)
+
+          # Save protection map for Q-4 (arm/face exclusion after dilation)
+          PROTECT_MAP = protect_dilated  # dilated arms(14,15) + face(11)
+
+          # Foreground mask: hair(2) + face(11) + arms(14,15)
+          # Q-5/Q-6 restores these ON TOP of scaled garment
+          fg_labels = np.zeros_like(seg_map, dtype=bool)
+          for cls_id in [2, 11, 14, 15]:
+              fg_labels |= (seg_map == cls_id)
+          FOREGROUND_MASK = cv2.dilate(
+              (fg_labels * 255).astype(np.uint8),
+              cv2.getStructuringElement(
+                  cv2.MORPH_ELLIPSE, (5, 5),
+              ),
+              iterations=2,
+          )
+
+          mask_pct = np.mean(BASE_MASK > 0) * 100
+          fg_pct = np.mean(FOREGROUND_MASK > 0) * 100
+          print(f"Base garment mask: {mask_pct:.1f}% of image")
+          print(f"Protected pixels (face+arms): {np.mean(PROTECT_MAP > 0) * 100:.1f}%")
+          print(f"Foreground mask (hair+face+arms): {fg_pct:.1f}%")
+
+          # Display overlay
+          overlay = pass1_result.copy().convert("RGBA")
+          mask_rgba = Image.new("RGBA", overlay.size, (255, 0, 0, 100))
+          mask_layer = Image.fromarray(BASE_MASK * 255).convert("L")
+          mask_rgba.putalpha(mask_layer)
+          overlay = Image.alpha_composite(overlay, mask_rgba)
+          display(overlay.resize((384, 512)))
+
+  - type: code
+    source: |
+      #@title Q-4. SiCo Directional Dilation — Size-Dependent Mask Expansion
+      if PIPELINE != "D":
+          print(">>> Skipped (Pipeline A selected)")
+      else:
+          import numpy as np
+          import cv2
+          from PIL import Image, ImageDraw
+          from IPython.display import display
+
+          def sico_directional_dilation(mask, delta_level, protect=None):
+              """SiCo-inspired directional mask dilation.
+
+              Key rules:
+              1. Top (above shoulder line): NEVER expand -> prevents floating garment
+              2. Left/Right: expand proportional to chest ease -> wider fit
+              3. Bottom: expand proportional to length -> longer garment
+              4. Arms/Face: NEVER expand into protected regions -> preserves anatomy
+
+              delta_level: 0=M(fitted), 1=L, 2=XL, 3=2XL
+              protect: binary mask of protected regions (arms, face) — from Q-3
+              """
+              if delta_level == 0:
+                  return mask
+
+              h, w = mask.shape
+
+              # Find top boundary of mask (shoulder line anchor)
+              rows = np.where(mask.any(axis=1))[0]
+              top_row = rows[0] if len(rows) > 0 else 0
+
+              # Direction-specific expansion pixels
+              lr_px = delta_level * 16   # left/right expansion
+              bt_px = delta_level * 20   # bottom expansion
+
+              # Step 1: Horizontal expansion (left/right)
+              kernel_lr = np.ones((1, lr_px * 2 + 1), dtype=np.uint8)
+              dilated = cv2.dilate(mask, kernel_lr, iterations=1)
+
+              # Step 2: Downward expansion only (asymmetric vertical kernel)
+              kernel_bt = np.zeros((bt_px * 2 + 1, 1), dtype=np.uint8)
+              kernel_bt[bt_px:, :] = 1  # only bottom half active
+              dilated = cv2.dilate(dilated, kernel_bt, iterations=1)
+
+              # Step 3: Restore top boundary (SiCo core rule)
+              dilated[:top_row, :] = mask[:top_row, :]
+
+              # Step 4: Exclude protected regions (arms, face)
+              if protect is not None:
+                  dilated[protect > 0] = 0
+
+              # Step 5: Gaussian smoothing for natural edges
+              dilated = cv2.GaussianBlur(dilated.astype(np.float32), (7, 7), 0)
+              dilated = (dilated > 0.3).astype(np.uint8)
+
+              # Step 6: Re-exclude protected (smoothing may have bled back)
+              if protect is not None:
+                  dilated[protect > 0] = 0
+
+              return dilated
+
+          # Preview all 4 size masks
+          print("SiCo Directional Dilation preview:")
+          print("  Rule: top=FIXED, left/right/bottom=EXPAND, arms/face=PROTECTED")
+          print()
+
+          preview_imgs = []
+          SIZES = ["M(95)", "L(100)", "XL(105)", "2XL(110-115)"]
+          for sz in SIZES:
+              delta = SIZE_DELTA_LEVEL[sz]
+              expanded = sico_directional_dilation(BASE_MASK, delta, PROTECT_MAP)
+              area_pct = np.mean(expanded > 0) * 100
+              lr_px = delta * 8
+              bt_px = delta * 12
+              print(f"  {sz}: delta={delta}, lr=+{lr_px}px, bt=+{bt_px}px, area={area_pct:.1f}%")
+
+              # Create overlay
+              ov = pass1_result.copy().convert("RGBA")
+              mask_rgba = Image.new("RGBA", ov.size, (255, 0, 0, 100))
+              ml = Image.fromarray(expanded * 255).convert("L")
+              mask_rgba.putalpha(ml)
+              ov = Image.alpha_composite(ov, mask_rgba)
+              preview_imgs.append((sz, ov, expanded))
+
+          # Display 4 masks side-by-side
+          cell_w, cell_h = 192, 256
+          grid_w = cell_w * 4 + 30
+          mask_grid = Image.new("RGB", (grid_w, cell_h + 25), (255, 255, 255))
+          draw = ImageDraw.Draw(mask_grid)
+          for i, (sz, ov, _) in enumerate(preview_imgs):
+              x = 5 + i * (cell_w + 8)
+              draw.text((x + 2, 2), sz, fill=(0, 0, 0))
+              mask_grid.paste(
+                  ov.convert("RGB").resize((cell_w, cell_h), Image.LANCZOS),
+                  (x, 25))
+          display(mask_grid)
+
+  - type: code
+    source: |
+      #@title Q-5. Pass 2: Size-Aware Compositing (Perspective Warp + Foreground Restore)
+      if PIPELINE != "D":
+          print(">>> Skipped (Pipeline A selected)")
+      else:
+          import numpy as np
+          import cv2
+          import time
+          from PIL import Image, ImageDraw
+          from IPython.display import display
+
+          #@markdown ### Pass 2: Perspective Warp + Foreground Restore
+          #@markdown 어깨는 30%만 확장, 몸통/밑단은 100% 확장 (perspective warp).
+          #@markdown 합성 후 머리카락/얼굴/팔을 Pass 1에서 복원.
+          FEATHER_PX = 6  #@param {type:"slider", min:2, max:16, step:2}
+          SHOULDER_FRAC = 0.3  #@param {type:"slider", min:0.0, max:1.0, step:0.1}
+
+          delta = SIZE_DELTA_LEVEL[TARGET_SIZE]
+          dilated_mask = sico_directional_dilation(BASE_MASK, delta, PROTECT_MAP)
+
+          print(f"Pass 2: {TARGET_SIZE} (delta={delta})")
+          print(f"  Mask: base={np.mean(BASE_MASK > 0)*100:.1f}%, "
+                f"dilated={np.mean(dilated_mask > 0)*100:.1f}%")
+
+          if delta == 0:
+              print("  M = fitted baseline. Pass 2 skipped.")
+              pass2_result = pass1_result
+          else:
+              t0 = time.time()
+              p1_np = np.array(pass1_result)
+              h_img, w_img = p1_np.shape[:2]
+
+              # 1. Bounding boxes
+              base_rows = np.where(BASE_MASK.any(axis=1))[0]
+              base_cols = np.where(BASE_MASK.any(axis=0))[0]
+              dil_rows = np.where(dilated_mask.any(axis=1))[0]
+              dil_cols = np.where(dilated_mask.any(axis=0))[0]
+
+              if len(base_rows) == 0 or len(dil_rows) == 0:
+                  print("  No mask. Using Pass 1.")
+                  pass2_result = pass1_result
+              else:
+                  bt = int(base_rows[0])
+                  bb = int(base_rows[-1])
+                  bl = int(base_cols[0])
+                  br = int(base_cols[-1])
+                  dl = int(dil_cols[0])
+                  dr = int(dil_cols[-1])
+                  db = int(dil_rows[-1])
+
+                  garment_crop = p1_np[bt:bb+1, bl:br+1].copy()
+                  orig_h, orig_w = garment_crop.shape[:2]
+                  new_w = dr - dl + 1
+                  new_h = db - bt + 1
+                  total_expand = new_w - orig_w
+
+                  print(f"  Base: {orig_w}x{orig_h} -> "
+                        f"Target: {new_w}x{new_h} "
+                        f"(expand={total_expand}px)")
+
+                  # 2. Perspective warp: shoulders barely expand,
+                  #    torso/hem fully expand
+                  top_margin = max(0.0, total_expand
+                      * (1 - SHOULDER_FRAC) / 2)
+                  src_pts = np.float32([
+                      [0, 0],
+                      [orig_w - 1, 0],
+                      [orig_w - 1, orig_h - 1],
+                      [0, orig_h - 1],
+                  ])
+                  dst_pts = np.float32([
+                      [top_margin, 0],
+                      [new_w - 1 - top_margin, 0],
+                      [new_w - 1, new_h - 1],
+                      [0, new_h - 1],
+                  ])
+                  M = cv2.getPerspectiveTransform(
+                      src_pts, dst_pts,
+                  )
+                  garment_warped = cv2.warpPerspective(
+                      garment_crop, M, (new_w, new_h),
+                      borderMode=cv2.BORDER_REFLECT_101,
+                  )
+
+                  # 3. Feathered dilated mask
+                  m_eroded = cv2.erode(
+                      dilated_mask,
+                      np.ones((3, 3), np.uint8),
+                      iterations=max(1, FEATHER_PX // 3),
+                  )
+                  k = FEATHER_PX * 2 + 1
+                  m_blur = cv2.GaussianBlur(
+                      dilated_mask.astype(np.float32),
+                      (k, k), FEATHER_PX / 2.0,
+                  )
+                  m_alpha = np.clip(np.maximum(
+                      m_blur, m_eroded.astype(np.float32),
+                  ), 0, 1)
+
+                  # 4. Composite warped garment onto Pass 1
+                  result = p1_np.copy()
+                  y1 = bt
+                  y2 = min(bt + new_h, h_img)
+                  x1 = dl
+                  x2 = min(dl + new_w, w_img)
+                  ah, aw = y2 - y1, x2 - x1
+
+                  a = m_alpha[y1:y2, x1:x2][:, :, np.newaxis]
+                  wp = garment_warped[:ah, :aw].astype(
+                      np.float32
+                  )
+                  bp = result[y1:y2, x1:x2].astype(
+                      np.float32
+                  )
+                  result[y1:y2, x1:x2] = (
+                      wp * a + bp * (1 - a)
+                  ).astype(np.uint8)
+
+                  # 5. Restore foreground (hair/face/arms)
+                  #    from Pass 1 ON TOP of scaled garment
+                  fg = cv2.GaussianBlur(
+                      FOREGROUND_MASK.astype(np.float32)
+                      / 255.0,
+                      (5, 5), 1.5,
+                  )
+                  fg = np.clip(fg, 0, 1)[:, :, np.newaxis]
+                  result = (
+                      p1_np.astype(np.float32) * fg
+                      + result.astype(np.float32) * (1 - fg)
+                  ).astype(np.uint8)
+
+                  pass2_result = Image.fromarray(result)
+                  elapsed = time.time() - t0
+                  print(f"  Done in {elapsed:.1f}s "
+                        f"(perspective warp + fg restore)")
+
+          # Display: Original | Pass 1 | Pass 2
+          h = 512
+          imgs = []
+          for img in [person_image, pass1_result, pass2_result]:
+              ratio = h / img.height
+              w = int(img.width * ratio)
+              imgs.append(img.resize((w, h), Image.LANCZOS))
+          total_w = sum(im.width for im in imgs) + 20
+          canvas = Image.new("RGB", (total_w, h + 30), (255, 255, 255))
+          draw = ImageDraw.Draw(canvas)
+          labels = ["Original", "Pass 1 (fitted)",
+                    f"Pass 2 ({TARGET_SIZE})"]
+          x = 0
+          for i, im in enumerate(imgs):
+              draw.text((x + 5, 5), labels[i], fill=(0, 0, 0))
+              canvas.paste(im, (x, 30))
+              x += im.width + 10
+          display(canvas)
+
+  - type: code
+    source: |
+      #@title Q-6. Pipeline D: 4-Size Comparison Grid
+      if PIPELINE != "D":
+          print(">>> Skipped (Pipeline A selected — use Cell H instead)")
+      else:
+          import numpy as np
+          import cv2
+          import time
+          from PIL import Image, ImageDraw
+          from IPython.display import display
+
+          SIZES = ["M(95)", "L(100)", "XL(105)", "2XL(110-115)"]
+          FEATHER_G = 6
+          SHOULDER_G = 0.3  # shoulder expansion fraction
+          d_results = {}
+
+          print("Pipeline D: 4-Size Grid "
+                "(Perspective Warp + Foreground Restore)")
+          print("=" * 60)
+          print("Pass 1 result reused from Q-2")
+          print()
+
+          p1_np = np.array(pass1_result)
+          h_img, w_img = p1_np.shape[:2]
+
+          # Precompute foreground soft mask once
+          fg_soft = cv2.GaussianBlur(
+              FOREGROUND_MASK.astype(np.float32) / 255.0,
+              (5, 5), 1.5,
+          )
+          fg_soft = np.clip(fg_soft, 0, 1)[
+              :, :, np.newaxis
+          ]
+
+          base_rows = np.where(BASE_MASK.any(axis=1))[0]
+          base_cols = np.where(BASE_MASK.any(axis=0))[0]
+
+          if len(base_rows) == 0 or len(base_cols) == 0:
+              print("ERROR: BASE_MASK empty. Run Q-3.")
+          else:
+              bt = int(base_rows[0])
+              bb = int(base_rows[-1])
+              bl = int(base_cols[0])
+              br = int(base_cols[-1])
+              garment_crop = p1_np[bt:bb+1, bl:br+1].copy()
+              orig_h, orig_w = garment_crop.shape[:2]
+              print(f"Base bbox: {orig_w}x{orig_h}")
+
+              for i, size in enumerate(SIZES):
+                  delta = SIZE_DELTA_LEVEL[size]
+                  t0 = time.time()
+
+                  if delta == 0:
+                      d_results[size] = pass1_result
+                      print(f"  [{i+1}/4] {size} "
+                            f"(fitted, Pass 1): 0.0s")
+                      continue
+
+                  dilated_m = sico_directional_dilation(
+                      BASE_MASK, delta, PROTECT_MAP,
+                  )
+                  dil_cols = np.where(
+                      dilated_m.any(axis=0)
+                  )[0]
+                  dil_rows = np.where(
+                      dilated_m.any(axis=1)
+                  )[0]
+
+                  if len(dil_rows) == 0:
+                      d_results[size] = pass1_result
+                      print(f"  [{i+1}/4] {size}: "
+                            f"empty mask")
+                      continue
+
+                  dl = int(dil_cols[0])
+                  dr = int(dil_cols[-1])
+                  db = int(dil_rows[-1])
+                  new_w = dr - dl + 1
+                  new_h = db - bt + 1
+                  total_exp = new_w - orig_w
+
+                  # Perspective warp
+                  tm = max(0.0, total_exp
+                      * (1 - SHOULDER_G) / 2)
+                  src_pts = np.float32([
+                      [0, 0],
+                      [orig_w - 1, 0],
+                      [orig_w - 1, orig_h - 1],
+                      [0, orig_h - 1],
+                  ])
+                  dst_pts = np.float32([
+                      [tm, 0],
+                      [new_w - 1 - tm, 0],
+                      [new_w - 1, new_h - 1],
+                      [0, new_h - 1],
+                  ])
+                  Mw = cv2.getPerspectiveTransform(
+                      src_pts, dst_pts,
+                  )
+                  g_warped = cv2.warpPerspective(
+                      garment_crop, Mw, (new_w, new_h),
+                      borderMode=cv2.BORDER_REFLECT_101,
+                  )
+
+                  # Feathered mask
+                  me = cv2.erode(
+                      dilated_m,
+                      np.ones((3, 3), np.uint8),
+                      iterations=max(1, FEATHER_G // 3),
+                  )
+                  kk = FEATHER_G * 2 + 1
+                  mb = cv2.GaussianBlur(
+                      dilated_m.astype(np.float32),
+                      (kk, kk), FEATHER_G / 2.0,
+                  )
+                  ma = np.clip(np.maximum(
+                      mb, me.astype(np.float32),
+                  ), 0, 1)
+
+                  # Composite warped garment
+                  rr = p1_np.copy()
+                  y1 = bt
+                  y2 = min(bt + new_h, h_img)
+                  x1 = dl
+                  x2 = min(dl + new_w, w_img)
+                  ah, aw = y2 - y1, x2 - x1
+                  a = ma[y1:y2, x1:x2][:, :, np.newaxis]
+                  wp = g_warped[:ah, :aw].astype(
+                      np.float32
+                  )
+                  bp = rr[y1:y2, x1:x2].astype(
+                      np.float32
+                  )
+                  rr[y1:y2, x1:x2] = (
+                      wp * a + bp * (1 - a)
+                  ).astype(np.uint8)
+
+                  # Restore foreground from Pass 1
+                  rr = (
+                      p1_np.astype(np.float32) * fg_soft
+                      + rr.astype(np.float32) * (1 - fg_soft)
+                  ).astype(np.uint8)
+
+                  d_results[size] = Image.fromarray(rr)
+                  elapsed = time.time() - t0
+                  fit = SIZE_TO_FIT_D.get(size, "regular")
+                  print(f"  [{i+1}/4] {size} ({fit}, "
+                        f"{orig_w}x{orig_h}->"
+                        f"{new_w}x{new_h}): "
+                        f"{elapsed:.1f}s")
+
+              # Build 2x2 grid
+              cell_h, cell_w = 512, 384
+              padding = 10
+              label_h = 30
+              grid_w = cell_w * 2 + padding * 3
+              grid_h = (cell_h + label_h) * 2 + padding * 3
+
+              d_grid = Image.new("RGB", (grid_w, grid_h),
+                                 (255, 255, 255))
+              draw = ImageDraw.Draw(d_grid)
+
+              for idx, size in enumerate(SIZES):
+                  row, col = divmod(idx, 2)
+                  x = padding + col * (cell_w + padding)
+                  y = padding + row * (cell_h + label_h + padding)
+                  fit = SIZE_TO_FIT_D.get(size, "regular")
+                  delta = SIZE_DELTA_LEVEL[size]
+                  draw.text(
+                      (x + 5, y + 2),
+                      f"{size} [{fit}, d={delta}]",
+                      fill=(0, 0, 0),
+                  )
+                  img = d_results[size].resize(
+                      (cell_w, cell_h), Image.LANCZOS,
+                  )
+                  d_grid.paste(img, (x, y + label_h))
+
+              display(d_grid)
+              print("\nPipeline D 4-Size grid complete")
+
+  - type: markdown
+    source: |
+      ## Q-7. Pass 2 ALT: ComfyUI LanPaint (Fallback)
+
+      `callback_on_step_end` 실패 시 ComfyUI + LanPaint 대안.
+      Pass 1 결과 + 확장된 마스크를 ComfyUI에 업로드하여 마스크 영역만 재생성.
+
+      > **참고**: 이 셀은 Q-5가 실패할 때만 사용. ComfyUI 설치가 필요합니다.
+
+  - type: code
+    source: |
+      #@title Q-7. Pass 2 ALT: LanPaint Re-Inpainting (callback 실패 시)
+      if PIPELINE != "D":
+          print(">>> Skipped (Pipeline A selected)")
+      else:
+          #@markdown ### Q-7은 Q-5 callback이 실패했을 때만 실행하세요.
+          LANPAINT_FALLBACK = False  #@param {type:"boolean"}
+
+          if not LANPAINT_FALLBACK:
+              print("LanPaint fallback disabled.")
+              print("Q-5 callback이 실패했다면 LANPAINT_FALLBACK=True로 변경 후 재실행.")
+          else:
+              import subprocess, sys, os, time, io, json, uuid
+              import numpy as np
+              import requests
+              from PIL import Image
+              from IPython.display import display
+
+              # --- Install ComfyUI + LanPaint if needed ---
+              COMFYUI_DIR = "/content/ComfyUI"
+              if not os.path.exists(COMFYUI_DIR):
+                  print("Installing ComfyUI + LanPaint...")
+                  subprocess.run(
+                      ["git", "clone", "--depth", "1",
+                       "https://github.com/comfyanonymous/ComfyUI.git", COMFYUI_DIR],
+                      check=True)
+                  subprocess.run(
+                      [sys.executable, "-m", "pip", "install", "-q",
+                       "-r", f"{COMFYUI_DIR}/requirements.txt"], check=True)
+                  LANPAINT_DIR = f"{COMFYUI_DIR}/custom_nodes/LanPaint"
+                  subprocess.run(
+                      ["git", "clone", "--depth", "1",
+                       "https://github.com/scraed/LanPaint.git", LANPAINT_DIR],
+                      check=True)
+                  req = f"{LANPAINT_DIR}/requirements.txt"
+                  if os.path.exists(req):
+                      subprocess.run(
+                          [sys.executable, "-m", "pip", "install", "-q", "-r", req])
+                  print("ComfyUI + LanPaint installed")
+
+              # --- Start server if not running ---
+              COMFYUI_PORT = 8188
+              COMFYUI_URL = f"http://127.0.0.1:{COMFYUI_PORT}"
+              try:
+                  r = requests.get(f"{COMFYUI_URL}/system_stats", timeout=2)
+                  print("ComfyUI already running")
+              except Exception:
+                  print("Starting ComfyUI server...")
+                  comfy_proc = subprocess.Popen(
+                      [sys.executable, "main.py",
+                       "--listen", "0.0.0.0", "--port", str(COMFYUI_PORT),
+                       "--dont-print-server"],
+                      cwd=COMFYUI_DIR,
+                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                  for i in range(60):
+                      try:
+                          r = requests.get(f"{COMFYUI_URL}/system_stats", timeout=2)
+                          if r.status_code == 200:
+                              print(f"ComfyUI ready (PID={comfy_proc.pid})")
+                              break
+                      except Exception:
+                          pass
+                      time.sleep(3)
+                  else:
+                      raise RuntimeError("ComfyUI startup failed")
+
+              # --- Upload Pass 1 result + dilated mask ---
+              def comfy_upload_img(image, name):
+                  buf = io.BytesIO()
+                  image.save(buf, format="PNG")
+                  buf.seek(0)
+                  resp = requests.post(
+                      f"{COMFYUI_URL}/upload/image",
+                      files={"image": (name, buf, "image/png")},
+                      data={"overwrite": "true"})
+                  resp.raise_for_status()
+                  return resp.json()["name"]
+
+              person_name = comfy_upload_img(pass1_result, "pass1_result.png")
+              mask_pil = Image.fromarray(dilated_mask * 255).convert("RGB")
+              mask_name = comfy_upload_img(mask_pil, "dilated_mask.png")
+
+              fit_key = SIZE_TO_FIT_D.get(TARGET_SIZE, "regular")
+              lp_prompt = (
+                  f"The same person wearing the garment in {fit_key} fit. "
+                  f"Photorealistic, natural fabric draping. "
+                  f"Preserve face, skin tone, background, and pose."
+              )
+
+              # --- Minimal LanPaint workflow ---
+              # Note: requires Klein 9B models in ComfyUI (run O-1 setup if missing)
+              print(f"LanPaint inpainting: {TARGET_SIZE} ({fit_key})")
+              print(f"  Uploaded: {person_name}, {mask_name}")
+              print("  Note: Requires Klein 9B model files in ComfyUI/models/")
+              print("  If models missing, run ComfyUI model download first.")
+
+  # ================================================================
+  # N) Save All Results + Download
+  # ================================================================
+  - type: markdown
+    source: |
+      ## N. Save & Download All Results
+
+  - type: code
+    source: |
+      #@title N. Save All Results
+      import os, json
+      from datetime import datetime
+
+      OUT_DIR = "flux2_vton_results"
+      os.makedirs(OUT_DIR, exist_ok=True)
+
+      timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+      # --- Klein results (Option A) ---
+      if "result_image" in dir() and result_image is not None:
+          path = f"{OUT_DIR}/klein_single_{TARGET_SIZE}_{timestamp}.png"
+          result_image.save(path)
+          print(f"Klein single: {path}")
+
+      if "grid" in dir() and grid is not None:
+          path = f"{OUT_DIR}/klein_grid_4size_{timestamp}.png"
+          grid.save(path)
+          print(f"Klein grid:   {path}")
+
+      if "results" in dir():
+          for size, img in results.items():
+              safe = size.replace("(", "").replace(")", "").replace("-", "_")
+              path = f"{OUT_DIR}/klein_{safe}_{timestamp}.png"
+              img.save(path)
+
+      # --- Pipeline D results ---
+      if "pass1_result" in dir() and pass1_result is not None:
+          path = f"{OUT_DIR}/pipeD_pass1_fitted_{timestamp}.png"
+          pass1_result.save(path)
+          print(f"Pass 1 (fitted): {path}")
+
+      if "pass2_result" in dir() and pass2_result is not None:
+          path = f"{OUT_DIR}/pipeD_pass2_{TARGET_SIZE}_{timestamp}.png"
+          pass2_result.save(path)
+          print(f"Pass 2 ({TARGET_SIZE}): {path}")
+
+      if "d_grid" in dir() and d_grid is not None:
+          path = f"{OUT_DIR}/pipeD_grid_4size_{timestamp}.png"
+          d_grid.save(path)
+          print(f"Pipeline D grid: {path}")
+
+      if "d_results" in dir():
+          for size, img in d_results.items():
+              safe = size.replace("(", "").replace(")", "").replace("-", "_")
+              path = f"{OUT_DIR}/pipeD_{safe}_{timestamp}.png"
+              img.save(path)
+
+      # --- Mask ---
+      if "BASE_MASK" in dir():
+          path = f"{OUT_DIR}/base_mask_{timestamp}.png"
+          from PIL import Image as _Img
+          _Img.fromarray(BASE_MASK * 255).save(path)
+          print(f"Base mask:       {path}")
+
+      # --- Config ---
+      config_path = f"{OUT_DIR}/fitspec_config_{timestamp}.json"
+      with open(config_path, "w") as f:
+          json.dump(FITSPEC, f, indent=2, ensure_ascii=False)
+      print(f"Config:         {config_path}")
+
+      # Download
+      try:
+          from google.colab import files
+          for f_name in os.listdir(OUT_DIR):
+              if f_name.endswith(f"_{timestamp}.png") and ("grid" in f_name):
+                  files.download(f"{OUT_DIR}/{f_name}")
+          print("\nDownload triggered for grid images")
+      except ImportError:
+          print("\nNot on Colab — files saved locally")
+
+      print(f"\nAll results in: {OUT_DIR}/")

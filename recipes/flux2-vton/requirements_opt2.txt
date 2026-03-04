@@ -1,0 +1,9 @@
+# Option 2: PyPI stable + runtime upgrade fallback
+# Use this if Flux2KleinPipeline is available in stable diffusers
+diffusers>=0.32.0
+transformers>=4.47.0
+accelerate>=1.2.0
+sentencepiece
+protobuf
+safetensors
+peft>=0.14.0

@@ -1,0 +1,249 @@
+Deep Architectural Analysis of Size-Controllable Virtual Try-On Mechanisms for FLUX.2 Klein 9B
+==============================================================================================
+
+The integration of precise, user-directed physical constraints into generative diffusion models represents one of the most complex challenges in contemporary computer vision. The objective of establishing a deterministic, size-controllable Virtual Try-On (VTON) pipeline utilizing the FLUX.2 Klein 9B architecture requires navigating the inherent tension between semantic text comprehension and spatial geometric grounding. The target architecture involves the 4-step distilled variant of FLUX.2 Klein 9B augmented by the `fal/flux-klein-9b-virtual-tryon-lora`, utilizing the Qwen3-8B text encoder running on an RTX PRO 6000 Blackwell 96GB GPU environment.
+
+The empirical failures of prompt engineering to induce reliable size differentiation—such as varying JSON measurements, providing body landmark references, or utilizing specific fashion vocabulary like "boxy" or "oversized"—are not anomalies. They are fundamental consequences of the underlying model architecture. The Qwen3-8B text encoder excels at mapping complex semantic fashion vocabulary into high-dimensional latent space, providing superior prompt adherence compared to legacy CLIP models. However, these semantic vectors lack intrinsic Cartesian coordinate awareness. Furthermore, the application of a VTON-specific Low-Rank Adaptation (LoRA) introduces a powerful structural prior. This LoRA has been trained to minimize the reconstruction loss between a source garment and a perfectly fitted target garment on a human subject. Consequently, the cross-attention layers within the Rectified Flow Transformer are heavily biased toward utilizing the human parsing mask as an absolute bounding box, effectively overriding any semantic requests for specific spatial dimensions.
+
+To achieve genuine size variability without abandoning the superior photorealism, sub-second inference speed, and texture fidelity of the FLUX.2 Klein 9B backbone, the structural priors of the pipeline must be manipulated directly through spatial, geometric, and tensor-level interventions prior to or during the denoising process. This comprehensive technical report systematically addresses the core research questions, evaluating proven and theoretical methods to adapt the FLUX.2 infrastructure for deterministic garment sizing.
+
+Foundational Constraints and Dead Ends
+--------------------------------------
+
+Before evaluating actionable solutions, it is critical to contextualize the confirmed dead ends within the current stack. The `diffusers` library implementation of the `Flux2KleinPipeline` currently lacks native support for a `mask_image` parameter. This limitation prevents standard text-guided inpainting where the background and user identity are frozen. Furthermore, the distilled nature of the FLUX.2 Klein 9B 4-step model eliminates the use of negative prompting and classifier-free guidance scales typically relied upon to steer generation away from tight fits.
+
+Switching to the undistilled FLUX.2 Klein 9B Base model restores negative prompting and improves output diversity, but it destroys composition and is fundamentally incompatible with the existing `fal` VTON LoRA, which relies on the specific latent trajectory of the distilled weights. Alternative architectures like CatVTON-FLUX suffer from resolution degradation and color consistency failures due to simplified spatial concatenation methods. Therefore, the engineering strategy must operate within the strict confines of the 4-step distilled FLUX.2 Klein 9B model, utilizing ComfyUI and custom sampler node interventions to bypass API limitations.
+
+Priority 1: Adding Size Control to the FLUX.2 Klein 9B Pipeline
+---------------------------------------------------------------
+
+The most immediate path to achieving size variation involves manipulating the input conditions—specifically the garment image, the structural guidance, and the spatial bounding masks—before they are processed by the Rectified Flow Transformer blocks.
+
+### Morphological Mask Manipulation and Proportional Garment Scaling
+
+The fundamental limitation of standard VTON pipelines is the reliance on a tight human parsing mask. If the inpainting mask rigidly traces the subject's current physical silhouette, the diffusion model is topologically trapped. It cannot generate an Extra Large (XL) garment because it is mathematically prohibited from altering the pixels in the background adjacent to the subject's body.
+
+**Method Name and Reference:** Morphological Mask Manipulation and Proportional Scaling, derived from the SiCo (Size-Controllable VTON) framework and SV-VTON architecture.
+
+**Mechanism of Size Control:** This approach achieves size variation through a combination of spatial expansion and visual cueing. First, the input mask undergoes binary morphological operations. When a larger garment size is required, the base human parsing mask is iteratively dilated. As demonstrated in the SiCo framework, the mask is dilated from the left, right, and bottom edges, specifically avoiding the top boundary to prevent the generated garment from appearing to levitate around the user's collar. For smaller sizes, the mask is eroded or trimmed from the bottom based on the proportional difference between the user's actual body size and the target garment size. Concurrently, the source garment image fed into the reference pipeline must be physically resized. By padding the input image or explicitly scaling the 2D garment relative to the canvas before it reaches the pipeline, the model receives a direct visual cue of the intended proportion, replicating the scaling factors utilized in SV-VTON.
+
+**FLUX.2 Klein 9B Compatibility:** The analysis indicates native compatibility. Because this method functions entirely as a deterministic pre-processing step, it requires zero architectural modifications to the FLUX.2 weights or the VTON LoRA. The model simply receives a modified canvas and operates as expected.
+
+**Implementation Complexity:** The integration complexity is assessed as low. Within the ComfyUI ecosystem, this requires the implementation of basic OpenCV or NumPy nodes to apply binary mask dilation (`ndi.binary_dilation`) and standard image resize nodes configured to maintain aspect ratio while increasing canvas padding.
+
+**Differentiation Assessment:** Regarding the capacity to produce visible Medium versus Extra Large differentiation, the assessment is highly optimistic. By physically expanding the mask canvas, FLUX.2 is explicitly permitted to denoise pixels outside the original body lines. Paired with a proportionally larger source garment image, this mathematically guarantees a wider, longer silhouette, directly solving the prompt-ignorance issue.
+
+### Native Latent Masking via LanPaint Integration
+
+Because the `diffusers` implementation of `Flux2KleinPipeline` fails to accept a `mask_image` parameter, the pipeline cannot restrict generation to the garment area. Within the ComfyUI ecosystem, this limitation is bypassed at the sampler level using specialized tools such as LanPaint.
+
+**Method Name and Reference:** LanPaint KSampler Latent Masking.
+
+**Mechanism of Size Control:** LanPaint operates at the K-Sampler level by intersecting the denoising trajectory. Rather than utilizing a specialized inpainting UNet, LanPaint intervenes during the iterative steps of the schedule, explicitly overwriting the latents outside the target mask region with the original unnoised latents. By uploading a morphologically dilated mask into the "Mask image for inpainting" node and utilizing the `LanPaint KSampler`, the workflow forces the FLUX.2 Klein 9B model to preserve the subject's face and limbs while denoising the newly expanded garment region. Size control is dictated by adjusting the content alignment parameter (`LanPaint_Lambda`), ensuring the newly generated XL garment adheres strictly to the expanded mask boundaries.
+
+**FLUX.2 Klein 9B Compatibility:** Perfect. LanPaint explicitly supports the FLUX.2 Klein distilled architectures within ComfyUI, providing seamless inpainting capabilities without requiring a model switch.
+
+**Implementation Complexity:** Medium. The engineer must migrate the generation logic from `diffusers` Python scripts into a strictly ComfyUI-based LanPaint workflow, carefully balancing the `LanPaint_Lambda` (recommended between 4.0 and 10.0) against the `LanPaint_Friction` parameter to prevent texture tearing at the expanded mask borders.
+
+**Differentiation Assessment:** The capacity for visible size differentiation relies entirely on the quality of the provided mask. If the mask is successfully dilated according to the SiCo parameters, LanPaint will efficiently force FLUX.2 to fill that expanded volume, yielding distinct XL garments.
+
+### Spatial Boundary Enforcement via Structural ControlNets
+
+While semantic prompts fail to dictate garment boundaries, structural conditioning models forcefully constrain the spatial layout of the generated latents. The introduction of specific geometries can override the tightening bias of the VTON LoRA.
+
+**Method Name and Reference:** FLUX ControlNet Spatial Enforcement via XLabs-AI and Qwen2VL.
+
+**Mechanism of Size Control:** This method extracts dense spatial conditions from a synthetic target. First, the source garment is pre-processed and warped using classical 2D transformations to represent the desired target size (e.g., an oversized, boxy silhouette). A Canny edge map or depth map is then extracted from this artificially enlarged garment. This edge map is injected into the FLUX.2 model alongside the text prompt and the `fal` LoRA. The ControlNet explicitly forces the Rectified Flow Transformer's attention heads to align the generated textures along the geometric lines of the oversized Canny map, overriding the base model's bias toward a tight fit.
+
+**FLUX.2 Klein 9B Compatibility:** Medium. While community-driven ControlNets (such as the Qwen2VL-Flux ControlNet and XLabs-AI v3 models) exist for FLUX architectures and support Canny and Depth modalities, applying them alongside a specialized VTON LoRA in a 4-step distilled model can lead to over-saturation and artifact generation.
+
+**Implementation Complexity:** High. The complexity lies in generating a synthetic Canny map that accurately represents an XL garment while aligning perfectly with the subject's specific pose. Misalignment between the expanded Canny map and the user's limbs will result in severe anatomical hallucinations, such as extra arms or disjointed collars.
+
+**Differentiation Assessment:** If successfully aligned, the assessment for M versus XL differentiation is absolute. The model cannot ignore dense pixel-level edge conditioning. The garment will be generated at the exact dimensions dictated by the Canny map.
+
+### IP-Adapter Regional Conditioning and Scale Manipulation
+
+Image Prompt (IP) Adapters inject visual features into the diffusion process by cross-attending to image embeddings rather than text embeddings. For the FLUX ecosystem, specific IP-Adapter checkpoints have been released to facilitate image-driven generation.
+
+**Method Name and Reference:** FLUX IP-Adapter v2 Regional Conditioning.
+
+**Mechanism of Size Control:** Within ComfyUI, advanced nodes such as `IPAdapterRegionalConditioning` allow developers to dictate the strength and spatial influence of an image prompt. By applying an IP-Adapter specifically to an expanded mask region and manipulating the conditioning scale parameter (`image_weight`), the system attempts to flood the expanded area with the garment's texture.
+
+**FLUX.2 Klein 9B Compatibility:** High within the ComfyUI ecosystem, utilizing the XLabs-AI `flux-ip-adapter-v2` implementation.
+
+**Implementation Complexity:** Medium. Requires complex ComfyUI routing to isolate the IP-Adapter's influence strictly to the garment mask without causing texture bleed into the background.
+
+**Differentiation Assessment:** The assessment for size control via IP-Adapter scaling is low. Empirical evidence establishes that IP-Adapters excel at transferring semantic identity (fabric, logos, colors, material) rather than rigid geometric scaling. Increasing the conditioning strength will intensify the texture and pattern mapping, but it will not force the physical boundaries of the silhouette to expand into an XL shape.
+
+### Summary of Priority 1 Interventions
+
+The following table synthesizes the comparative viability of direct pipeline interventions for achieving size control within the FLUX.2 Klein 9B environment.
+
+| **Intervention Strategy** | **Primary Mechanism** | **FLUX.2 Compatibility** | **Implementation Complexity** | **Viability for M vs XL Differentiation** |
+| --- | --- | --- | --- | --- |
+| **Morphological Masking & Scaling** |   Mask dilation/erosion + 2D reference padding   | Native (Pre-processing) | Low (OpenCV/ComfyUI math) | **Optimal.** Physically dictates the generation canvas. |
+| **LanPaint KSampler** |   Overrides unmasked latents during denoising schedule   | Native (ComfyUI Custom Node) | Medium (Routing adjustments) | **High.** Essential for bypassing API `mask_image` limits. |
+| **Canny ControlNet** |   Forces alignment to artificially oversized edge maps   | Medium (Distilled step conflicts) | High (Requires synthetic edge alignment) | **High.** Guarantees boundary adherence, risks anatomical errors. |
+| **IP-Adapter Scaling** |   Modifies attention weights in regional blocks   | High (XLabs-AI implementation) | Medium (ComfyUI node routing) | **Low.** Alters texture intensity, not physical dimensions. |
+
+Priority 2: Proven Size and Fit Control Methods in Academia
+-----------------------------------------------------------
+
+Understanding how state-of-the-art academic frameworks achieve size variability provides a theoretical blueprint for adapting these concepts to the FLUX.2 Klein 9B backbone. The consensus in the 2024-2026 literature unequivocally confirms the engineer's findings: prompt-only size control is fundamentally impossible. Generative text encoders lack metric grounding, and the structural priors of diffusion VTON models prioritize pixel-level alignment over semantic size requests.
+
+### SV-VTON (Size-Variable Virtual Try-On)
+
+Introduced as a dedicated approach to multi-size generation, SV-VTON explicitly addresses the exact lack of size differentiation observed in conventional architectures.
+
+**Method Name and Reference:** SV-VTON (Size-Variable Virtual Try-On).
+
+**Mechanism of Size Control:** The framework operates on a precise two-stage strategy. First, it generates a coarse initial mask based on human keypoints. It then utilizes an edge smoothing strategy via a U2-Net model to refine the coarse edges into a "multi-size mask". Crucially, the system does not attempt to persuade the model to generate a larger garment through text. Instead, it fuses these refined, oversized masks with proportionally adjusted input garment images. By physically scaling the source garment in the condition input and providing a matching enlarged mask, the model is guided mathematically rather than semantically. The framework introduces a Size Evaluation Metric (SEM) to quantitatively assess generated size increments against international sizing standards, consistently achieving precise tight ($A\_1$), fitted ($A\_2$), and loose ($A\_3$) styles.
+
+**FLUX.2 Klein 9B Compatibility:** High. The core concept is model-agnostic. It relies entirely on intelligent pre-processing of the inputs (masks and reference images) before they are fed to the FLUX.2 generation block.
+
+**Implementation Complexity:** Medium. The engineer must integrate robust pose-estimation (e.g., DWPose) and U2-Net masking algorithms into the Python pipeline to dynamically generate the multi-size masks based on input parameters prior to the FLUX.2 step.
+
+**Differentiation Assessment:** The assessment is excellent. By providing a scaled garment image alongside an expanded mask, the Rectified Flow Transformer's attention layers are forced to fill a larger spatial volume with the corresponding texture, bypassing the prompt-ignorance issue entirely.
+
+### QuantFit-VTON: Measurement-Conditioned Diffusion
+
+QuantFit-VTON addresses the lack of explicit geometric control by abandoning implicit silhouette cues and integrating explicit, numeric constraints into the diffusion architecture.
+
+**Method Name and Reference:** QuantFit-VTON.
+
+**Mechanism of Size Control:** The researchers augmented the VITON-HD dataset with precise physical measurements (height, length, width) for both subjects and garments. The architecture introduces a specialized "Measurement Encoder" that maps these numeric parameters into generator-ready conditioning features, injecting them directly into the cross-attention streams of a dual-U-Net architecture. Furthermore, to prevent the model from lazily copying the source clothing's contours—a primary cause of the VTON LoRA's failure to resize—QuantFit-VTON utilizes a massively oversized agnostic inpainting region (a large neutral bounding box) rather than a tight body mask. This decouples the editable area from the source image, granting the model the spatial freedom to alter the hem length and silhouette based on the numeric conditioning.
+
+**FLUX.2 Klein 9B Compatibility:** Low for the Measurement Encoder, but Perfect for the Agnostic Masking strategy. Training a new Measurement Encoder requires retraining the 9-billion parameter FLUX.2 architecture, which is beyond the scope of a pipeline enhancement. However, the agnostic bounding box masking technique is instantly deployable.
+
+**Implementation Complexity:** Very High for full implementation; Low for extracting the agnostic mask concept. The engineer can configure the GroundingDino or SAM node to output a rectangular bounding box that encompasses the entire torso and surrounding background space rather than a tight polygon.
+
+**Differentiation Assessment:** Conceptually critical. While numeric embedding cannot be easily ported to FLUX.2, the adoption of the "Agnostic Bounding Box" mask strategy is absolutely essential. If the mask tightly hugs an M-sized user, the model cannot render an XL garment. An agnostic bounding box mathematically permits spatial expansion.
+
+### COTTON and Landmark-Guided TPS Warping
+
+The COTTON (Size Does Matter) framework tackles size adjustment by leveraging classical computer vision coordinate mapping prior to the deep learning generation phase.
+
+**Method Name and Reference:** COTTON (Clothing-Oriented Transformation Try-On Network) and Thin Plate Spline (TPS) Warping.
+
+**Mechanism of Size Control:** The mechanism relies on landmark-guided Thin Plate Spline (TPS) transformation. TPS works by calculating a smooth, elastic spatial mapping between a grid of control points on the flat source garment and a set of target points on the human body. By programmatically manipulating the target points (e.g., artificially expanding the bounding box of the torso landmarks by 15%), the source garment is physically warped to represent an XL fit before generation begins. This pre-warped garment is then passed to the generative model as the primary visual condition.
+
+**FLUX.2 Klein 9B Compatibility:** High. The TPS warped image functions as an advanced pre-processed input, fed into FLUX.2 as the primary reference image.
+
+**Implementation Complexity:** High. Requires setting up an OpenPose/landmark detection script and a robust TPS warping algorithm (utilizing NumPy/SciPy) as an independent pre-processing module before the diffusion step.
+
+**Differentiation Assessment:** The assessment is high for size accuracy, but carries risks for texture quality. TPS explicitly scales the garment to the exact pixel, ensuring deterministic M vs XL differentiation. However, extreme elastic scaling often results in texture distortion or blurriness , which the highly adherent FLUX.2 model will faithfully but incorrectly reproduce.
+
+### The SiCo Framework: Interactive Dilations
+
+The SiCo framework introduces a user-centric approach to size adjustments, prioritizing interactive mask transformations over retraining.
+
+**Method Name and Reference:** SiCo (Interactive Size-Controllable Virtual Try-On).
+
+**Mechanism of Size Control:** The backbone comprises an identity-preserved garment remover, a size-controllable garment mask generator, and a final garment generator. The critical mechanism is the mask generator, which calculates the delta between the user's true size and the requested garment size. If the requested size is larger ($u \\leq g$), the mask is dilated iteratively from the left, right, and bottom edges, specifically avoiding the top boundary to anchor the garment to the shoulders. If the requested size is smaller, the bottom of the mask is trimmed proportionally based on the length delta. To maintain user identity against the expanded mask, SiCo utilizes a Canny-edge ControlNet derived from the user's body contours.
+
+**FLUX.2 Klein 9B Compatibility:** High. The masking logic is mathematically transferable to the ComfyUI workflow feeding the FLUX.2 pipeline.
+
+**Implementation Complexity:** Medium. Requires creating a conditional logic node in ComfyUI that calculates size deltas and applies targeted directional dilation/erosion to the SAM-generated mask.
+
+**Differentiation Assessment:** Highly effective. The explicit rule-based dilation ensures that the generation canvas accurately reflects the volumetric increase of larger sizes, allowing the diffusion model to populate the expanded space.
+
+### Summary of Academic Methodologies
+
+The theoretical insights extracted from these frameworks dictate that VTON pipelines must decouple garment geometry from latent harmonization.
+
+| **Academic Framework** | **Core Mechanism** | **Portability to FLUX.2 Klein 9B** |
+| --- | --- | --- |
+|   **SV-VTON**   | Proportional garment scaling + edge-smoothed multi-size masks. | **High.** Can be implemented via OpenCV pre-processing nodes. |
+|   **QuantFit-VTON**   | Measurement encoder + massive agnostic inpainting regions. | **Partial.** Encoder cannot be ported, but agnostic bounding boxes are essential. |
+|   **COTTON (TPS)**   | Elastic Thin Plate Spline warping to expanded body landmarks. | **Medium.** Warping is portable, but risks introducing texture distortion prior to diffusion. |
+|   **SiCo**   | Conditional, directional mask dilation/erosion based on size deltas. | **High.** Math easily translated to ComfyUI node logic. |
+
+Priority 3: Hybrid Pipelines Leveraging FLUX.2 as the Quality Backbone
+----------------------------------------------------------------------
+
+Given the strict requirement to maintain FLUX.2 Klein 9B as the final generation engine due to its superior sub-second inference, unmatched photorealism, and unified generation capabilities , single-model approaches are restrictive. Hybrid, multi-stage pipelines offer the most pragmatic solution for production environments, utilizing distinct algorithms for discrete tasks.
+
+### Multi-Stage Flow-Based Warping to Diffusion Harmonization
+
+A highly effective commercial and academic strategy involves decoupling the *geometry definition* from the *texture harmonization*.
+
+**Method Name and Reference:** Hybrid Flow-to-Diffusion Harmonization.
+
+**Mechanism of Size Control:** In this hybrid approach, classical flow-based or TPS warping is utilized to define the exact geometry and physical size of the garment. Algorithms like the Appearance Flow Network or specialized dense pose Warping Modules deform the high-resolution source garment to perfectly fit an XL or M spatial layout over the user's coordinates. Once this warped garment is generated, it is roughly composited over the user's image. At this intermediate stage, the image appears highly artificial, characterized by harsh seams, absent shadows, and lighting mismatches.
+
+This crude composite image is then fed into the FLUX.2 Klein 9B pipeline using the `LanPaint` latent inpainting workflow. Crucially, the model is run at a remarkably low denoising strength (e.g., 0.30 to 0.45). At this low denoise level, FLUX.2 acts purely as an intelligent harmonizer. It smooths the seams, matches the subject's ambient skin lighting to the fabric, and generates realistic, physically accurate wrinkles along the forced geometric boundaries without altering the structural size dictated by the warp.
+
+**FLUX.2 Klein 9B Compatibility:** Native. This utilizes FLUX.2's advanced image-to-image capabilities flawlessly, preventing the model from having to hallucinate geometry from scratch.
+
+**Implementation Complexity:** High. Requires chaining a secondary neural network (for dense pose extraction and appearance flow calculations) with the primary FLUX.2 ComfyUI workflow.
+
+**Differentiation Assessment:** Excellent. This pipeline guarantees explicit size control—because the size is dictated entirely by the external warp algorithm—while successfully leveraging the unmatched photorealism and texture rendering of the FLUX.2 Klein 9B backbone.
+
+### Training a Size-Aware LoRA on Top of the Base Model
+
+The current stack relies on the `fal/flux-klein-9b-virtual-tryon-lora`. Because this specific LoRA was likely trained on datasets emphasizing perfect, pixel-accurate alignment (such as VITON-HD or DressCode) , its learned weight matrices stubbornly override any prompt requesting size deviation.
+
+**Method Name and Reference:** Secondary Size-Aware LoRA Fine-Tuning.
+
+**Mechanism of Size Control:** A hybrid approach involves fine-tuning a secondary, highly specialized "Size Control LoRA" on top of the undistilled FLUX.2 Klein 9B Base model. Using tools like AI-Toolkit or SimpleTuner, the engineer can curate a dataset specifically designed to teach the cross-attention layers the concept of relative scale. The dataset must consist of images of the *same* subject wearing the *same* garment in systematically different sizes (Small, Medium, Large, Extra Large). The captions must be highly verbose and descriptive (e.g., "A woman wearing an aggressively oversized, baggy XL red sweater that drapes heavily past the hips, featuring dropped shoulder seams...") to isolate the concept of size. By merging this newly trained LoRA with the existing VTON LoRA, or applying them sequentially in ComfyUI, the text encoder learns the specific spatial expansions associated with the token "oversized XL."
+
+**FLUX.2 Klein 9B Compatibility:** High. The FLUX.2 architecture natively supports multi-LoRA stacking and advanced weight merging.
+
+**Implementation Complexity:** Very High. The architectural integration is simple, but the difficulty lies entirely in data curation. Acquiring or synthesizing a high-quality, standardized dataset of size variations on identical subjects is notoriously difficult. Furthermore, LoRA training on the 9B parameter model requires careful management of learning rates, gradient accumulation, and optimizer configurations (e.g., AdamW\_bf16) to prevent catastrophic forgetting.
+
+**Differentiation Assessment:** Low-Medium. Diffusion models notoriously struggle to disentangle size from subject identity. Without the explicit geometric masks detailed in Priority 1 and 2, the combined LoRA weights may still default to a perfect fit in order to minimize the reconstruction loss learned by the primary `fal` VTON LoRA.
+
+### Latent Space Interpolation and Manipulation
+
+While semantic prompting fails, direct manipulation of the latent vectors associated with size characteristics presents a theoretical avenue for control.
+
+**Method Name and Reference:** Latent Space Directional Interpolation.
+
+**Mechanism of Size Control:** By analyzing the latent space of the VAE, one can identify the specific directional vectors that correspond to "enlargement" or "bagginess." By artificially adding these calculated vectors to the initial noise or the conditional embeddings at each step of the diffusion schedule, the model is mathematically pushed toward generating larger silhouettes.
+
+**FLUX.2 Klein 9B Compatibility:** Low. The sheer dimensionality of the 9B parameter Rectified Flow space makes isolating discrete, disentangled vectors for "garment size" without affecting "subject body weight" highly improbable without extensive, dedicated research.
+
+**Implementation Complexity:** Extremely High. Requires custom Python scripting to perform principal component analysis on the VAE latents across thousands of generations to isolate the size vector.
+
+**Differentiation Assessment:** Poor. While theoretically sound, practical application invariably results in unintended feature entanglement, causing the user's physical body to expand alongside the garment.
+
+### Summary of Hybrid Implementations
+
+| **Hybrid Strategy** | **Mechanism** | **Complexity** | **Assessment of M vs XL Output** |
+| --- | --- | --- | --- |
+|   **Warp-to-Diffusion**   | TPS geometry warp followed by low-denoise FLUX blending. | High | **Excellent.** Explicitly separates geometry (warp) from texture/lighting (FLUX). |
+|   **Size-Aware LoRA**   | Fine-tuning a secondary LoRA on size-variant datasets. | Very High | **Moderate.** Heavily dependent on dataset quality; risks fighting the `fal` LoRA's prior. |
+|   **Latent Interpolation**   | Mathematical manipulation of the VAE latent trajectory. | Extreme | **Poor.** High risk of feature entanglement (making the user fatter, not the clothes bigger). |
+
+Priority 4: Analyzing Alternative Architectures for Concept Extraction
+----------------------------------------------------------------------
+
+While the mandate is to firmly retain the 9-billion parameter FLUX.2 architecture, analyzing lower-quality native VTON models reveals critical structural techniques that can be extracted and ported to the current ComfyUI stack to force size compliance.
+
+### Extracting the Agnostic Masking Concept
+
+Models such as DualFit, IDM-VTON, and CatVTON achieve successful VTON through heavily modified U-Net architectures. CatVTON, for instance, bypasses complex cross-attention mechanisms by directly concatenating the person and garment latent vectors in the spatial dimension, relying on self-attention to establish correspondence.
+
+The primary takeaway from these architectures, particularly from models specifically engineered to address the "Size Does Matter" problem, is their absolute reliance on **clothing-agnostic representations**. In the current FLUX.2 pipeline, if the system utilizes a precise semantic segmentation model (like SAM3 or GroundingDino) to detect the user's current shirt and subsequently masks *only* that exact geometric shape, it is mathematically impossible for the new generated garment to be larger. The model cannot alter pixels outside the mask.
+
+**Extracted Concept:** The necessity of an aggressively generalized mask. The masking logic in the ComfyUI workflow must be fundamentally rewritten. Instead of generating a tight polygon around the existing garment, the system must generate an "agnostic torso bounding box." This bounding box must extend significantly beyond the physical shoulders, waist, and hips of the user, deliberately erasing substantial portions of the background pixels.
+
+**Application to FLUX.2:** By providing this oversized, agnostic bounding box to the `LanPaint KSampler` , the FLUX.2 model is finally granted the spatial allowance required to render an XL garment. The Qwen3 text encoder's understanding of the word "oversized" is no longer restricted by a tight spatial cage. The model can utilize the erased background space to construct dropped shoulders, baggy sleeves, and extended hems, effectively allowing prompt engineering to function as originally intended.
+
+Conclusions and Strategic Engineering Roadmap
+---------------------------------------------
+
+The exhaustive analysis of the FLUX.2 architecture, contemporary academic frameworks (SV-VTON, SiCo, QuantFit-VTON), and latent manipulation strategies confirms that prompt engineering within the FLUX.2 Klein 9B framework cannot reliably control the physical dimensions of garments. The Qwen3 text encoder maps semantic style rather than Cartesian geometry, and the `fal` VTON LoRA actively forces the generated latents to conform to the tightest possible body mask to minimize reconstruction loss.
+
+To achieve distinct, deterministic Medium, Large, and Extra Large categorizations while strictly maintaining the FLUX.2 Klein 9B backbone, the engineering strategy must fundamentally shift from semantic persuasion to rigid geometric enforcement. The recommended implementation roadmap for the RTX PRO 6000 stack is as follows:
+
+1.  **Implement Agnostic, Size-Variable Masking (Immediate Execution):** Abandon the use of tight semantic segmentation masks. Adopt the SiCo and QuantFit-VTON methodologies by programming the ComfyUI masking nodes to generate a generalized bounding box. This box must be morphologically dilated (expanded outward) for XL garments and eroded for S garments. This physical expansion of the mask gives the FLUX.2 model the required canvas space to draw oversized clothing without being trapped by the user's original silhouette.
+
+2.  **Incorporate Proportional Garment Pre-processing (Immediate Execution):** Do not feed a static, uniform garment reference image into the model. Before the image reaches the VTON LoRA or the IP-Adapter, apply a deterministic 2D scale transformation to the garment image relative to the canvas size. A visibly smaller reference image paired with a trimmed mask will force the attention layers to render a tighter fit; a larger reference image paired with a dilated mask will generate an oversized fit.
+
+3.  **Utilize LanPaint for Latent Inpainting (Immediate Execution):** Because the `diffusers` `Flux2KleinPipeline` currently fails to support `mask_image` natively, route the generation entirely through ComfyUI using the `LanPaint KSampler`. This tool operates directly in the latent space during the denoising schedule, effectively forcing the FLUX.2 model to respect the newly expanded mask boundaries and synthesize the garment seamlessly into the surrounding unmasked context.
+
+4.  **Transition to Flow-Based Hybrid Workflows (Long-term Objective):** For commercial-grade applications where exact centimeter sizing is strictly required, transition to a dual-stage pipeline. Utilize a fast, lightweight Thin Plate Spline (TPS) or Appearance Flow algorithm to mathematically warp the garment to the exact physical coordinates and size of the user. Subsequently, pass this artificially warped, unnatural composite into the FLUX.2 Klein 9B pipeline at a low denoising strength (e.g., 0.35). In this configuration, FLUX.2 is utilized solely for what it does best: photorealistic harmonization, edge blending, and complex lighting correction, while the size is explicitly dictated by the preceding geometric warp.
+
+
+By applying these precise spatial constraints directly to the inputs, the system effectively decouples size variation from text prompts, allowing the FLUX.2 Klein 9B model to execute size-controllable, photorealistic virtual try-ons without requiring architectural modifications or compromises in final output quality.

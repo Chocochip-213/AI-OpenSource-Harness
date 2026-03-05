@@ -141,7 +141,7 @@ cells:
           pipe.enable_model_cpu_offload()
           print(f"CPU offload mode (VRAM: {vram_gb:.0f}GB)")
 
-      # Blackwell optimization: torch.compile (first run compiles, subsequent runs faster)
+      # Blackwell optimization: torch.compile (distilled has no CFG, safe with CUDA Graphs)
       print("Compiling transformer for Blackwell acceleration...")
       pipe.transformer = torch.compile(pipe.transformer, mode="reduce-overhead")
 

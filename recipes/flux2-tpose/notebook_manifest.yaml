@@ -1,4 +1,4 @@
-title: "FLUX.2 Klein 4B — Garment T-pose Conversion + Gradio API"
+title: "FLUX.2 Klein 9B — Garment T-pose Conversion + Gradio API"
 
 cells:
   # ================================================================
@@ -6,11 +6,11 @@ cells:
   # ================================================================
   - type: markdown
     source: |
-      # FLUX.2 Klein 4B — Garment T-pose Conversion
+      # FLUX.2 Klein 9B — Garment T-pose Conversion
 
       단일 의류 사진을 **T-pose 정면 이미지**로 변환합니다.
 
-      - **Model**: `black-forest-labs/FLUX.2-klein-4B` (4B params, 4-step distilled)
+      - **Model**: `black-forest-labs/FLUX.2-klein-9B` (9B params, 4-step distilled)
       - **Input**: 의류 사진 (평면촬영, 행거샷, 착용샷)
       - **Output**: T-pose 의류 이미지 (흰배경, 1024x1024)
       - **API**: Gradio 엔드포인트로 외부 호출 가능
@@ -37,10 +37,12 @@ cells:
       print(f"GPU: {gpu_name}")
       print(f"VRAM: {vram_gb:.1f} GB")
 
-      if vram_gb < 12:
-          print("WARNING: VRAM < 12GB. cpu_offload will be used but may be slow.")
+      if vram_gb < 29:
+          print("WARNING: VRAM < 29GB. cpu_offload will be used but may be slow.")
+      elif vram_gb >= 40:
+          print(f"OK: {vram_gb:.0f}GB — full GPU mode (no offload needed)")
       else:
-          print("OK: Sufficient VRAM for FLUX.2 Klein 4B")
+          print("OK: Sufficient VRAM for FLUX.2 Klein 9B")
 
   # ================================================================
   # B) Dependencies
@@ -52,42 +54,40 @@ cells:
   - type: code
     source: |
       #@title B) Install Dependencies { run: "auto" }
-      import subprocess, sys
+      import importlib, subprocess, sys, os
+
+      def pip_install(*args):
+          subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *args])
 
       # --- 1. Probe Flux2KleinPipeline ---
-      need_diffusers_upgrade = False
+      _need_restart = False
       try:
           from diffusers import Flux2KleinPipeline
-          import diffusers
-          print(f"diffusers {diffusers.__version__} — Flux2KleinPipeline OK")
+          print(f"Flux2KleinPipeline found in diffusers {importlib.metadata.version('diffusers')}")
       except ImportError:
-          print("Flux2KleinPipeline not found in current diffusers. Upgrading to git HEAD...")
-          need_diffusers_upgrade = True
+          print("Flux2KleinPipeline not in current diffusers — installing git HEAD...")
+          pip_install("git+https://github.com/huggingface/diffusers.git")
+          _need_restart = True
 
-      if need_diffusers_upgrade:
-          subprocess.check_call([
-              sys.executable, "-m", "pip", "install", "-q",
-              "git+https://github.com/huggingface/diffusers.git"
-          ])
-          # Verify after upgrade
-          from diffusers import Flux2KleinPipeline
-          import diffusers
-          print(f"diffusers {diffusers.__version__} (git HEAD) — Flux2KleinPipeline OK")
-          print(">>> Colab kernel restart may be needed. Re-run this cell if import fails.")
+      # --- 2. rembg + gradio + deps ---
+      for pkg in ["rembg[gpu]", "gradio>=5.0", "accelerate>=1.12.0",
+                   "sentencepiece", "protobuf", "safetensors"]:
+          pip_install(pkg)
+      print("Additional dependencies installed")
 
-      # --- 2. rembg + gradio ---
-      subprocess.check_call([
-          sys.executable, "-m", "pip", "install", "-q",
-          "rembg[gpu]", "gradio>=5.0", "accelerate>=1.12.0", "sentencepiece"
-      ])
-
-      # --- 3. Verify ---
-      import torch, transformers, accelerate
-      print(f"\ntorch={torch.__version__}, CUDA={torch.version.cuda}")
-      print(f"transformers={transformers.__version__}")
-      print(f"accelerate={accelerate.__version__}")
-      print(f"CUDA available={torch.cuda.is_available()}")
-      print("\nAll dependencies installed.")
+      # --- 3. Restart or verify ---
+      if _need_restart:
+          print("\nRestarting runtime to pick up new diffusers...")
+          print(">>> After restart, re-run from this cell (B). It will skip install and verify.")
+          import signal
+          os.kill(os.getpid(), signal.SIGKILL)
+      else:
+          import torch, transformers, accelerate
+          print(f"\ntorch={torch.__version__}, CUDA={torch.version.cuda}")
+          print(f"transformers={transformers.__version__}")
+          print(f"accelerate={accelerate.__version__}")
+          print(f"diffusers={importlib.metadata.version('diffusers')}")
+          print("\nAll ready.")
 
   # ================================================================
   # C) HuggingFace Auth
@@ -96,7 +96,7 @@ cells:
     source: |
       ## C) HuggingFace Authentication
 
-      FLUX.2 Klein 4B는 Apache 2.0이지만, 다운로드를 위해 HF 토큰이 필요할 수 있습니다.
+      FLUX.2 Klein 9B는 gated model — HF 토큰이 필요합니다.
 
   - type: code
     source: |
@@ -118,7 +118,7 @@ cells:
   # ================================================================
   - type: markdown
     source: |
-      ## D) Load FLUX.2 Klein 4B
+      ## D) Load FLUX.2 Klein 9B
 
   - type: code
     source: |
@@ -126,15 +126,23 @@ cells:
       import torch
       from diffusers import Flux2KleinPipeline
 
-      MODEL_ID = "black-forest-labs/FLUX.2-klein-4B"
+      MODEL_ID = "black-forest-labs/FLUX.2-klein-9B"
       DTYPE = torch.bfloat16
+
+      vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
 
       print(f"Loading {MODEL_ID} ...")
       pipe = Flux2KleinPipeline.from_pretrained(MODEL_ID, torch_dtype=DTYPE)
-      pipe.enable_model_cpu_offload()
+
+      if vram_gb >= 40:
+          pipe.to("cuda")
+          print(f"Full GPU mode (VRAM: {vram_gb:.0f}GB)")
+      else:
+          pipe.enable_model_cpu_offload()
+          print(f"CPU offload mode (VRAM: {vram_gb:.0f}GB)")
 
       vram_after = torch.cuda.memory_allocated() / 1e9
-      print(f"Model loaded. VRAM used: {vram_after:.2f} GB (cpu_offload enabled)")
+      print(f"Model loaded. VRAM used: {vram_after:.2f} GB")
       print("Ready for inference.")
 
   # ================================================================
@@ -159,45 +167,43 @@ cells:
           result_bytes = remove(img_bytes.getvalue())
           return Image.open(io.BytesIO(result_bytes)).convert("RGBA")
 
-      def center_on_white(rgba_img: Image.Image, target_size: int = 1024, padding: float = 0.05) -> Image.Image:
-          """Center the garment on a white background with padding."""
-          # Find bounding box of non-transparent pixels
+      def center_on_white(rgba_img: Image.Image, target_w: int = 1536, target_h: int = 1024, padding: float = 0.05) -> Image.Image:
+          """Center the garment on a white background with padding.
+          Default 1536x1024 (landscape) to give horizontal space for T-pose sleeves."""
           alpha = np.array(rgba_img)[:, :, 3]
           rows = np.any(alpha > 10, axis=1)
           cols = np.any(alpha > 10, axis=0)
 
           if not rows.any() or not cols.any():
-              # Fallback: return white image
-              return Image.new("RGB", (target_size, target_size), (255, 255, 255))
+              return Image.new("RGB", (target_w, target_h), (255, 255, 255))
 
           rmin, rmax = np.where(rows)[0][[0, -1]]
           cmin, cmax = np.where(cols)[0][[0, -1]]
 
-          # Crop to content
           cropped = rgba_img.crop((cmin, rmin, cmax + 1, rmax + 1))
           cw, ch = cropped.size
 
-          # Calculate target area with padding
-          pad_px = int(target_size * padding)
-          available = target_size - 2 * pad_px
-          scale = min(available / cw, available / ch)
+          # Scale down to ~60% of canvas height to leave room for sleeves to spread
+          pad_px = int(min(target_w, target_h) * padding)
+          avail_w = target_w - 2 * pad_px
+          avail_h = target_h - 2 * pad_px
+          scale = min(avail_w / cw, avail_h / ch) * 0.7  # 70% fill — leave space for sleeve rotation
           new_w = int(cw * scale)
           new_h = int(ch * scale)
 
           cropped_resized = cropped.resize((new_w, new_h), Image.LANCZOS)
 
-          # Paste onto white background
-          result = Image.new("RGB", (target_size, target_size), (255, 255, 255))
-          offset_x = (target_size - new_w) // 2
-          offset_y = (target_size - new_h) // 2
+          result = Image.new("RGB", (target_w, target_h), (255, 255, 255))
+          offset_x = (target_w - new_w) // 2
+          offset_y = (target_h - new_h) // 2
           result.paste(cropped_resized, (offset_x, offset_y), cropped_resized)
 
           return result
 
-      def preprocess_garment(img: Image.Image, target_size: int = 1024) -> Image.Image:
-          """Full preprocessing: remove bg + center on white."""
+      def preprocess_garment(img: Image.Image, target_w: int = 1536, target_h: int = 1024) -> Image.Image:
+          """Full preprocessing: remove bg + center on wide canvas."""
           rgba = remove_background(img)
-          return center_on_white(rgba, target_size)
+          return center_on_white(rgba, target_w, target_h)
 
       print("Preprocessing functions loaded.")
 
@@ -232,20 +238,24 @@ cells:
       }
 
       def build_tpose_prompt(garment_type: str = "t-shirt", custom_desc: str = "") -> str:
-          """Build the T-pose conversion prompt."""
+          """Build the T-pose conversion prompt (edit-instruction style for Klein 9B).
+          Key: frame as sleeve ROTATION, not redesign. Preserve original proportions."""
           if garment_type == "custom" and custom_desc:
               garment_desc = custom_desc
           else:
               garment_desc = GARMENT_TYPES.get(garment_type, "garment")
 
           prompt = (
-              f"Flat-lay product photograph of a {garment_desc} laid flat in T-pose position. "
-              f"Both sleeves are spread out horizontally to the sides, "
-              f"front of the garment facing directly toward the camera. "
-              f"The garment preserves the exact same fabric texture, colors, patterns, and any logos or prints from the reference. "
-              f"Centered on a pure white background. "
-              f"Studio lighting with soft diffused shadows, sharp focus, high detail. "
-              f"Professional e-commerce product photography, 85mm lens, f/5.6."
+              f"Edit the input {garment_desc} photo by ONLY repositioning the sleeves. "
+              f"Rotate both sleeves outward around the shoulder seams until perfectly horizontal, "
+              f"symmetric left and right, creating a flat-lay T-pose layout. "
+              f"Do NOT shorten the sleeves. Preserve the original sleeve length from shoulder seam to cuff. "
+              f"Keep cuff size, sleeve opening, torso width, and body length the same as the input. "
+              f"This is a rotation of the existing sleeves, not a redesign. "
+              f"Preserve all garment identity exactly: color, fabric texture, stitching, seams, "
+              f"hood shape, pockets, and any graphic or text placement. "
+              f"Sleeve ends should reach close to the left and right image margins. "
+              f"Garment only, no person, no mannequin, no hanger, clean white background, fully visible."
           )
           return prompt
 
@@ -275,9 +285,11 @@ cells:
       #@markdown ### Settings
       GARMENT_TYPE = "t-shirt"  #@param ["t-shirt", "hoodie", "jacket", "shirt", "sweater", "coat", "dress", "polo", "vest", "custom"]
       CUSTOM_DESC = ""  #@param {type:"string"}
-      STRENGTH = 0.55  #@param {type:"slider", min:0.3, max:0.7, step:0.05}
+      GUIDANCE = 4.0  #@param {type:"slider", min:1.0, max:10.0, step:0.5}
+      NUM_STEPS = 4  #@param {type:"slider", min:4, max:50, step:1}
       SEED = 42  #@param {type:"integer"}
-      TARGET_SIZE = 1024  #@param [768, 1024] {type:"raw"}
+      OUT_W = 1536  #@param [1024, 1280, 1536] {type:"raw"}
+      OUT_H = 1024  #@param [768, 1024] {type:"raw"}
 
       # --- Upload ---
       print("Upload a garment image:")
@@ -286,9 +298,9 @@ cells:
       garment_img = Image.open(filename).convert("RGB")
       print(f"Uploaded: {filename} ({garment_img.size})")
 
-      # --- Preprocess ---
+      # --- Preprocess (wide canvas for sleeve room) ---
       print("Removing background...")
-      preprocessed = preprocess_garment(garment_img, TARGET_SIZE)
+      preprocessed = preprocess_garment(garment_img, OUT_W, OUT_H)
       display(preprocessed)
       print(f"Preprocessed: {preprocessed.size}")
 
@@ -296,21 +308,22 @@ cells:
       prompt = build_tpose_prompt(GARMENT_TYPE, CUSTOM_DESC)
       print(f"\nPrompt: {prompt}")
 
-      # --- Inference ---
-      print(f"\nGenerating T-pose (strength={STRENGTH}, steps=4, seed={SEED})...")
-      generator = torch.Generator(device="cpu").manual_seed(SEED)
+      # --- Inference (in-context conditioning, BFL Space pattern) ---
+      print(f"\nGenerating T-pose ({OUT_W}x{OUT_H}, steps={NUM_STEPS}, guidance={GUIDANCE}, seed={SEED})...")
+      generator = torch.Generator(device="cuda").manual_seed(SEED)
+
+      kwargs = dict(
+          prompt=prompt,
+          image=[preprocessed],
+          height=OUT_H,
+          width=OUT_W,
+          guidance_scale=GUIDANCE,
+          num_inference_steps=NUM_STEPS,
+          generator=generator,
+      )
 
       t0 = time.time()
-      result = pipe(
-          prompt=prompt,
-          image=preprocessed,
-          strength=STRENGTH,
-          height=TARGET_SIZE,
-          width=TARGET_SIZE,
-          guidance_scale=1.0,
-          num_inference_steps=4,
-          generator=generator,
-      ).images[0]
+      result = pipe(**kwargs).images[0]
       elapsed = time.time() - t0
 
       print(f"Done in {elapsed:.1f}s")
@@ -337,7 +350,6 @@ cells:
       result = client.predict(
           image="garment.jpg",
           garment_type="t-shirt",
-          strength=0.55,
           seed=42,
           api_name="/convert"
       )
@@ -356,9 +368,11 @@ cells:
           image: Image.Image,
           garment_type: str = "t-shirt",
           custom_desc: str = "",
-          strength: float = 0.55,
+          guidance: float = 4.0,
+          num_steps: int = 4,
           seed: int = 42,
-          target_size: int = 1024,
+          out_w: int = 1536,
+          out_h: int = 1024,
       ) -> tuple[Image.Image, Image.Image, str]:
           """Convert garment image to T-pose. Returns (preprocessed, result, info)."""
           if image is None:
@@ -367,28 +381,28 @@ cells:
           image = Image.fromarray(image) if isinstance(image, np.ndarray) else image
           image = image.convert("RGB")
 
-          # Preprocess
-          preprocessed = preprocess_garment(image, target_size)
+          # Preprocess (wide canvas for sleeve room)
+          preprocessed = preprocess_garment(image, out_w, out_h)
 
           # Build prompt
           prompt = build_tpose_prompt(garment_type, custom_desc)
 
-          # Inference
-          generator = torch.Generator(device="cpu").manual_seed(seed)
-          t0 = time.time()
-          result = pipe(
+          # Inference (BFL Space pattern)
+          generator = torch.Generator(device="cuda").manual_seed(seed)
+          kwargs = dict(
               prompt=prompt,
-              image=preprocessed,
-              strength=strength,
-              height=target_size,
-              width=target_size,
-              guidance_scale=1.0,
-              num_inference_steps=4,
+              image=[preprocessed],
+              height=out_h,
+              width=out_w,
+              guidance_scale=guidance,
+              num_inference_steps=num_steps,
               generator=generator,
-          ).images[0]
+          )
+          t0 = time.time()
+          result = pipe(**kwargs).images[0]
           elapsed = time.time() - t0
 
-          info = f"Time: {elapsed:.1f}s | Strength: {strength} | Seed: {seed} | Type: {garment_type}"
+          info = f"Time: {elapsed:.1f}s | {out_w}x{out_h} | Guidance: {guidance} | Steps: {num_steps} | Seed: {seed}"
           return preprocessed, result, info
 
       # --- Build Gradio UI ---
@@ -404,9 +418,11 @@ cells:
                       label="Garment Type",
                   )
                   custom_desc = gr.Textbox(label="Custom Description (if type=custom)", visible=True)
-                  strength = gr.Slider(0.3, 0.7, value=0.55, step=0.05, label="Strength (denoising)")
+                  guidance = gr.Slider(1.0, 10.0, value=4.0, step=0.5, label="Guidance Scale")
+                  num_steps = gr.Slider(4, 50, value=4, step=1, label="Inference Steps")
                   seed = gr.Number(value=42, label="Seed", precision=0)
-                  target_size = gr.Radio([768, 1024], value=1024, label="Output Size")
+                  out_w = gr.Radio([1024, 1280, 1536], value=1536, label="Output Width")
+                  out_h = gr.Radio([768, 1024], value=1024, label="Output Height")
                   btn = gr.Button("Convert to T-pose", variant="primary")
 
               with gr.Column():
@@ -416,7 +432,7 @@ cells:
 
           btn.click(
               fn=convert_to_tpose,
-              inputs=[input_image, garment_type, custom_desc, strength, seed, target_size],
+              inputs=[input_image, garment_type, custom_desc, guidance, num_steps, seed, out_w, out_h],
               outputs=[preprocessed_output, result_output, info_output],
               api_name="convert",
           )

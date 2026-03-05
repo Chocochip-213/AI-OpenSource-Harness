@@ -240,10 +240,10 @@ cells:
       ## F) VLM-Guided Prompt Builder
 
       프롬프트 전략 (BFL Guide + Anchor-Delta 패턴):
-      1. **Establish reference** — PromptGen 캡션으로 의류를 구체적으로 명명
+      1. **Establish reference** — Florence-2 캡션으로 의류를 구체적으로 명명
       2. **Anchor (보존)** — 보존할 속성을 먼저, 변경보다 앞에 배치
-      3. **Delta (변경)** — 최소한의 포즈 변경만 지시
-      4. **Explicit negation** — "Do not add a hood" 등 부정 제약 삽입
+      3. **Generic negation** — "Do not add or remove any structural feature" (범용)
+      4. **Delta (변경)** — 최소한의 포즈 변경만 지시
 
   - type: code
     source: |
@@ -252,7 +252,7 @@ cells:
       def build_tpose_prompt(garment_caption: str) -> str:
           """Build T-pose prompt with Anchor-Delta pattern.
           Anchor (preserve) comes first, Delta (change) follows.
-          Explicit negation prevents common drift (hood, neckline change)."""
+          VLM caption anchors garment identity — no garment-type-specific hardcoding."""
           prompt = (
               f"Flat-lay product photograph of {garment_caption}. "
               "Preserve exactly from the reference: the garment type, neckline shape, "
@@ -266,7 +266,7 @@ cells:
           return prompt
 
       # Preview with example caption
-      example_caption = "a beige crewneck sweatshirt with a small cat face embroidery on the chest, round neckline, no hood, ribbed cuffs and hem, long sleeves"
+      example_caption = "a beige sweatshirt with a small cat face embroidery on the chest, ribbed cuffs and hem, long sleeves"
       sample_prompt = build_tpose_prompt(example_caption)
       word_count = len(sample_prompt.split())
       print(f"Example prompt ({word_count} words):")

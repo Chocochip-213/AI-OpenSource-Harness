@@ -69,7 +69,15 @@ cells:
           pip_install("git+https://github.com/huggingface/diffusers.git")
           _need_restart = True
 
-      # --- 2. gradio + deps ---
+      # --- 2. flash-attn (Blackwell optimized) ---
+      try:
+          import flash_attn
+          print(f"flash-attn {flash_attn.__version__} already installed")
+      except ImportError:
+          print("Installing flash-attn for Blackwell acceleration...")
+          pip_install("flash-attn", "--no-build-isolation")
+
+      # --- 3. gradio + deps ---
       for pkg in ["gradio>=5.0", "accelerate>=1.12.0",
                    "sentencepiece", "protobuf", "safetensors"]:
           pip_install(pkg)
@@ -141,8 +149,12 @@ cells:
           pipe.enable_model_cpu_offload()
           print(f"CPU offload mode (VRAM: {vram_gb:.0f}GB)")
 
+      # Blackwell optimization: torch.compile (first run compiles, subsequent runs faster)
+      print("Compiling transformer for Blackwell acceleration...")
+      pipe.transformer = torch.compile(pipe.transformer, mode="reduce-overhead")
+
       vram_after = torch.cuda.memory_allocated() / 1e9
-      print(f"Model loaded. VRAM used: {vram_after:.2f} GB")
+      print(f"Model loaded + compiled. VRAM used: {vram_after:.2f} GB")
       print("Ready for inference.")
 
   # ================================================================
@@ -166,7 +178,8 @@ cells:
       print(f"Loading {CAPTION_MODEL_ID} for garment captioning...")
       caption_processor = AutoProcessor.from_pretrained(CAPTION_MODEL_ID)
       caption_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-          CAPTION_MODEL_ID, torch_dtype=torch.float16
+          CAPTION_MODEL_ID, torch_dtype=torch.bfloat16,
+          attn_implementation="flash_attention_2"
       ).to("cuda")
 
       vram_after = torch.cuda.memory_allocated() / 1e9

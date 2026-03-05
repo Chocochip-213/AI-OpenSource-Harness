@@ -228,7 +228,9 @@ cells:
                   {"type": "text", "text": (
                       "Describe this garment in one paragraph. Include: garment type, "
                       "sleeve length, neckline style, closures, fabric texture, colors, "
-                      "patterns, logos, and distinctive features. Be specific and factual."
+                      "patterns, logos, and distinctive features. "
+                      "For every logo, graphic, or print, state its exact position "
+                      "(e.g. center chest, left cuff, near sleeve end). Be specific and factual."
                   )}
               ]}
           ]
@@ -279,6 +281,7 @@ cells:
               "The garment is symmetric and neatly arranged. "
               "Preserve every detail from the original: same fabric, colors, patterns, logos, "
               "neckline, closures, and proportions. "
+              "Keep every logo and graphic at its original relative position on the garment. "
               "Pure white background, centered, no person, no mannequin, no hanger."
           )
           return prompt

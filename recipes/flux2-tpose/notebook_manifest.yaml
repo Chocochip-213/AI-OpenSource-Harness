@@ -152,7 +152,7 @@ cells:
     source: |
       ## D2) Load Florence-2 (Garment Auto-Captioner)
 
-      Florence-2-large (0.77B) — 입력 의류를 자동으로 묘사하여 프롬프트에 주입합니다.
+      Florence-2-PromptGen-v2.0 (0.23B, FLUX 전용 fine-tuned) — 입력 의류를 자동으로 묘사하여 프롬프트에 주입합니다.
       이렇게 하면 모델이 "맨투맨→후디" 같은 의류 종류 변환을 방지합니다.
 
   - type: code
@@ -161,7 +161,7 @@ cells:
       from transformers import AutoModelForCausalLM, AutoProcessor
       import torch
 
-      CAPTION_MODEL_ID = "microsoft/Florence-2-large"
+      CAPTION_MODEL_ID = "MiaoshouAI/Florence-2-base-PromptGen-v2.0"
 
       print(f"Loading {CAPTION_MODEL_ID} for garment captioning...")
       caption_processor = AutoProcessor.from_pretrained(
@@ -210,7 +210,8 @@ cells:
           return canvas
 
       def caption_garment(img: Image.Image) -> str:
-          """Auto-caption the garment using Florence-2 (on the ORIGINAL image, not preprocessed)."""
+          """Auto-caption the garment using Florence-2 PromptGen v2.0.
+          Uses <MORE_DETAILED_CAPTION> for rich garment description."""
           task = "<MORE_DETAILED_CAPTION>"
           inputs = caption_processor(text=task, images=img.convert("RGB"), return_tensors="pt")
           inputs = {k: v.to("cuda") for k, v in inputs.items()}
@@ -219,9 +220,13 @@ cells:
                   **inputs,
                   max_new_tokens=256,
                   do_sample=False,
+                  num_beams=3,
               )
-          result = caption_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-          return result.strip()
+          text = caption_processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+          parsed = caption_processor.post_process_generation(
+              text, task=task, image_size=(img.width, img.height)
+          )
+          return parsed.get(task, text).strip()
 
       print("Preprocessing + captioning functions loaded.")
 
@@ -232,27 +237,30 @@ cells:
     source: |
       ## F) VLM-Guided Prompt Builder
 
-      프롬프트 전략 (BFL Kontext Guide 기반):
-      1. **Establish reference** — Florence-2 캡션으로 입력 의류를 구체적으로 명명
-      2. **Specify transformation** — 최소한의 포즈 변경만 지시
-      3. **Preserve identity markers** — 캡션 속 특징을 보존 대상으로 재언급
-      4. **Guidance 2.5** — 텍스트 prior 영향 줄여서 입력 이미지 충실도 상승
+      프롬프트 전략 (BFL Guide + Anchor-Delta 패턴):
+      1. **Establish reference** — PromptGen 캡션으로 의류를 구체적으로 명명
+      2. **Anchor (보존)** — 보존할 속성을 먼저, 변경보다 앞에 배치
+      3. **Delta (변경)** — 최소한의 포즈 변경만 지시
+      4. **Explicit negation** — "Do not add a hood" 등 부정 제약 삽입
 
   - type: code
     source: |
       #@title F) VLM-Guided Prompt Builder
 
       def build_tpose_prompt(garment_caption: str) -> str:
-          """Build T-pose prompt anchored to VLM auto-caption.
-          BFL pattern: establish reference → specify transformation → preserve markers."""
+          """Build T-pose prompt with Anchor-Delta pattern.
+          Anchor (preserve) comes first, Delta (change) follows.
+          Explicit negation prevents common drift (hood, neckline change)."""
           prompt = (
-              f"This is {garment_caption}. "
-              "Reposition this exact garment into a flat-lay T-pose layout "
-              "with sleeves extended horizontally from the shoulder seams, symmetric left and right. "
-              "Keep every original detail exactly as described above — "
-              "same sleeve length, same neckline type, same fabric, same colors, same prints. "
-              "Do not add or remove any features that are not in the original. "
-              "Clean white background, garment only, no person, no mannequin, fully visible."
+              f"Flat-lay product photograph of {garment_caption}. "
+              "Preserve exactly from the reference: the garment type, neckline shape, "
+              "collar construction, all closures, fabric texture, all colors, all patterns, "
+              "all logos, sleeve length, and overall proportions. "
+              "Do not add a hood. Do not change the neckline. "
+              "Do not add or remove pockets, zippers, buttons, or drawstrings. "
+              "Change only the sleeve position: rotate both sleeves outward to spread "
+              "horizontally from the shoulder seams, symmetric left and right. "
+              "Front view, centered on pure white background, fully visible, no person, no mannequin."
           )
           return prompt
 

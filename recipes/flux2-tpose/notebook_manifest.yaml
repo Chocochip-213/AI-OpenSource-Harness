@@ -215,7 +215,7 @@ cells:
           task = "<MORE_DETAILED_CAPTION>"
           inputs = caption_processor(
               text=task, images=img.convert("RGB"), return_tensors="pt"
-          ).to(caption_model.device, torch.bfloat16)
+          ).to(caption_model.device)
 
           with torch.inference_mode():
               generated_ids = caption_model.generate(

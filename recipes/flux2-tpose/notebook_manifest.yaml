@@ -218,11 +218,9 @@ cells:
               {"role": "user", "content": [
                   {"type": "image"},
                   {"type": "text", "text": (
-                      "Describe this garment in one paragraph. Include: garment type, "
-                      "sleeve length, neckline style, closures, fabric texture, colors, "
-                      "patterns, logos, and distinctive features. "
-                      "For every logo, graphic, or print, state its exact position "
-                      "(e.g. center chest, left cuff, near sleeve end). Be specific and factual."
+                      "In one short sentence, name this garment: type, color, and sleeve length. "
+                      "Example: 'a black long-sleeve hoodie' or 'a white short-sleeve crewneck t-shirt'. "
+                      "Do NOT describe logos, graphics, patterns, or other details."
                   )}
               ]}
           ]
@@ -235,7 +233,7 @@ cells:
 
           with torch.inference_mode():
               generated_ids = caption_model.generate(
-                  **inputs, max_new_tokens=200, do_sample=False
+                  **inputs, max_new_tokens=30, do_sample=False
               )
           output_ids = generated_ids[:, inputs.input_ids.shape[1]:]
           return caption_processor.batch_decode(
@@ -268,18 +266,16 @@ cells:
           prompt = (
               f"Professional flat-lay product photograph of {garment_caption}, "
               "laid flat on a white surface, viewed from directly above. "
-              "Both arms of the garment are spread straight out to the left and right, "
-              "forming a clean T-shape, with sleeves fully extended. "
-              "The garment is symmetric and neatly arranged. "
-              "Preserve every detail from the original: same fabric, colors, patterns, logos, "
-              "neckline, closures, and proportions. "
-              "Keep every logo and graphic at its original relative position on the garment. "
+              "Both arms spread straight out to the left and right, forming a T-shape. "
+              "The garment is neatly arranged. "
+              "Preserve every visual detail exactly as shown in the reference image: "
+              "same logos, graphics, prints, fabric, neckline, closures, and proportions. "
               "Pure white background, centered, no person, no mannequin, no hanger."
           )
           return prompt
 
       # Preview with example caption
-      example_caption = "a beige sweatshirt with a small cat face embroidery on the chest, ribbed cuffs and hem, long sleeves"
+      example_caption = "a beige long-sleeve crewneck sweatshirt"
       sample_prompt = build_tpose_prompt(example_caption)
       word_count = len(sample_prompt.split())
       print(f"Example prompt ({word_count} words):")
@@ -317,7 +313,7 @@ cells:
       print(f"Uploaded: {filename} ({garment_img.size})")
 
       # --- Auto-caption (on ORIGINAL image, not preprocessed) ---
-      print("\nAuto-captioning with Florence-2...")
+      print("\nAuto-captioning with Qwen2.5-VL...")
       garment_caption = caption_garment(garment_img)
       print(f"Caption: {garment_caption}")
 

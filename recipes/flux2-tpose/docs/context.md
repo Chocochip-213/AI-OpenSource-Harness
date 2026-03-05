@@ -6,19 +6,18 @@
 Input (garment photo)
   |
   +- Phase 1: VLM Auto-Captioning
-  |   +- Florence-2-large-ft (florence-community, native transformers 5.x)
-  |   +- <MORE_DETAILED_CAPTION> → 의류 구체적 묘사
-  |   +- 원본 이미지에서 캡셔닝 (전처리 전)
+  |   +- Qwen2.5-VL-3B-Instruct (bf16 + SDPA)
+  |   +- 짧은 식별 캡션만: "a black long-sleeve hoodie"
+  |   +- 로고/그래픽/패턴은 캡션에 포함하지 않음 (참조 이미지가 보존)
   |
   +- Phase 2: Preprocessing
   |   +- 1536x1024 흰색 캔버스 중앙 배치 (70% fill)
   |   +- 배경 제거 없음 — in-context conditioning이 처리
   |
   +- Phase 3: Anchor-Delta Prompt Construction
-  |   +- "Flat-lay product photograph of {VLM caption}."
-  |   +- Anchor: 보존 속성 (garment type, neckline, closures, fabric...)
-  |   +- Negation: "Do not add a hood. Do not change the neckline."
-  |   +- Delta: "Change only the sleeve position: rotate horizontally"
+  |   +- "Professional flat-lay product photograph of {caption}."
+  |   +- Anchor: "Preserve every visual detail exactly as shown in the reference image"
+  |   +- Delta: "Both arms spread straight out, forming a T-shape"
   |
   +- Phase 4: In-Context Conditioned Generation
   |   +- Flux2KleinPipeline (9B distilled, bfloat16)
@@ -43,31 +42,29 @@ Input (garment photo)
 
 ## Prompt Engineering — Anchor-Delta Pattern
 
-BFL Kontext Guide + 커뮤니티 리서치 기반:
+BFL Kontext Guide + 반복 실험 기반:
 
 ### 구조
-1. **Establish reference**: VLM 캡션으로 의류를 구체적으로 명명
-2. **Anchor (보존)**: 보존할 속성을 변경보다 앞에 배치
-3. **Explicit negation**: "Do not add a hood" 등 부정 제약 삽입
-4. **Delta (변경)**: 최소한의 포즈 변경만 지시
+1. **Establish reference**: VLM 캡션으로 의류 종류만 고정 (짧은 식별)
+2. **Anchor (보존)**: "reference image" 기반 시각 보존 강조
+3. **Delta (변경)**: 팔 방향만 지시 — 소매 길이/구조 언급 금지
+4. **금지어**: "symmetric" (비대칭 강제), "sleeves fully extended" (반팔 고스트), "rotate" (왜곡)
 
-### 프롬프트 템플릿
+### 프롬프트 템플릿 (현재)
 ```
-Flat-lay product photograph of {VLM caption}.
-Preserve exactly from the reference: the garment type, neckline shape,
-collar construction, all closures, fabric texture, all colors, all patterns,
-all logos, sleeve length, and overall proportions.
-Do not add a hood. Do not change the neckline.
-Do not add or remove pockets, zippers, buttons, or drawstrings.
-Change only the sleeve position: rotate both sleeves outward to spread
-horizontally from the shoulder seams, symmetric left and right.
-Front view, centered on pure white background, fully visible, no person, no mannequin.
+Professional flat-lay product photograph of {caption},
+laid flat on a white surface, viewed from directly above.
+Both arms spread straight out to the left and right, forming a T-shape.
+The garment is neatly arranged.
+Preserve every visual detail exactly as shown in the reference image:
+same logos, graphics, prints, fabric, neckline, closures, and proportions.
+Pure white background, centered, no person, no mannequin, no hanger.
 ```
 
 ### 핵심 원칙
-1. **VLM 캡션이 앵커** — 추상적 "the garment" 대신 구체적 묘사 사용
-2. **보존을 변경보다 앞에** — decoder-only attention에서 앞 토큰이 더 강함
-3. **명시적 부정** — FLUX.2는 negative prompt 미지원, positive에 삽입
+1. **캡션 = 식별만** — "a black long-sleeve hoodie" (로고/패턴 묘사 X → VLM 환각 차단)
+2. **보존 = 참조 이미지 기반** — 텍스트로 디테일 묘사하면 모델이 환각 생성
+3. **소매 중립** — 소매 길이/확장 언급 안 함 → 캡션의 sleeve length가 자연 반영
 4. **guidance_scale 무시됨** — distilled 모델에서는 프롬프트 텍스트만 유효
 
 ## Florence-2 → Qwen2.5-VL 교체 경위

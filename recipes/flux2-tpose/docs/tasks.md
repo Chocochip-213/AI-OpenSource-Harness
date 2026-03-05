@@ -12,7 +12,7 @@
 - [x] Cell B: Dependencies 설치 (diffusers probe-upgrade + SIGKILL 재시작)
 - [x] Cell C: HuggingFace Auth (토큰)
 - [x] Cell D: Model Loading (Flux2KleinPipeline, VRAM 자동 분기)
-- [x] Cell D2: Florence-2 Captioner (florence-community/Florence-2-large-ft)
+- [x] Cell D2: Qwen2.5-VL-3B Captioner (bf16 + SDPA)
 - [x] Cell E: Preprocessing + Auto-Captioning 함수
 - [x] Cell F: VLM-Guided Prompt Builder (Anchor-Delta 패턴)
 - [x] Cell G: Single Inference Test (캡셔닝 → 프롬프트 → 추론)
@@ -44,8 +44,12 @@
 - [x] dtype 문제 분석: bf16 buffer 불일치 + lm_head 랜덤 초기화
 - [x] tie_weights() 시도 → 실패
 - [x] Qwen2.5-VL-3B-Instruct로 교체 → 캡셔닝 정상 동작 확인
-- [x] Blackwell 최적화: flash-attn + torch.compile + bf16
-- [x] 로고/그래픽 상대 위치 보존 프롬프트 추가
+- [x] Blackwell 최적화: SDPA + torch.compile + bf16 (flash-attn 소스빌드 제거)
+- [x] 캡션 프롬프트 축소: 상세 묘사 → 짧은 식별만 (VLM 환각 차단)
+- [x] "sleeves fully extended" 제거 (반팔 고스트 방지)
+- [x] "symmetric" 제거 (비대칭 디자인 강제 대칭화 방지)
+- [x] 보존 전략: 텍스트 묘사 → "reference image" 기반 시각 보존으로 전환
+- [x] Cell G "Florence-2" 출력 메시지 → "Qwen2.5-VL" 수정
 
 ## Validation
 - [x] smoke_test 통과

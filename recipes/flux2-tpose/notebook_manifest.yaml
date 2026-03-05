@@ -69,8 +69,8 @@ cells:
           pip_install("git+https://github.com/huggingface/diffusers.git")
           _need_restart = True
 
-      # --- 2. rembg + gradio + deps ---
-      for pkg in ["rembg[gpu]", "gradio>=5.0", "accelerate>=1.12.0",
+      # --- 2. gradio + deps ---
+      for pkg in ["gradio>=5.0", "accelerate>=1.12.0",
                    "sentencepiece", "protobuf", "safetensors"]:
           pip_install(pkg)
       print("Additional dependencies installed")
@@ -146,66 +146,40 @@ cells:
       print("Ready for inference.")
 
   # ================================================================
-  # E) Preprocessing — rembg
+  # E) Preprocessing — Center on Wide Canvas
   # ================================================================
   - type: markdown
     source: |
-      ## E) Preprocessing — Background Removal
+      ## E) Preprocessing — Center on Wide Canvas
 
   - type: code
     source: |
-      #@title E) Background Removal + Centering Functions
-      from rembg import remove
+      #@title E) Center on Wide Canvas (1536x1024)
       from PIL import Image
-      import numpy as np
-      import io
-
-      def remove_background(img: Image.Image) -> Image.Image:
-          """Remove background using rembg, return RGBA image."""
-          img_bytes = io.BytesIO()
-          img.save(img_bytes, format="PNG")
-          result_bytes = remove(img_bytes.getvalue())
-          return Image.open(io.BytesIO(result_bytes)).convert("RGBA")
-
-      def center_on_white(rgba_img: Image.Image, target_w: int = 1536, target_h: int = 1024, padding: float = 0.05) -> Image.Image:
-          """Center the garment on a white background with padding.
-          Default 1536x1024 (landscape) to give horizontal space for T-pose sleeves."""
-          alpha = np.array(rgba_img)[:, :, 3]
-          rows = np.any(alpha > 10, axis=1)
-          cols = np.any(alpha > 10, axis=0)
-
-          if not rows.any() or not cols.any():
-              return Image.new("RGB", (target_w, target_h), (255, 255, 255))
-
-          rmin, rmax = np.where(rows)[0][[0, -1]]
-          cmin, cmax = np.where(cols)[0][[0, -1]]
-
-          cropped = rgba_img.crop((cmin, rmin, cmax + 1, rmax + 1))
-          cw, ch = cropped.size
-
-          # Scale down to ~60% of canvas height to leave room for sleeves to spread
-          pad_px = int(min(target_w, target_h) * padding)
-          avail_w = target_w - 2 * pad_px
-          avail_h = target_h - 2 * pad_px
-          scale = min(avail_w / cw, avail_h / ch) * 0.7  # 70% fill — leave space for sleeve rotation
-          new_w = int(cw * scale)
-          new_h = int(ch * scale)
-
-          cropped_resized = cropped.resize((new_w, new_h), Image.LANCZOS)
-
-          result = Image.new("RGB", (target_w, target_h), (255, 255, 255))
-          offset_x = (target_w - new_w) // 2
-          offset_y = (target_h - new_h) // 2
-          result.paste(cropped_resized, (offset_x, offset_y), cropped_resized)
-
-          return result
 
       def preprocess_garment(img: Image.Image, target_w: int = 1536, target_h: int = 1024) -> Image.Image:
-          """Full preprocessing: remove bg + center on wide canvas."""
-          rgba = remove_background(img)
-          return center_on_white(rgba, target_w, target_h)
+          """Center the garment on a wide white canvas for T-pose sleeve room.
+          70% fill to leave horizontal space for sleeve rotation."""
+          img = img.convert("RGB")
+          w, h = img.size
 
-      print("Preprocessing functions loaded.")
+          pad_px = int(min(target_w, target_h) * 0.05)
+          avail_w = target_w - 2 * pad_px
+          avail_h = target_h - 2 * pad_px
+          scale = min(avail_w / w, avail_h / h) * 0.7
+          new_w = int(w * scale)
+          new_h = int(h * scale)
+
+          resized = img.resize((new_w, new_h), Image.LANCZOS)
+
+          canvas = Image.new("RGB", (target_w, target_h), (255, 255, 255))
+          offset_x = (target_w - new_w) // 2
+          offset_y = (target_h - new_h) // 2
+          canvas.paste(resized, (offset_x, offset_y))
+
+          return canvas
+
+      print("Preprocessing function loaded.")
 
   # ================================================================
   # F) Prompt Engineering
@@ -278,8 +252,8 @@ cells:
       garment_img = Image.open(filename).convert("RGB")
       print(f"Uploaded: {filename} ({garment_img.size})")
 
-      # --- Preprocess (wide canvas for sleeve room) ---
-      print("Removing background...")
+      # --- Preprocess (center on wide canvas) ---
+      print("Centering on wide canvas...")
       preprocessed = preprocess_garment(garment_img, OUT_W, OUT_H)
       display(preprocessed)
       print(f"Preprocessed: {preprocessed.size}")
@@ -358,7 +332,7 @@ cells:
           image = Image.fromarray(image) if isinstance(image, np.ndarray) else image
           image = image.convert("RGB")
 
-          # Preprocess (wide canvas for sleeve room)
+          # Center on wide canvas
           preprocessed = preprocess_garment(image, out_w, out_h)
 
           # Build prompt

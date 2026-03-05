@@ -165,7 +165,7 @@ cells:
 
       print(f"Loading {CAPTION_MODEL_ID} for garment captioning...")
       caption_processor = AutoProcessor.from_pretrained(
-          CAPTION_MODEL_ID, trust_remote_code=True
+          CAPTION_MODEL_ID, trust_remote_code=True, use_fast=False
       )
       caption_model = AutoModelForCausalLM.from_pretrained(
           CAPTION_MODEL_ID, torch_dtype=torch.float16, trust_remote_code=True

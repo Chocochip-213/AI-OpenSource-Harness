@@ -1,0 +1,8 @@
+# FLUX.2 Klein 4B T-pose — full deps (includes git HEAD diffusers)
+git+https://github.com/huggingface/diffusers.git
+accelerate>=1.12.0
+transformers>=5.0.0
+sentencepiece
+rembg[gpu]
+Pillow
+gradio>=5.0

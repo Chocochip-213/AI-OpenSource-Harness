@@ -1,0 +1,26 @@
+name: flux2-tpose
+version: "0.1.0"
+description: >
+  FLUX.2 Klein 4B Garment T-pose Conversion.
+  Converts garment photos (flat-lay, hanger, worn) to T-pose front-view
+  images for downstream 3D mesh generation. Gradio API endpoint on Colab.
+
+model:
+  base: black-forest-labs/FLUX.2-klein-4B
+  text_encoder: Qwen3 (sentencepiece)
+
+runtime:
+  gpu: T4/L4/A100
+  vram_estimate: ~13GB (bf16, cpu_offload)
+  precision: bfloat16
+
+requirements: requirements_opt1.txt
+
+main: run.sh
+
+notebook_manifest: notebook_manifest.yaml
+
+docs:
+  plan: docs/plan.md
+  context: docs/context.md
+  tasks: docs/tasks.md

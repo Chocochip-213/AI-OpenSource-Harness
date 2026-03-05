@@ -255,10 +255,10 @@ cells:
           VLM caption anchors garment identity — no garment-type-specific hardcoding."""
           prompt = (
               f"Professional flat-lay product photograph of {garment_caption}, "
-              "laid perfectly flat on a white surface, viewed from directly above. "
+              "laid flat on a white surface, viewed from directly above. "
               "Both arms of the garment are spread straight out to the left and right, "
-              "forming a clean T-shape, with sleeves fully extended and unwrinkled. "
-              "The garment is perfectly symmetric, neatly pressed, with no folds or creases. "
+              "forming a clean T-shape, with sleeves fully extended. "
+              "The garment is symmetric and neatly arranged. "
               "Preserve every detail from the original: same fabric, colors, patterns, logos, "
               "neckline, closures, and proportions. "
               "Pure white background, centered, no person, no mannequin, no hanger."

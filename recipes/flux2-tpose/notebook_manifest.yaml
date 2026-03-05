@@ -146,33 +146,31 @@ cells:
       print("Ready for inference.")
 
   # ================================================================
-  # D2) Florence-2 VLM — Auto Captioner
+  # D2) Qwen2.5-VL — Auto Captioner
   # ================================================================
   - type: markdown
     source: |
-      ## D2) Load Florence-2 (Garment Auto-Captioner)
+      ## D2) Load Qwen2.5-VL (Garment Auto-Captioner)
 
-      Florence-2-large-ft (네이티브 transformers 5.x 지원) — 입력 의류를 자동으로 묘사하여 프롬프트에 주입합니다.
-      이렇게 하면 모델이 "맨투맨→후디" 같은 의류 종류 변환을 방지합니다.
+      Qwen2.5-VL-3B-Instruct — 입력 의류를 자동으로 묘사하여 프롬프트에 주입합니다.
+      Florence-2는 transformers 5.x에서 lm_head weight tying 깨짐 → Qwen2.5-VL로 교체.
 
   - type: code
     source: |
-      #@title D2) Load Florence-2 Captioner { run: "auto" }
-      from transformers import AutoProcessor, Florence2ForConditionalGeneration
+      #@title D2) Load Qwen2.5-VL Captioner { run: "auto" }
+      from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
       import torch
 
-      # florence-community checkpoints are NATIVE in transformers 5.x
-      # No trust_remote_code needed — avoids MiaoshouAI compat issues
-      CAPTION_MODEL_ID = "florence-community/Florence-2-large-ft"
+      CAPTION_MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
 
       print(f"Loading {CAPTION_MODEL_ID} for garment captioning...")
       caption_processor = AutoProcessor.from_pretrained(CAPTION_MODEL_ID)
-      caption_model = Florence2ForConditionalGeneration.from_pretrained(
-          CAPTION_MODEL_ID, dtype=torch.bfloat16, device_map="auto"
-      )
+      caption_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+          CAPTION_MODEL_ID, torch_dtype=torch.float16
+      ).to("cuda")
 
       vram_after = torch.cuda.memory_allocated() / 1e9
-      print(f"Florence-2 loaded. Total VRAM used: {vram_after:.2f} GB")
+      print(f"Qwen2.5-VL loaded. Total VRAM used: {vram_after:.2f} GB")
       print("Auto-captioner ready.")
 
   # ================================================================
@@ -210,25 +208,32 @@ cells:
           return canvas
 
       def caption_garment(img: Image.Image) -> str:
-          """Auto-caption the garment using Florence-2-large-ft (native transformers).
-          Uses <MORE_DETAILED_CAPTION> for rich garment description."""
-          task = "<MORE_DETAILED_CAPTION>"
+          """Auto-caption garment using Qwen2.5-VL-3B-Instruct."""
+          messages = [
+              {"role": "user", "content": [
+                  {"type": "image"},
+                  {"type": "text", "text": (
+                      "Describe this garment in one paragraph. Include: garment type, "
+                      "sleeve length, neckline style, closures, fabric texture, colors, "
+                      "patterns, logos, and distinctive features. Be specific and factual."
+                  )}
+              ]}
+          ]
+          text = caption_processor.apply_chat_template(
+              messages, tokenize=False, add_generation_prompt=True
+          )
           inputs = caption_processor(
-              text=task, images=img.convert("RGB"), return_tensors="pt"
-          ).to(caption_model.device)
+              text=[text], images=[img.convert("RGB")], return_tensors="pt"
+          ).to("cuda")
 
           with torch.inference_mode():
               generated_ids = caption_model.generate(
-                  **inputs,
-                  max_new_tokens=256,
-                  do_sample=False,
-                  num_beams=3,
+                  **inputs, max_new_tokens=200, do_sample=False
               )
-          text = caption_processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-          parsed = caption_processor.post_process_generation(
-              text, task=task, image_size=img.size
-          )
-          return parsed.get(task, text).strip()
+          output_ids = generated_ids[:, inputs.input_ids.shape[1]:]
+          return caption_processor.batch_decode(
+              output_ids, skip_special_tokens=True
+          )[0].strip()
 
       print("Preprocessing + captioning functions loaded.")
 
@@ -240,7 +245,7 @@ cells:
       ## F) VLM-Guided Prompt Builder
 
       프롬프트 전략 (BFL Guide + Anchor-Delta 패턴):
-      1. **Establish reference** — Florence-2 캡션으로 의류를 구체적으로 명명
+      1. **Establish reference** — VLM 캡션으로 의류를 구체적으로 명명
       2. **Anchor (보존)** — 보존할 속성을 먼저, 변경보다 앞에 배치
       3. **Generic negation** — "Do not add or remove any structural feature" (범용)
       4. **Delta (변경)** — 최소한의 포즈 변경만 지시

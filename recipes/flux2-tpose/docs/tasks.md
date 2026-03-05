@@ -21,6 +21,12 @@
 - [x] notebook_manifest.yaml 작성
 - [x] .ipynb 생성 완료 (outputs/notebooks/flux2-tpose.ipynb)
 
+## API Fix (2026-03-05)
+- [x] Flux2KleinPipeline API 검증: strength 파라미터 존재하지 않음 확인
+- [x] In-context conditioning 방식으로 노트북 수정 (strength 제거)
+- [x] context.md, plan.md, run.sh 업데이트
+- [x] 노트북 재생성 + smoke_test 통과
+
 ## Validation
 - [x] smoke_test 통과
 - [ ] Colab 테스트: 모델 로드 -> 추론 -> Gradio API 동작 확인

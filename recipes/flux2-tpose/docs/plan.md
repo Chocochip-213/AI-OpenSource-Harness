@@ -1,4 +1,4 @@
-# Plan — FLUX.2 Klein 4B Garment T-pose Conversion
+# Plan — FLUX.2 Klein 9B Garment T-pose Conversion
 
 ## Goal
 단일 의류 사진(평면촬영, 행거샷, 착용샷 등)을 입력받아 **T-pose 형태의 정면 의류
@@ -9,12 +9,12 @@
 ## Scope
 
 ### In scope
-- FLUX.2 Klein 4B (증류, 4-step) img2img 파이프라인
+- FLUX.2 Klein 9B (증류, 4-step) img2img 파이프라인
 - rembg 기반 배경 제거 전처리
 - T-pose 변환 프롬프트 엔지니어링
 - Gradio 웹 UI + API 엔드포인트 (share=True)
-- Colab A100/L4/T4 GPU 지원 (cpu_offload로 VRAM 절약)
-- strength(denoising) 파라미터 조절 (0.4~0.6)
+- Blackwell 102GB full GPU mode / A100 80GB 지원 (40GB 미만 시 cpu_offload)
+- 프롬프트 엔지니어링으로 변환 정도 제어 (in-context conditioning 방식)
 
 ### Out of scope
 - VTON (가상 착용) — 별도 flux2-vton 레시피
@@ -24,9 +24,9 @@
 
 ## Approach
 1. **배경 제거**: rembg로 의류만 추출 -> 흰 배경에 센터링
-2. **img2img 변환**: Flux2KleinPipeline + 프롬프트로 T-pose 변환
-   - strength 0.4~0.6: 원본 디테일 보존 vs 포즈 변환 균형
-   - 4 steps (Klein 증류 모델이므로 충분)
+2. **In-context conditioned 변환**: Flux2KleinPipeline + 프롬프트로 T-pose 변환
+   - 참조 이미지를 visual token으로 전달 (전통적 img2img가 아닌 in-context conditioning)
+   - 4 steps (Klein 증류 모델이므로 충분), guidance_scale=1.0
 3. **프롬프트 엔지니어링**: BFL 가이드 기반 Subject+Action+Style+Context 구조
 4. **Gradio 서비스**: 업로드 -> 전처리 -> 추론 -> 결과 반환 (API 모드 포함)
 

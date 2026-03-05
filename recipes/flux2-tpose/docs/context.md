@@ -1,4 +1,4 @@
-# Context — FLUX.2 Klein 4B Garment T-pose Conversion
+# Context — FLUX.2 Klein 9B Garment T-pose Conversion
 
 ## Architecture
 
@@ -10,12 +10,13 @@ Input (garment photo)
   |   +- 흰색 배경 합성 -> RGB
   |   +- 중앙 정렬 + 리사이즈 (1024x1024)
   |
-  +- Phase 2: img2img Inference
+  +- Phase 2: In-Context Conditioned Generation
   |   +- Flux2KleinPipeline (4B distilled, bfloat16)
-  |   +- image= 전처리된 의류 이미지
-  |   +- strength= 0.4~0.6 (denoising)
+  |   +- image= 전처리된 의류 이미지 (참조 토큰으로 concatenate)
   |   +- num_inference_steps= 4 (Klein 증류)
+  |   +- guidance_scale= 1.0 (증류 모델)
   |   +- prompt= T-pose 변환 프롬프트
+  |   NOTE: strength 파라미터 없음 — in-context conditioning 방식
   |
   +- Phase 3: Output
       +- T-pose 의류 이미지 (PNG, 흰색 배경, 1024x1024)
@@ -25,12 +26,12 @@ Input (garment photo)
 
 | 항목 | 값 |
 |------|-----|
-| Model ID | `black-forest-labs/FLUX.2-klein-4B` |
-| Parameters | 4B |
+| Model ID | `black-forest-labs/FLUX.2-klein-9B` |
+| Parameters | 9B |
 | Architecture | Rectified flow transformer |
-| License | Apache 2.0 |
+| License | Non-commercial (gated) |
 | Inference Steps | 4 (distilled) |
-| VRAM | ~13GB (bf16), cpu_offload로 추가 절약 |
+| VRAM | ~29GB (bf16), 40GB+ GPU는 full GPU mode |
 | guidance_scale | 1.0 (증류 모델 권장) |
 
 ## Prompt Engineering Strategy
@@ -53,11 +54,12 @@ Professional product photography, 85mm lens, f/5.6.
 4. **No negative prompts** — FLUX.2는 negative prompt 미지원
 5. **구체적 속성 바인딩** — "same colors and patterns" > 추상적 "preserve details"
 
-### strength 가이드
-- 0.3~0.4: 원본 거의 유지 — 포즈 변환 약함
-- 0.45~0.55: **최적 범위** — 포즈 변환 + 디테일 보존 균형
-- 0.6~0.7: 강한 변환 — 패턴/색상 드리프트 가능
-- 0.7+: 원본과 무관한 이미지 생성 위험
+### In-Context Conditioning (NOT img2img)
+FLUX.2 Klein은 전통적 img2img (noise → denoise) 방식이 아닌 **in-context conditioning** 사용:
+- 참조 이미지가 추가 visual token으로 transformer에 concatenate됨
+- `strength` 파라미터 없음 — 프롬프트로 변환 강도 제어
+- 변환 정도는 프롬프트의 구체성과 참조 이미지와의 차이에 의존
+- 프롬프트가 더 중요: "same fabric texture, colors, patterns" 등 명시 필수
 
 ## Colab 환경 (2026-02-23 기준)
 
@@ -84,15 +86,15 @@ Professional product photography, 85mm lens, f/5.6.
 
 ## Key Decisions
 
-- **4B vs 9B**: 4B 선택 — VRAM 13GB로 T4/L4에서도 동작, 속도 더 빠름, T-pose 변환에 9B 품질 불필요
-- **img2img vs txt2img**: img2img — 원본 의류의 색상/패턴 보존을 위해 reference image 필수
-- **rembg 전처리**: 배경 제거 후 img2img에 넣어야 의류에만 집중
+- **9B 선택**: 102GB Blackwell에서 full GPU mode 가능. 9B가 4B보다 변환 품질 우수. VTON LoRA도 9B 기반
+- **In-context conditioning**: FLUX.2는 전통적 img2img가 아닌 참조 이미지를 visual token으로 전달하는 방식. strength 파라미터 없음
+- **rembg 전처리**: 배경 제거 후 참조 이미지로 넣어야 의류에만 집중
 - **Gradio share=True**: Colab에서 외부 API 접근을 위해 공유 URL 생성
-- **strength 0.5 기본값**: 포즈 변환과 디테일 보존의 균형점
+- **프롬프트 의존도 높음**: strength 대신 프롬프트로 변환 정도를 제어. "same fabric/colors/patterns" 등 구체적 바인딩 필수
 
 ## References
 
-- FLUX.2 Klein 4B: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B
+- FLUX.2 Klein 9B: https://huggingface.co/black-forest-labs/FLUX.2-klein-9B
 - BFL Prompting Guide: https://docs.bfl.ai/guides/prompting_guide_flux2
 - fal.ai Klein Prompt Guide: https://fal.ai/learn/devs/flux-2-klein-prompt-guide
 - fal.ai Klein User Guide: https://fal.ai/learn/devs/flux-2-klein-user-guide

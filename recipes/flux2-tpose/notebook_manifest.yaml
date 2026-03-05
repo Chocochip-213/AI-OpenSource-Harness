@@ -224,43 +224,25 @@ cells:
     source: |
       #@title F) Prompt Builder
 
-      GARMENT_TYPES = {
-          "t-shirt": "short-sleeve t-shirt",
-          "hoodie": "hooded sweatshirt",
-          "jacket": "zip-up jacket",
-          "shirt": "button-down collared shirt",
-          "sweater": "knit pullover sweater",
-          "coat": "long coat",
-          "dress": "dress",
-          "polo": "polo shirt",
-          "vest": "vest",
-          "custom": "",
-      }
-
-      def build_tpose_prompt(garment_type: str = "t-shirt", custom_desc: str = "") -> str:
+      def build_tpose_prompt() -> str:
           """Build the T-pose conversion prompt (edit-instruction style for Klein 9B).
-          Key: frame as sleeve ROTATION, not redesign. Preserve original proportions."""
-          if garment_type == "custom" and custom_desc:
-              garment_desc = custom_desc
-          else:
-              garment_desc = GARMENT_TYPES.get(garment_type, "garment")
-
+          No garment type specified — the reference image is the sole source of truth."""
           prompt = (
-              f"Edit the input {garment_desc} photo by ONLY repositioning the sleeves. "
-              f"Rotate both sleeves outward around the shoulder seams until perfectly horizontal, "
-              f"symmetric left and right, creating a flat-lay T-pose layout. "
-              f"Do NOT shorten the sleeves. Preserve the original sleeve length from shoulder seam to cuff. "
-              f"Keep cuff size, sleeve opening, torso width, and body length the same as the input. "
-              f"This is a rotation of the existing sleeves, not a redesign. "
-              f"Preserve all garment identity exactly: color, fabric texture, stitching, seams, "
-              f"hood shape, pockets, and any graphic or text placement. "
-              f"Sleeve ends should reach close to the left and right image margins. "
-              f"Garment only, no person, no mannequin, no hanger, clean white background, fully visible."
+              "Edit the input garment photo by ONLY repositioning the sleeves. "
+              "Rotate both sleeves outward around the shoulder seams until perfectly horizontal, "
+              "symmetric left and right, creating a flat-lay T-pose layout. "
+              "Do NOT shorten the sleeves. Preserve the original sleeve length from shoulder seam to cuff. "
+              "Keep cuff size, sleeve opening, torso width, and body length the same as the input. "
+              "This is a rotation of the existing sleeves, not a redesign. "
+              "Preserve all garment identity exactly: color, fabric texture, stitching, seams, "
+              "hood shape, pockets, and any graphic or text placement. "
+              "Sleeve ends should reach close to the left and right image margins. "
+              "Garment only, no person, no mannequin, no hanger, clean white background, fully visible."
           )
           return prompt
 
       # Preview
-      sample_prompt = build_tpose_prompt("t-shirt")
+      sample_prompt = build_tpose_prompt()
       word_count = len(sample_prompt.split())
       print(f"Sample prompt ({word_count} words):")
       print(sample_prompt)
@@ -283,8 +265,6 @@ cells:
       import time
 
       #@markdown ### Settings
-      GARMENT_TYPE = "t-shirt"  #@param ["t-shirt", "hoodie", "jacket", "shirt", "sweater", "coat", "dress", "polo", "vest", "custom"]
-      CUSTOM_DESC = ""  #@param {type:"string"}
       GUIDANCE = 4.0  #@param {type:"slider", min:1.0, max:10.0, step:0.5}
       NUM_STEPS = 4  #@param {type:"slider", min:4, max:50, step:1}
       SEED = 42  #@param {type:"integer"}
@@ -305,7 +285,7 @@ cells:
       print(f"Preprocessed: {preprocessed.size}")
 
       # --- Build prompt ---
-      prompt = build_tpose_prompt(GARMENT_TYPE, CUSTOM_DESC)
+      prompt = build_tpose_prompt()
       print(f"\nPrompt: {prompt}")
 
       # --- Inference (in-context conditioning, BFL Space pattern) ---
@@ -349,7 +329,6 @@ cells:
       client = Client("https://xxxxx.gradio.live")
       result = client.predict(
           image="garment.jpg",
-          garment_type="t-shirt",
           seed=42,
           api_name="/convert"
       )
@@ -366,8 +345,6 @@ cells:
 
       def convert_to_tpose(
           image: Image.Image,
-          garment_type: str = "t-shirt",
-          custom_desc: str = "",
           guidance: float = 4.0,
           num_steps: int = 4,
           seed: int = 42,
@@ -385,7 +362,7 @@ cells:
           preprocessed = preprocess_garment(image, out_w, out_h)
 
           # Build prompt
-          prompt = build_tpose_prompt(garment_type, custom_desc)
+          prompt = build_tpose_prompt()
 
           # Inference (BFL Space pattern)
           generator = torch.Generator(device="cuda").manual_seed(seed)
@@ -412,12 +389,6 @@ cells:
           with gr.Row():
               with gr.Column():
                   input_image = gr.Image(label="Input Garment", type="pil")
-                  garment_type = gr.Dropdown(
-                      choices=list(GARMENT_TYPES.keys()),
-                      value="t-shirt",
-                      label="Garment Type",
-                  )
-                  custom_desc = gr.Textbox(label="Custom Description (if type=custom)", visible=True)
                   guidance = gr.Slider(1.0, 10.0, value=4.0, step=0.5, label="Guidance Scale")
                   num_steps = gr.Slider(4, 50, value=4, step=1, label="Inference Steps")
                   seed = gr.Number(value=42, label="Seed", precision=0)
@@ -432,7 +403,7 @@ cells:
 
           btn.click(
               fn=convert_to_tpose,
-              inputs=[input_image, garment_type, custom_desc, guidance, num_steps, seed, out_w, out_h],
+              inputs=[input_image, guidance, num_steps, seed, out_w, out_h],
               outputs=[preprocessed_output, result_output, info_output],
               api_name="convert",
           )

@@ -5,99 +5,109 @@
 ```
 Input (garment photo)
   |
-  +- Phase 1: Preprocessing
-  |   +- rembg: 배경 제거 -> RGBA
-  |   +- 흰색 배경 합성 -> RGB
-  |   +- 중앙 정렬 + 리사이즈 (1024x1024)
+  +- Phase 1: VLM Auto-Captioning
+  |   +- Florence-2-large-ft (florence-community, native transformers 5.x)
+  |   +- <MORE_DETAILED_CAPTION> → 의류 구체적 묘사
+  |   +- 원본 이미지에서 캡셔닝 (전처리 전)
   |
-  +- Phase 2: In-Context Conditioned Generation
-  |   +- Flux2KleinPipeline (4B distilled, bfloat16)
-  |   +- image= 전처리된 의류 이미지 (참조 토큰으로 concatenate)
-  |   +- num_inference_steps= 4 (Klein 증류)
-  |   +- guidance_scale= 1.0 (증류 모델)
-  |   +- prompt= T-pose 변환 프롬프트
-  |   NOTE: strength 파라미터 없음 — in-context conditioning 방식
+  +- Phase 2: Preprocessing
+  |   +- 1536x1024 흰색 캔버스 중앙 배치 (70% fill)
+  |   +- 배경 제거 없음 — in-context conditioning이 처리
   |
-  +- Phase 3: Output
-      +- T-pose 의류 이미지 (PNG, 흰색 배경, 1024x1024)
+  +- Phase 3: Anchor-Delta Prompt Construction
+  |   +- "Flat-lay product photograph of {VLM caption}."
+  |   +- Anchor: 보존 속성 (garment type, neckline, closures, fabric...)
+  |   +- Negation: "Do not add a hood. Do not change the neckline."
+  |   +- Delta: "Change only the sleeve position: rotate horizontally"
+  |
+  +- Phase 4: In-Context Conditioned Generation
+  |   +- Flux2KleinPipeline (9B distilled, bfloat16)
+  |   +- image=[preprocessed] (리스트, BFL Space 패턴)
+  |   +- num_inference_steps=4, guidance_scale=2.5 (distilled에서 무시됨)
+  |   +- NOTE: strength 파라미터 없음
+  |
+  +- Phase 5: Output
+      +- T-pose 의류 이미지 (PNG, 흰배경, 1536x1024)
 ```
 
-## Model
+## Models
 
-| 항목 | 값 |
-|------|-----|
-| Model ID | `black-forest-labs/FLUX.2-klein-9B` |
-| Parameters | 9B |
-| Architecture | Rectified flow transformer |
-| License | Non-commercial (gated) |
-| Inference Steps | 4 (distilled) |
-| VRAM | ~29GB (bf16), 40GB+ GPU는 full GPU mode |
-| guidance_scale | 1.0 (증류 모델 권장) |
+| 항목 | 생성 모델 | 캡셔닝 모델 |
+|------|----------|------------|
+| Model ID | `black-forest-labs/FLUX.2-klein-9B` | `florence-community/Florence-2-large-ft` |
+| Parameters | 9B | 0.77B |
+| Class | `Flux2KleinPipeline` | `Florence2ForConditionalGeneration` |
+| VRAM | ~29GB (bf16) | ~1.5GB (bf16) |
+| Steps | 4 (distilled) | N/A |
+| License | Non-commercial (gated) | MIT |
 
-## Prompt Engineering Strategy
+## Prompt Engineering — Anchor-Delta Pattern
 
-BFL 공식 가이드 + fal.ai Klein 프롬프트 가이드 기반:
+BFL Kontext Guide + 커뮤니티 리서치 기반:
 
-### 구조: Subject + Action + Style + Context
+### 구조
+1. **Establish reference**: VLM 캡션으로 의류를 구체적으로 명명
+2. **Anchor (보존)**: 보존할 속성을 변경보다 앞에 배치
+3. **Explicit negation**: "Do not add a hood" 등 부정 제약 삽입
+4. **Delta (변경)**: 최소한의 포즈 변경만 지시
+
+### 프롬프트 템플릿
 ```
-flat-lay photograph of a {garment_type} in T-pose position,
-both sleeves spread horizontally, front view, centered on pure white background.
-Same fabric texture, colors, patterns, and logos as the reference garment.
-Studio lighting, soft shadows, high detail, sharp focus.
-Professional product photography, 85mm lens, f/5.6.
+Flat-lay product photograph of {VLM caption}.
+Preserve exactly from the reference: the garment type, neckline shape,
+collar construction, all closures, fabric texture, all colors, all patterns,
+all logos, sleeve length, and overall proportions.
+Do not add a hood. Do not change the neckline.
+Do not add or remove pockets, zippers, buttons, or drawstrings.
+Change only the sleeve position: rotate both sleeves outward to spread
+horizontally from the shoulder seams, symmetric left and right.
+Front view, centered on pure white background, fully visible, no person, no mannequin.
 ```
 
-### 원칙
-1. **100단어 이내** — Klein은 짧은 프롬프트에 최적화
-2. **자연어 서술** — 키워드 나열 대신 완전한 문장
-3. **앞에 오는 단어가 더 강함** — T-pose/flat-lay를 맨 앞에
-4. **No negative prompts** — FLUX.2는 negative prompt 미지원
-5. **구체적 속성 바인딩** — "same colors and patterns" > 추상적 "preserve details"
+### 핵심 원칙
+1. **VLM 캡션이 앵커** — 추상적 "the garment" 대신 구체적 묘사 사용
+2. **보존을 변경보다 앞에** — decoder-only attention에서 앞 토큰이 더 강함
+3. **명시적 부정** — FLUX.2는 negative prompt 미지원, positive에 삽입
+4. **guidance_scale 무시됨** — distilled 모델에서는 프롬프트 텍스트만 유효
 
-### In-Context Conditioning (NOT img2img)
-FLUX.2 Klein은 전통적 img2img (noise → denoise) 방식이 아닌 **in-context conditioning** 사용:
-- 참조 이미지가 추가 visual token으로 transformer에 concatenate됨
-- `strength` 파라미터 없음 — 프롬프트로 변환 강도 제어
-- 변환 정도는 프롬프트의 구체성과 참조 이미지와의 차이에 의존
-- 프롬프트가 더 중요: "same fabric texture, colors, patterns" 등 명시 필수
+## Florence-2 호환 이슈 (transformers 5.x)
 
-## Colab 환경 (2026-02-23 기준)
+MiaoshouAI Florence-2 remote code가 transformers ≤4.49까지만 호환:
+- `additional_special_tokens` AttributeError (processor)
+- `forced_bos_token_id` AttributeError (model config)
 
-| Package | Colab 버전 | 필요 조건 |
-|---------|-----------|----------|
-| torch | 2.10.0 | OK |
-| diffusers | 0.36.0 | Flux2KleinPipeline 포함 확인 필요, 없으면 git HEAD |
-| transformers | 5.0.0 | OK |
-| huggingface-hub | 1.4.1 | OK |
-| gradio | 5.50.0 | OK |
+**해결**: `florence-community/Florence-2-large-ft` 사용
+- transformers 5.x 네이티브 지원 (trust_remote_code 불필요)
+- `Florence2ForConditionalGeneration` + `AutoProcessor`
+- `<MORE_DETAILED_CAPTION>` + `post_process_generation` 정상 동작
 
 ## Dependencies
 
 | Package | Version | Notes |
 |---------|---------|-------|
 | torch | Colab native | CUDA 12.x+ |
-| diffusers | >=0.36.0 or git HEAD | Flux2KleinPipeline |
-| transformers | >=5.0.0 | text encoder |
+| diffusers | git HEAD | Flux2KleinPipeline |
+| transformers | >=5.0.0 | Florence2ForConditionalGeneration 네이티브 |
 | accelerate | >=1.12.0 | model loading |
 | sentencepiece | latest | Qwen3 tokenizer |
-| rembg | latest | 배경 제거 |
 | gradio | >=5.0 | Web UI + API |
-| Pillow | latest | 이미지 처리 |
 
 ## Key Decisions
 
-- **9B 선택**: 102GB Blackwell에서 full GPU mode 가능. 9B가 4B보다 변환 품질 우수. VTON LoRA도 9B 기반
-- **In-context conditioning**: FLUX.2는 전통적 img2img가 아닌 참조 이미지를 visual token으로 전달하는 방식. strength 파라미터 없음
-- **rembg 전처리**: 배경 제거 후 참조 이미지로 넣어야 의류에만 집중
-- **Gradio share=True**: Colab에서 외부 API 접근을 위해 공유 URL 생성
-- **프롬프트 의존도 높음**: strength 대신 프롬프트로 변환 정도를 제어. "same fabric/colors/patterns" 등 구체적 바인딩 필수
+- **9B 선택**: 102GB Blackwell에서 full GPU mode. 4B보다 변환 품질 우수
+- **VLM 자동 캡셔닝**: 맨투맨→후디, 반팔→긴팔 변환 방지. 입력 이미지를 구체적으로 묘사
+- **florence-community**: MiaoshouAI PromptGen은 transformers 5.x 호환 불가
+- **rembg 제거**: 불필요 — in-context conditioning이 원본 해석
+- **garment_type 하드코딩 제거**: VLM 캡션이 자동으로 의류 종류 파악
+- **Anchor-Delta 패턴**: 보존 먼저, 변경 나중 + 명시적 부정 제약
+- **guidance_scale 무시**: distilled 모델에서는 효과 없음 (Base 9B에서만 작동)
 
 ## References
 
 - FLUX.2 Klein 9B: https://huggingface.co/black-forest-labs/FLUX.2-klein-9B
-- BFL Prompting Guide: https://docs.bfl.ai/guides/prompting_guide_flux2
+- Florence-2-large-ft: https://huggingface.co/florence-community/Florence-2-large-ft
+- BFL Kontext Prompting Guide: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
 - fal.ai Klein Prompt Guide: https://fal.ai/learn/devs/flux-2-klein-prompt-guide
-- fal.ai Klein User Guide: https://fal.ai/learn/devs/flux-2-klein-user-guide
 
 ---
 

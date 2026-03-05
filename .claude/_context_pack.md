@@ -196,12 +196,13 @@ Pipeline D: Two-Pass VTON + 마스크 기반 사이즈 제어 (주력)
 
 ```
 M .claude/_context_pack.md
- M .claude/last_recipe.txt
- M .claude/settings.local.json
+ M .claude/_edited_files.log
+ M outputs/notebooks/flux2-vton.ipynb
+ M recipes/flux2-vton/notebook_manifest.yaml
 ?? .claude/hooks/__pycache__/
 ?? __pycache__/
-?? outputs/notebooks/flux2-vton.ipynb
-?? recipes/flux2-vton/
+?? recipes/flux2-vton/patches/
+?? "recipes/flux2-vton/research/\353\240\210\354\240\204\353\223\234\355\225\251\354\204\261\354\260\220\353\271\240.png"
 ?? recipes/swifttry/patches/__pycache__/
 ?? scripts/__pycache__/
 ?? tools/__pycache__/
@@ -210,8 +211,9 @@ M .claude/_context_pack.md
 ## Git Diff (stat)
 
 ```
-.claude/_context_pack.md    | 307 +++++++++++++++++++++++---------------------
- .claude/last_recipe.txt     |   2 +-
- .claude/settings.local.json |  10 +-
- 3 files changed, 173 insertions(+), 146 deletions(-)
+.claude/_context_pack.md                  |  15 +-
+ .claude/_edited_files.log                 |   4 +
+ outputs/notebooks/flux2-vton.ipynb        | 688 +++++++++---------------------
+ recipes/flux2-vton/notebook_manifest.yaml | 678 +++++++++--------------------
+ 4 files changed, 413 insertions(+), 972 deletions(-)
 ```

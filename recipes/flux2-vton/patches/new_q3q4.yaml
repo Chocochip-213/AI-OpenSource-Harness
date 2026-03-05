@@ -1,0 +1,249 @@
+  - type: code
+    source: |
+      #@title Q-3. Person Torso Pre-Warp (Size Simulation)
+      if PIPELINE != "D":
+          print(">>> Skipped (Pipeline A selected)")
+      else:
+          import numpy as np
+          import cv2
+          import torch
+          import torch.nn.functional as F
+          from PIL import Image, ImageDraw
+          from IPython.display import display
+
+          #@markdown ### Torso Warp Settings
+          #@markdown Person torso를 사이즈별로 수평 확장하여
+          #@markdown VTON 모델이 자연스럽게 큰 옷을 생성하도록 유도.
+          FADE_PX = 30  #@param {type:"slider", min:10, max:60, step:5}
+
+          # Size -> torso horizontal scale factor
+          TORSO_SCALE = {
+              "M(95)": 1.00,
+              "L(100)": 1.06,
+              "XL(105)": 1.12,
+              "2XL(110-115)": 1.20,
+          }
+
+          # 1. Segment ORIGINAL person to find torso region
+          print("Segmenting original person for torso bounds...")
+          inputs = seg_proc(
+              images=[person_image], return_tensors="pt",
+          ).to("cuda")
+          with torch.no_grad():
+              logits = seg_model(**inputs).logits
+          p_h, p_w = person_image.size[1], person_image.size[0]
+          up = F.interpolate(
+              logits, size=(p_h, p_w),
+              mode="bilinear", align_corners=False,
+          )
+          person_seg = up.argmax(dim=1).cpu().numpy()[0]
+
+          # Upper clothes (4) = torso region
+          torso_mask = (person_seg == 4)
+          torso_rows = np.where(torso_mask.any(axis=1))[0]
+
+          if len(torso_rows) == 0:
+              print("WARNING: No upper-clothes detected.")
+              print("  Using middle 25-65% as torso estimate.")
+              TORSO_TOP = int(p_h * 0.25)
+              TORSO_BOT = int(p_h * 0.65)
+          else:
+              TORSO_TOP = int(torso_rows[0])
+              TORSO_BOT = int(torso_rows[-1])
+
+          print(f"Torso region: rows {TORSO_TOP}-{TORSO_BOT} "
+                f"({TORSO_BOT - TORSO_TOP}px, "
+                f"{(TORSO_BOT - TORSO_TOP)/p_h*100:.0f}%)")
+
+          # 2. Define warp function
+          def warp_torso(img_np, scale_x, fade_px=FADE_PX):
+              """Horizontally scale torso region.
+              Smooth vertical fade at torso boundaries.
+              """
+              if scale_x <= 1.0:
+                  return img_np.copy()
+
+              h, w = img_np.shape[:2]
+              cx = w / 2.0
+
+              ys = np.arange(h, dtype=np.float32)
+              xs = np.arange(w, dtype=np.float32)
+              map_x, map_y = np.meshgrid(xs, ys)
+
+              # Vertical blend: smooth fade at edges
+              blend = np.zeros(h, dtype=np.float32)
+              t1 = TORSO_TOP
+              t2 = min(TORSO_TOP + fade_px, TORSO_BOT)
+              b1 = max(TORSO_BOT - fade_px, TORSO_TOP)
+              b2 = TORSO_BOT
+
+              top_fade = (ys >= t1) & (ys < t2)
+              mid_zone = (ys >= t2) & (ys <= b1)
+              bot_fade = (ys > b1) & (ys <= b2)
+
+              if t2 > t1:
+                  blend[top_fade] = (
+                      (ys[top_fade] - t1) / (t2 - t1)
+                  )
+              blend[mid_zone] = 1.0
+              if b2 > b1:
+                  blend[bot_fade] = (
+                      (b2 - ys[bot_fade]) / (b2 - b1)
+                  )
+
+              # Inverse horizontal mapping
+              inv_s = 1.0 / scale_x
+              blend_2d = blend[:, np.newaxis]
+              dx = map_x - cx
+              map_x = cx + dx * (
+                  inv_s * blend_2d + 1.0 * (1 - blend_2d)
+              )
+
+              return cv2.remap(
+                  img_np, map_x, map_y,
+                  cv2.INTER_LINEAR,
+                  borderMode=cv2.BORDER_REFLECT_101,
+              )
+
+          # 3. Preview warped persons
+          person_np = np.array(person_image)
+          WARPED_PERSONS = {}
+
+          cell_h, cell_w = 400, 300
+          preview = Image.new(
+              "RGB",
+              (cell_w * 4 + 50, cell_h + 30),
+              (255, 255, 255),
+          )
+          draw = ImageDraw.Draw(preview)
+
+          for i, (size, scale) in enumerate(
+              TORSO_SCALE.items()
+          ):
+              warped = warp_torso(person_np, scale)
+              WARPED_PERSONS[size] = Image.fromarray(warped)
+
+              thumb = Image.fromarray(warped).resize(
+                  (cell_w, cell_h), Image.LANCZOS,
+              )
+              x = 10 + i * (cell_w + 10)
+              draw.text(
+                  (x + 5, 3),
+                  f"{size} (x{scale})",
+                  fill=(0, 0, 0),
+              )
+              preview.paste(thumb, (x, 30))
+              print(f"  {size}: scale={scale}x")
+
+          display(preview)
+          print("Person torso warp preview ready.")
+          print("Verify: torso gets wider M -> 2XL, "
+                "head/legs unchanged.")
+
+  - type: code
+    source: |
+      #@title Q-4. 4-Size VTON Generation (Torso-Warped Person)
+      if PIPELINE != "D":
+          print(">>> Skipped (Pipeline A selected)")
+      else:
+          import torch
+          import time
+          import inspect
+          from PIL import Image, ImageDraw
+          from IPython.display import display
+
+          SIZES = [
+              "M(95)", "L(100)",
+              "XL(105)", "2XL(110-115)",
+          ]
+          d_results = {}
+
+          print("Pipeline D: 4-Size VTON")
+          print("  Method: Person Torso Pre-Warp")
+          print("  (No compositing - model generates directly)")
+          print("=" * 55)
+
+          sig = inspect.signature(pipe.__call__)
+          supported_params = set(sig.parameters.keys())
+
+          for i, size in enumerate(SIZES):
+              t0 = time.time()
+              scale = TORSO_SCALE[size]
+
+              if scale <= 1.0:
+                  # M = use existing Pass 1 result
+                  d_results[size] = pass1_result
+                  print(f"[{i+1}/4] {size}: "
+                        f"Pass 1 (fitted) - 0.0s")
+                  continue
+
+              # Get warped person + scaled garment
+              wp = WARPED_PERSONS[size]
+              g_img = scale_garment(garment_image, size)
+
+              # Build size-specific prompt
+              prompt = build_fitspec_prompt(
+                  FITSPEC, size_override=size,
+              )
+
+              kwargs = dict(
+                  prompt=prompt,
+                  image=[wp, g_img, wp],
+                  height=out_h,
+                  width=out_w,
+                  num_inference_steps=28,
+                  guidance_scale=4.0,
+                  generator=torch.Generator(
+                      "cuda"
+                  ).manual_seed(SEED),
+              )
+              if "max_sequence_length" in supported_params:
+                  kwargs["max_sequence_length"] = 512
+
+              result = pipe(**kwargs)
+              d_results[size] = result.images[0]
+              elapsed = time.time() - t0
+              fit = SIZE_TO_FIT_D.get(size, "regular")
+              print(f"[{i+1}/4] {size} "
+                    f"(x{scale}, {fit}): "
+                    f"{elapsed:.1f}s")
+
+          # Build 2x2 grid
+          print("\nBuilding 4-Size grid...")
+          cell_h, cell_w = 512, 384
+          padding = 10
+          label_h = 30
+          grid_w = cell_w * 2 + padding * 3
+          grid_h = (
+              (cell_h + label_h) * 2 + padding * 3
+          )
+
+          d_grid = Image.new(
+              "RGB", (grid_w, grid_h),
+              (255, 255, 255),
+          )
+          draw = ImageDraw.Draw(d_grid)
+
+          for idx, size in enumerate(SIZES):
+              row, col = divmod(idx, 2)
+              x = padding + col * (cell_w + padding)
+              y = padding + row * (
+                  cell_h + label_h + padding
+              )
+              fit = SIZE_TO_FIT_D.get(size, "regular")
+              scale = TORSO_SCALE[size]
+              draw.text(
+                  (x + 5, y + 2),
+                  f"{size} [{fit}, x{scale}]",
+                  fill=(0, 0, 0),
+              )
+              img = d_results[size].resize(
+                  (cell_w, cell_h), Image.LANCZOS,
+              )
+              d_grid.paste(img, (x, y + label_h))
+
+          display(d_grid)
+          print("\nPipeline D 4-Size grid complete")
+          print("(Each size = separate VTON generation, "
+                "no compositing)")
+

@@ -39,10 +39,20 @@
 - [x] florence-community 네이티브 체크포인트로 최종 전환
 - [x] Colab 로드 + 추론 동작 확인
 
+## Florence-2 → Qwen2.5-VL 교체 (2026-03-05 Session 3)
+- [x] Florence-2 lm_head weight tying 버그 진단 (transformers 5.x)
+- [x] dtype 문제 분석: bf16 buffer 불일치 + lm_head 랜덤 초기화
+- [x] tie_weights() 시도 → 실패
+- [x] Qwen2.5-VL-3B-Instruct로 교체 → 캡셔닝 정상 동작 확인
+- [x] Blackwell 최적화: flash-attn + torch.compile + bf16
+- [x] 로고/그래픽 상대 위치 보존 프롬프트 추가
+
 ## Validation
 - [x] smoke_test 통과
 - [x] Colab 테스트: 모델 로드 동작 확인
+- [x] Colab 테스트: Qwen2.5-VL 캡셔닝 정상 동작 확인
 - [ ] 의류 종류 보존 품질 확인 (맨투맨→맨투맨, 반팔→반팔)
+- [ ] 로고 위치 정확도 확인
 - [ ] T-pose 변환 포즈 정확도 확인
 - [ ] Gradio API 엔드투엔드 테스트
 

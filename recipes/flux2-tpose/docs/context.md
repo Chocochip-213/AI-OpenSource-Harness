@@ -34,12 +34,12 @@ Input (garment photo)
 
 | 항목 | 생성 모델 | 캡셔닝 모델 |
 |------|----------|------------|
-| Model ID | `black-forest-labs/FLUX.2-klein-9B` | `florence-community/Florence-2-large-ft` |
-| Parameters | 9B | 0.77B |
-| Class | `Flux2KleinPipeline` | `Florence2ForConditionalGeneration` |
-| VRAM | ~29GB (bf16) | ~1.5GB (bf16) |
+| Model ID | `black-forest-labs/FLUX.2-klein-9B` | `Qwen/Qwen2.5-VL-3B-Instruct` |
+| Parameters | 9B | 3B |
+| Class | `Flux2KleinPipeline` | `Qwen2_5_VLForConditionalGeneration` |
+| VRAM | ~29GB (bf16) | ~6GB (bf16) |
 | Steps | 4 (distilled) | N/A |
-| License | Non-commercial (gated) | MIT |
+| License | Non-commercial (gated) | Apache 2.0 |
 
 ## Prompt Engineering — Anchor-Delta Pattern
 
@@ -70,16 +70,19 @@ Front view, centered on pure white background, fully visible, no person, no mann
 3. **명시적 부정** — FLUX.2는 negative prompt 미지원, positive에 삽입
 4. **guidance_scale 무시됨** — distilled 모델에서는 프롬프트 텍스트만 유효
 
-## Florence-2 호환 이슈 (transformers 5.x)
+## Florence-2 → Qwen2.5-VL 교체 경위
 
-MiaoshouAI Florence-2 remote code가 transformers ≤4.49까지만 호환:
-- `additional_special_tokens` AttributeError (processor)
-- `forced_bos_token_id` AttributeError (model config)
+Florence-2는 transformers 5.x에서 전면 실패:
+1. MiaoshouAI: remote code가 transformers ≤4.49까지만 호환
+2. florence-community: lm_head.weight tying 깨짐 → 가비지 캡션
+   - dtype 문제(bf16 buffer 불일치)와 별개로 weight tying 자체 미작동
+   - `tie_weights()` 강제 호출로도 해결 불가
+3. 근본 원인: transformers 5.x의 Florence2 weight tying 구현 버그
 
-**해결**: `florence-community/Florence-2-large-ft` 사용
-- transformers 5.x 네이티브 지원 (trust_remote_code 불필요)
-- `Florence2ForConditionalGeneration` + `AutoProcessor`
-- `<MORE_DETAILED_CAPTION>` + `post_process_generation` 정상 동작
+**최종 해결**: `Qwen/Qwen2.5-VL-3B-Instruct`로 교체
+- transformers 5.x 네이티브, weight tying 문제 없음
+- chat template API (apply_chat_template → processor → generate)
+- bf16 + Flash Attention 2 (Blackwell 최적화)
 
 ## Dependencies
 
@@ -87,7 +90,8 @@ MiaoshouAI Florence-2 remote code가 transformers ≤4.49까지만 호환:
 |---------|---------|-------|
 | torch | Colab native | CUDA 12.x+ |
 | diffusers | git HEAD | Flux2KleinPipeline |
-| transformers | >=5.0.0 | Florence2ForConditionalGeneration 네이티브 |
+| transformers | >=5.0.0 | Qwen2_5_VLForConditionalGeneration 네이티브 |
+| flash-attn | latest | Blackwell Flash Attention 2 |
 | accelerate | >=1.12.0 | model loading |
 | sentencepiece | latest | Qwen3 tokenizer |
 | gradio | >=5.0 | Web UI + API |
@@ -96,7 +100,8 @@ MiaoshouAI Florence-2 remote code가 transformers ≤4.49까지만 호환:
 
 - **9B 선택**: 102GB Blackwell에서 full GPU mode. 4B보다 변환 품질 우수
 - **VLM 자동 캡셔닝**: 맨투맨→후디, 반팔→긴팔 변환 방지. 입력 이미지를 구체적으로 묘사
-- **florence-community**: MiaoshouAI PromptGen은 transformers 5.x 호환 불가
+- **Qwen2.5-VL 교체**: Florence-2 전면 실패 (lm_head weight tying 버그) → Qwen2.5-VL-3B
+- **Blackwell 최적화**: flash-attn + torch.compile + bf16 텐서코어
 - **rembg 제거**: 불필요 — in-context conditioning이 원본 해석
 - **garment_type 하드코딩 제거**: VLM 캡션이 자동으로 의류 종류 파악
 - **Anchor-Delta 패턴**: 보존 먼저, 변경 나중 + 명시적 부정 제약
@@ -105,7 +110,7 @@ MiaoshouAI Florence-2 remote code가 transformers ≤4.49까지만 호환:
 ## References
 
 - FLUX.2 Klein 9B: https://huggingface.co/black-forest-labs/FLUX.2-klein-9B
-- Florence-2-large-ft: https://huggingface.co/florence-community/Florence-2-large-ft
+- Qwen2.5-VL-3B: https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct
 - BFL Kontext Prompting Guide: https://docs.bfl.ml/guides/prompting_guide_kontext_i2i
 - fal.ai Klein Prompt Guide: https://fal.ai/learn/devs/flux-2-klein-prompt-guide
 

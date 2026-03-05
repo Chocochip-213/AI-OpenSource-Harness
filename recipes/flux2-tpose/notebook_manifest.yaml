@@ -202,15 +202,14 @@ cells:
           """Build the T-pose conversion prompt (edit-instruction style for Klein 9B).
           No garment type specified — the reference image is the sole source of truth."""
           prompt = (
-              "Edit the input garment photo by ONLY repositioning the sleeves. "
-              "Rotate both sleeves outward around the shoulder seams until perfectly horizontal, "
-              "symmetric left and right, creating a flat-lay T-pose layout. "
-              "Do NOT shorten the sleeves. Preserve the original sleeve length from shoulder seam to cuff. "
-              "Keep cuff size, sleeve opening, torso width, and body length the same as the input. "
-              "This is a rotation of the existing sleeves, not a redesign. "
+              "Reposition the garment from the input photo into a flat-lay T-pose layout. "
+              "Rotate the sleeves outward around the shoulder seams so they extend horizontally, "
+              "symmetric left and right. "
+              "Keep the EXACT same sleeve length as the input — do NOT lengthen or shorten them. "
+              "A short-sleeve garment must remain short-sleeve. A long-sleeve garment must remain long-sleeve. "
               "Preserve all garment identity exactly: color, fabric texture, stitching, seams, "
-              "hood shape, pockets, and any graphic or text placement. "
-              "Sleeve ends should reach close to the left and right image margins. "
+              "hood shape, pockets, graphic prints, and overall proportions. "
+              "Do not add or remove any part of the garment. "
               "Garment only, no person, no mannequin, no hanger, clean white background, fully visible."
           )
           return prompt

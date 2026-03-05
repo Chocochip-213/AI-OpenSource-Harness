@@ -1,0 +1,1119 @@
+﻿title: "TRELLIS.2 Colab Checkpoint Runner (CP1)"
+
+cells:
+  - type: markdown
+    source: |
+      ## CP1 - Colab Bootstrap and Runtime Diagnostics
+
+      Run all cells in order.
+      This checkpoint collects runtime evidence before TRELLIS inference work.
+
+  - type: code
+    source: |
+      # CP1-1: GPU and environment snapshot
+      import os, sys, json, platform, subprocess
+      from datetime import datetime
+
+      print("=== CP1-1: ENV SNAPSHOT ===")
+      print("utc_time:", datetime.utcnow().isoformat() + "Z")
+      print("python:", sys.version.replace("\n", " "))
+      print("platform:", platform.platform())
+      print("cwd:", os.getcwd())
+
+      try:
+          out = subprocess.check_output(["nvidia-smi"], text=True)
+          print("\n=== nvidia-smi ===")
+          print(out[:4000])
+      except Exception as e:
+          print("nvidia-smi unavailable:", e)
+
+  - type: code
+    source: |
+      # CP1-2: PyTorch and CUDA details
+      print("=== CP1-2: TORCH/CUDA ===")
+      try:
+          import torch
+          print("torch:", torch.__version__)
+          print("cuda_available:", torch.cuda.is_available())
+          print("cuda_version:", torch.version.cuda)
+          if torch.cuda.is_available():
+              props = torch.cuda.get_device_properties(0)
+              print("gpu_name:", props.name)
+              print("total_vram_gb:", round(props.total_memory / (1024**3), 2))
+      except Exception as e:
+          print("torch check failed:", e)
+
+  - type: code
+    source: |
+      # CP1-3: Preinstalled package versions (runtime drift check)
+      import importlib
+
+      packages = [
+          "pip", "setuptools", "wheel",
+          "torch", "torchvision", "torchaudio",
+          "transformers", "diffusers",
+          "huggingface_hub", "accelerate", "safetensors"
+      ]
+
+      versions = {}
+      for name in packages:
+          try:
+              mod = importlib.import_module(name)
+              versions[name] = getattr(mod, "__version__", "unknown")
+          except Exception:
+              versions[name] = "not-installed"
+
+      print("=== CP1-3: PACKAGE VERSIONS ===")
+      for k in packages:
+          print(f"{k:16} {versions[k]}")
+
+  - type: code
+    source: |
+      # CP1-4: Dependency installation policy (safe baseline)
+      # We avoid broad upgrades first to reduce breakage from Colab drift.
+      # Install only missing core packages, then re-check versions.
+      import importlib, subprocess, sys
+
+      need = []
+      for pkg in ["huggingface_hub", "safetensors", "accelerate"]:
+          try:
+              importlib.import_module(pkg)
+          except Exception:
+              need.append(pkg)
+
+      if need:
+          print("Installing missing:", need)
+          subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *need])
+      else:
+          print("No missing core packages.")
+
+      print("CP1-4 done.")
+
+  - type: code
+    source: |
+      # CP1-5: Save runtime report artifact
+      import os, json, sys, platform
+      from datetime import datetime
+
+      report = {
+          "utc_time": datetime.utcnow().isoformat() + "Z",
+          "python": sys.version,
+          "platform": platform.platform(),
+      }
+
+      try:
+          import torch
+          report["torch"] = torch.__version__
+          report["cuda_available"] = torch.cuda.is_available()
+          report["cuda_version"] = torch.version.cuda
+          if torch.cuda.is_available():
+              props = torch.cuda.get_device_properties(0)
+              report["gpu_name"] = props.name
+              report["total_vram_gb"] = round(props.total_memory / (1024**3), 2)
+      except Exception as e:
+          report["torch_error"] = str(e)
+
+      os.makedirs("/content/trellis_cp_reports", exist_ok=True)
+      out_path = "/content/trellis_cp_reports/cp1_runtime_report.json"
+      with open(out_path, "w", encoding="utf-8") as f:
+          json.dump(report, f, indent=2)
+
+      print("Wrote:", out_path)
+      print(json.dumps(report, indent=2))
+
+  - type: markdown
+    source: |
+      ## CP1 User Evidence to Send Back
+      1. Last 30 lines from CP1-1 and CP1-2 output
+      2. Full CP1-3 package version table
+      3. CP1-5 JSON content
+      4. One screenshot showing GPU type and VRAM
+
+  - type: markdown
+    source: |
+      ## CP2 - TRELLIS.2 Minimum Inference PoC
+
+      Goal:
+      - Run one image-to-3D inference with TRELLIS.2
+      - Save deterministic artifacts under `/content/trellis_cp_outputs/cp2`
+      - Produce `cp2_report.json` for pass/fail gating
+
+  - type: code
+    source: |
+      # CP2-1: Prepare output directories
+      import os, json
+
+      CP2_ROOT = "/content/trellis_cp_outputs/cp2"
+      CP2_INPUT = f"{CP2_ROOT}/input"
+      CP2_OUTPUT = f"{CP2_ROOT}/output"
+      os.makedirs(CP2_INPUT, exist_ok=True)
+      os.makedirs(CP2_OUTPUT, exist_ok=True)
+
+      print("CP2_ROOT:", CP2_ROOT)
+      print("CP2_INPUT:", CP2_INPUT)
+      print("CP2_OUTPUT:", CP2_OUTPUT)
+
+  - type: code
+    source: |
+      # CP2-2: Clone TRELLIS.2 and install runtime dependencies
+      import os, site, subprocess, sys, glob, shutil
+
+      REPO_DIR = "/content/TRELLIS.2"
+
+      if not os.path.isdir(REPO_DIR):
+          subprocess.check_call([
+              "git", "clone", "--recursive",
+              "https://github.com/microsoft/TRELLIS.2.git",
+              REPO_DIR
+          ])
+      else:
+          print("Repo already exists:", REPO_DIR)
+
+      os.chdir(REPO_DIR)
+      subprocess.check_call(["git", "submodule", "update", "--init", "--recursive"])
+
+      print("Repo ready:", os.getcwd())
+      print("Python version:", sys.version.split()[0])
+      CP2_BUILD_ID = "cp2-2026-03-05-monkeypatch-r5"
+      print("CP2 build:", CP2_BUILD_ID)
+      TRELLIS_SKIP_RMBG = os.environ.get("TRELLIS_SKIP_RMBG", "1").lower() not in {"0", "false", "no"}
+      print("TRELLIS_SKIP_RMBG:", TRELLIS_SKIP_RMBG)
+
+      def pip_install(*args):
+          cmd = [sys.executable, "-m", "pip", "install", *args]
+          print("+", " ".join(cmd))
+          subprocess.check_call(cmd)
+
+      def ensure_numpy_integrity():
+          # We only trust subprocess probe here. In-kernel numpy can stay polluted after reinstall.
+          # By default we DO NOT force a version. We only repair when probe fails.
+          # Optional: set TRELLIS_NUMPY_PIN to force a specific version.
+          numpy_pin = os.environ.get("TRELLIS_NUMPY_PIN", "").strip()
+          print("NumPy target pin:", numpy_pin if numpy_pin else "(auto, no forced pin)")
+
+          def _site_package_roots():
+              roots = []
+              try:
+                  roots.extend(site.getsitepackages())
+              except Exception:
+                  pass
+              try:
+                  us = site.getusersitepackages()
+                  if us:
+                      roots.append(us)
+              except Exception:
+                  pass
+              roots.append("/usr/local/lib/python3.12/dist-packages")
+              roots.append("/usr/lib/python3/dist-packages")
+              out = []
+              for r in roots:
+                  if r and r not in out:
+                      out.append(r)
+              return out
+
+          def _probe_subprocess():
+              probe = (
+                  "import json, numpy as np; "
+                  "from numpy._core.umath import _center; "
+                  "import numpy._core._multiarray_umath as mau; "
+                  "import numpy.linalg as npl; "
+                  "ok = hasattr(mau, '_blas_supports_fpe'); "
+                  "print(json.dumps({'version': np.__version__, 'file': np.__file__, 'has_blas_supports_fpe': ok, 'linalg_loaded': bool(npl.__name__)})); "
+                  "raise SystemExit(0 if ok else 2)"
+              )
+              p = subprocess.run([sys.executable, "-c", probe], text=True, capture_output=True)
+              if p.returncode != 0:
+                  return False, None, None, (p.stderr or "").strip()
+              try:
+                  import json as _json
+                  data = _json.loads((p.stdout or "").strip().splitlines()[-1])
+                  return True, str(data.get("version")), str(data.get("file")), ""
+              except Exception:
+                  return False, None, None, f"Invalid probe output: {(p.stdout or '').strip()}"
+
+          def _purge_numpy_files():
+              patterns = ["numpy", "numpy-*", "numpy.libs", "numpy.libs-*", "~umpy*"]
+              removed = []
+              for root in _site_package_roots():
+                  if not os.path.isdir(root):
+                      continue
+                  for pat in patterns:
+                      for p in glob.glob(os.path.join(root, pat)):
+                          try:
+                              if os.path.isdir(p):
+                                  shutil.rmtree(p, ignore_errors=True)
+                              else:
+                                  os.remove(p)
+                              removed.append(p)
+                          except Exception:
+                              pass
+              if removed:
+                  print(f"Purged stale numpy entries: {len(removed)}")
+
+          ok, ver, path, err = _probe_subprocess()
+          if ok and (not numpy_pin or ver == numpy_pin):
+              print(f"NumPy integrity OK (subprocess): {ver} ({path})")
+              return False
+
+          target = numpy_pin or os.environ.get("TRELLIS_NUMPY_REPAIR_TARGET", "2.4.2")
+          print(f"NumPy repair triggered (ok={ok}, version={ver}, target={target}).")
+          if err:
+              print("probe stderr tail:", " | ".join(err.splitlines()[-6:]))
+
+          subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "numpy"], check=False)
+          _purge_numpy_files()
+          pip_install("--upgrade", "--force-reinstall", "--no-cache-dir", f"numpy=={target}")
+
+          ok2, ver2, path2, err2 = _probe_subprocess()
+          if not ok2:
+              raise RuntimeError(
+                  "NumPy repair failed on disk. "
+                  f"ok={ok2}, version={ver2}, target={target}, err_tail={' | '.join((err2 or '').splitlines()[-6:])}"
+              )
+          if numpy_pin and ver2 != numpy_pin:
+              raise RuntimeError(
+                  "NumPy repair finished but version mismatch with TRELLIS_NUMPY_PIN. "
+                  f"installed={ver2}, requested={numpy_pin}"
+              )
+
+          print(f"NumPy repaired on disk: {ver2} ({path2})")
+          return True
+
+      def ensure_transformers_integrity():
+          # Align with official TRELLIS.2 Space requirements.
+          # Source: https://huggingface.co/spaces/microsoft/TRELLIS.2/.../requirements.txt
+          tx_pin = os.environ.get("TRELLIS_TRANSFORMERS_PIN", "4.57.3").strip()
+          hh_pin = os.environ.get("TRELLIS_HF_HUB_PIN", "0.36.0").strip()
+          print("Transformers target pin:", tx_pin)
+          print("HF Hub target pin:", hh_pin)
+
+          if TRELLIS_SKIP_RMBG:
+              probe = (
+                  "import json; "
+                  "import transformers; "
+                  "from transformers import GenerationMixin; "
+                  "import huggingface_hub; "
+                  "print(json.dumps({'transformers': transformers.__version__, 'huggingface_hub': huggingface_hub.__version__, 'segmentation_probe': False}))"
+              )
+          else:
+              probe = (
+                  "import json; "
+                  "import transformers; "
+                  "from transformers import GenerationMixin, AutoModelForImageSegmentation; "
+                  "import huggingface_hub; "
+                  "print(json.dumps({'transformers': transformers.__version__, 'huggingface_hub': huggingface_hub.__version__, 'segmentation_probe': True}))"
+              )
+
+          p = subprocess.run([sys.executable, "-c", probe], text=True, capture_output=True)
+          if p.returncode == 0:
+              print("Transformers integrity OK:", (p.stdout or "").strip().splitlines()[-1])
+              return False
+
+          print("Transformers integrity probe failed. Repairing stack...")
+          print("probe stderr tail:", " | ".join((p.stderr or "").splitlines()[-8:]))
+          pip_install(
+              "--upgrade", "--force-reinstall", "--no-cache-dir",
+              f"huggingface_hub=={hh_pin}",
+              f"transformers=={tx_pin}",
+          )
+
+          p2 = subprocess.run([sys.executable, "-c", probe], text=True, capture_output=True)
+          if p2.returncode != 0:
+              raise RuntimeError(
+                  "Transformers stack repair failed. "
+                  f"stderr tail: {' | '.join((p2.stderr or '').splitlines()[-8:])}"
+              )
+
+          print("Transformers stack repaired:", (p2.stdout or "").strip().splitlines()[-1])
+          return True
+
+      def apply_trellis_rembg_identity_patch():
+          # Hard bypass rembg dependency chain (AutoModelForImageSegmentation/onnxruntime)
+          # for workflows that preprocess logo/background outside TRELLIS.
+          rembg_init_path = f"{REPO_DIR}/trellis2/pipelines/rembg/__init__.py"
+          patch = (
+              "from typing import *\n"
+              "from PIL import Image\n"
+              "\n"
+              "class BiRefNet:\n"
+              "    def __init__(self, *args, **kwargs):\n"
+              "        pass\n"
+              "\n"
+              "    def to(self, device):\n"
+              "        return self\n"
+              "\n"
+              "    def cuda(self):\n"
+              "        return self\n"
+              "\n"
+              "    def cpu(self):\n"
+              "        return self\n"
+              "\n"
+              "    def __call__(self, image: Image.Image) -> Image.Image:\n"
+              "        # Identity fallback: keep input as-is but guarantee RGBA output.\n"
+              "        if image.mode != 'RGBA':\n"
+              "            image = image.convert('RGBA')\n"
+              "        return image\n"
+          )
+          os.makedirs(os.path.dirname(rembg_init_path), exist_ok=True)
+          with open(rembg_init_path, "w", encoding="utf-8") as f:
+              f.write(patch)
+          print("Applied TRELLIS rembg identity patch:", rembg_init_path)
+
+      def apply_runtime_monkeypatches():
+          # Last-resort runtime shims for Colab binary-mix breakage.
+          # This avoids hard-crash on known missing NumPy symbols used by transformers/linalg chain.
+          patched = {}
+          try:
+              import numpy._core._multiarray_umath as mau
+              if not hasattr(mau, "_blas_supports_fpe"):
+                  class _BoolCallableFalse:
+                      def __call__(self, *args, **kwargs):
+                          return False
+                      def __bool__(self):
+                          return False
+                  mau._blas_supports_fpe = _BoolCallableFalse()
+                  patched["_blas_supports_fpe"] = "shim_false"
+          except Exception as e:
+              patched["_blas_supports_fpe_error"] = str(e)
+
+          try:
+              import numpy as np
+              import numpy._core.umath as um
+              if not hasattr(um, "_center"):
+                  def _center(a, width, fillchar=" "):
+                      w = int(width)
+                      fc = str(fillchar)[:1] if str(fillchar) else " "
+                      arr = np.asarray(a).astype(str)
+                      fn = np.vectorize(lambda s: str(s).center(w, fc), otypes=[object])
+                      return fn(arr)
+                  um._center = _center
+                  patched["_center"] = "python_vectorized_fallback"
+          except Exception as e:
+              patched["_center_error"] = str(e)
+
+          if patched:
+              print("Applied runtime monkeypatches:", patched)
+          else:
+              print("No runtime monkeypatches needed.")
+
+      def ensure_kernel_import_integrity():
+          # In-kernel check after pip ops and optional monkeypatch.
+          # If still broken, force one restart.
+          try:
+              import importlib, gc
+              prefixes = ("numpy", "scipy", "transformers", "huggingface_hub", "tokenizers")
+              stale = [k for k in list(sys.modules.keys()) if any(k == p or k.startswith(p + ".") for p in prefixes)]
+              for k in stale:
+                  sys.modules.pop(k, None)
+              gc.collect()
+              importlib.invalidate_caches()
+
+              apply_runtime_monkeypatches()
+
+              import numpy as np
+              import numpy._core._multiarray_umath as mau
+              if not hasattr(mau, "_blas_supports_fpe"):
+                  raise RuntimeError("_blas_supports_fpe still missing")
+              if TRELLIS_SKIP_RMBG:
+                  from transformers import GenerationMixin  # noqa: F401
+              else:
+                  from transformers import GenerationMixin, AutoModelForImageSegmentation  # noqa: F401
+              import transformers, huggingface_hub
+              print(
+                  "Kernel import integrity OK:",
+                  f"numpy={np.__version__}, transformers={transformers.__version__}, hub={huggingface_hub.__version__}",
+              )
+          except Exception as e:
+              raise RuntimeError(
+                  "Kernel import state is stale/corrupted even after runtime monkeypatch. "
+                  "Restart runtime once, then rerun from CP2-1. "
+                  f"detail={e}"
+              )
+
+      # Core runtime packages used by trellis2 imports.
+      pip_install(
+          "easydict",
+          "tqdm",
+          "opencv-python-headless",
+          "trimesh",
+          "plyfile",
+          "transformers",
+          "huggingface_hub",
+          "safetensors",
+          "kornia",
+          "timm",
+          "imageio",
+          "imageio-ffmpeg",
+          "zstandard",
+          "ninja",
+      )
+      if not TRELLIS_SKIP_RMBG:
+          pip_install("rembg")
+      # Official TRELLIS.2 Space pins transformers to 4.57.3.
+      pip_install("transformers==4.57.3")
+      pip_install("utils3d@git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8")
+      numpy_repaired = ensure_numpy_integrity()
+      if numpy_repaired:
+          print("NumPy repaired in this run; continuing with in-kernel sanitation checks.")
+      transformers_repaired = ensure_transformers_integrity()
+      if transformers_repaired:
+          print("Transformers stack repaired in this run; continuing with in-kernel sanitation checks.")
+      if TRELLIS_SKIP_RMBG:
+          apply_trellis_rembg_identity_patch()
+      ensure_kernel_import_integrity()
+
+      # rembg runtime backend (onnxruntime) can be missing on fresh Colab sessions.
+      ort_backend = "skipped_by_TRELLIS_SKIP_RMBG" if TRELLIS_SKIP_RMBG else None
+      if not TRELLIS_SKIP_RMBG:
+          try:
+              pip_install("onnxruntime-gpu")
+              ort_backend = "onnxruntime-gpu"
+          except Exception as e:
+              print("Warning: onnxruntime-gpu install failed:", e)
+              try:
+                  pip_install("onnxruntime")
+                  ort_backend = "onnxruntime-cpu"
+              except Exception as e2:
+                  print("Warning: onnxruntime install failed:", e2)
+                  ort_backend = "missing"
+      print("rembg backend:", ort_backend)
+
+      # TRELLIS defaults to flash_attn; prefer xformers for Colab portability.
+      # If xformers install fails, try flash-attn fallback.
+      attn_backend = None
+      try:
+          pip_install("xformers")
+          attn_backend = "xformers"
+      except Exception as e:
+          print("Warning: xformers install failed:", e)
+          try:
+              pip_install("flash-attn==2.7.3")
+              attn_backend = "flash_attn"
+          except Exception as e2:
+              raise RuntimeError(
+                  "Failed to install both xformers and flash-attn. "
+                  "CP2 requires one attention backend."
+              ) from e2
+
+      # TRELLIS.2 itself is not an editable pip package at repo root.
+      # Install o_voxel from local source (builds/installs cumesh + flex_gemm deps),
+      # then import trellis2 via PYTHONPATH.
+      pip_install("--no-build-isolation", "./o-voxel")
+
+      # nvdiffrast is only needed for postprocess/render paths.
+      # Try to install it; if unavailable, register a stub so core inference can proceed.
+      nvdiffrast_ready = False
+      try:
+          import nvdiffrast.torch as _dr  # noqa: F401
+          nvdiffrast_ready = True
+          print("nvdiffrast already available.")
+      except Exception:
+          try:
+              pip_install("--no-build-isolation", "git+https://github.com/NVlabs/nvdiffrast.git@v0.4.0")
+              import nvdiffrast.torch as _dr  # noqa: F401
+              nvdiffrast_ready = True
+              print("Installed nvdiffrast.")
+          except Exception as e:
+              print("Warning: nvdiffrast install failed; enabling stub for CP2 core inference:", e)
+              stub_root = "/content/trellis_cp_stubs"
+              stub_pkg = f"{stub_root}/nvdiffrast"
+              os.makedirs(stub_pkg, exist_ok=True)
+              with open(f"{stub_pkg}/__init__.py", "w", encoding="utf-8") as f:
+                  f.write("# nvdiffrast stub package for CP2 inference-only path\n")
+              with open(f"{stub_pkg}/torch.py", "w", encoding="utf-8") as f:
+                  f.write(
+                      "def __getattr__(name):\n"
+                      "    raise RuntimeError('nvdiffrast is not installed; this call requires nvdiffrast.')\n"
+                  )
+              if stub_root not in sys.path:
+                  sys.path.insert(0, stub_root)
+              os.environ["TRELLIS_NVDIFFRAST_STUB"] = "1"
+
+      # Optional cp311 wheel path only on Python 3.11.
+      if sys.version_info.major == 3 and sys.version_info.minor == 11:
+          mv_adapter_wheel = "https://huggingface.co/EasternJournalist/MV-Adapter/resolve/main/dist/xformers-0.0.28.post3-cp311-cp311-linux_x86_64.whl"
+          try:
+              pip_install(mv_adapter_wheel)
+              print("Installed cp311 MV-Adapter wheel.")
+          except Exception as e:
+              print("Warning: optional MV-Adapter wheel install failed:", e)
+      else:
+          print("Skipping cp311-only MV-Adapter wheel on non-3.11 runtime.")
+
+      if REPO_DIR not in sys.path:
+          sys.path.insert(0, REPO_DIR)
+      site.addsitedir(REPO_DIR)
+      os.environ["PYTHONPATH"] = f"{REPO_DIR}:{os.environ.get('PYTHONPATH', '')}".rstrip(":")
+      os.environ["ATTN_BACKEND"] = attn_backend
+      os.environ["SPARSE_ATTN_BACKEND"] = attn_backend
+      os.environ.setdefault("SPARSE_CONV_BACKEND", "flex_gemm")
+      os.environ["TRELLIS_NVDIFFRAST_READY"] = "1" if nvdiffrast_ready else "0"
+      _ = ensure_numpy_integrity()
+      _ = ensure_transformers_integrity()
+      ensure_kernel_import_integrity()
+
+      from trellis2.pipelines import Trellis2ImageTo3DPipeline
+      print("Import smoke check OK:", Trellis2ImageTo3DPipeline.__name__)
+      print("nvdiffrast_ready:", os.environ["TRELLIS_NVDIFFRAST_READY"])
+      print("CP2-2 install complete")
+
+  - type: code
+    source: |
+      # CP2-3: HuggingFace token check
+      import os
+
+      hf_token = os.environ.get("HF_TOKEN", "")
+      if not hf_token:
+          try:
+              from google.colab import userdata
+              hf_token = userdata.get("HF_TOKEN")
+          except Exception:
+              hf_token = ""
+
+      if not hf_token:
+          raise ValueError("HF_TOKEN is required for TRELLIS.2 model download. Set Colab Secret HF_TOKEN.")
+
+      os.environ["HF_TOKEN"] = hf_token
+      os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
+      try:
+          from huggingface_hub import login
+          login(token=hf_token, add_to_git_credential=False)
+          print("HF login OK.")
+      except Exception as e:
+          print("HF login warning:", e)
+      print("HF token ready.")
+
+  - type: code
+    source: |
+      # CP2-4: Upload one input image
+      from google.colab import files
+      import os, shutil, glob
+
+      uploaded = files.upload()
+      if not uploaded:
+          raise RuntimeError("No file uploaded.")
+
+      # Deterministic input path
+      first_name = sorted(uploaded.keys())[0]
+      candidates = [
+          os.path.abspath(first_name),   # current working directory
+          f"/content/{first_name}",      # Colab root
+      ]
+      hits = [p for p in candidates if os.path.exists(p)]
+      if not hits:
+          hits = sorted(glob.glob(f"/content/**/{first_name}", recursive=True))
+      if not hits:
+          raise FileNotFoundError(f"Uploaded file not found on disk: {first_name}")
+      src = hits[0]
+      dst = f"{CP2_INPUT}/input.png"
+      shutil.copyfile(src, dst)
+      print("Uploaded file:", first_name)
+      print("Resolved source:", src)
+      print("Saved input:", dst)
+
+  - type: code
+    source: |
+      # CP2-4b removed: logo preprocessing is handled outside Colab in this recipe variant.
+      print("CP2-4b skipped (external/manual preprocessing workflow).")
+
+  - type: code
+    source: |
+      # CP2-5: Minimal TRELLIS.2 inference
+      import os, sys, json, traceback
+      from datetime import datetime, UTC
+      from PIL import Image
+      import torch
+
+      report = {
+          "utc_time": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+          "model_id": "microsoft/TRELLIS.2-4B",
+          "status": "started",
+          "artifacts": {},
+      }
+      if os.environ.get("TRELLIS_NVDIFFRAST_READY") != "1":
+          report["warnings"] = [
+              "nvdiffrast not available; CP2 allows inference-only path and GLB export may be skipped."
+          ]
+
+      input_path = f"{CP2_INPUT}/input.png"
+      if not os.path.exists(input_path):
+          raise FileNotFoundError(input_path)
+
+      try:
+          # Ensure nvdiffrast import doesn't block core inference path.
+          try:
+              import nvdiffrast.torch as _dr  # noqa: F401
+              os.environ["TRELLIS_NVDIFFRAST_READY"] = "1"
+          except Exception:
+              stub_root = "/content/trellis_cp_stubs"
+              stub_pkg = f"{stub_root}/nvdiffrast"
+              os.makedirs(stub_pkg, exist_ok=True)
+              with open(f"{stub_pkg}/__init__.py", "w", encoding="utf-8") as f:
+                  f.write("# nvdiffrast stub package for CP2 inference-only path\n")
+              with open(f"{stub_pkg}/torch.py", "w", encoding="utf-8") as f:
+                  f.write(
+                      "def __getattr__(name):\n"
+                      "    raise RuntimeError('nvdiffrast is not installed; this call requires nvdiffrast.')\n"
+                  )
+              if stub_root not in sys.path:
+                  sys.path.insert(0, stub_root)
+              os.environ["TRELLIS_NVDIFFRAST_READY"] = "0"
+
+          from huggingface_hub import hf_hub_download, HfApi
+          model_id = "microsoft/TRELLIS.2-4B"
+          hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+          hf_api = HfApi()
+
+          def _repo_has_model_weights(repo_id: str) -> bool:
+              try:
+                  info = hf_api.model_info(repo_id, token=hf_token)
+                  siblings = {s.rfilename for s in (info.siblings or [])}
+                  return ("model.safetensors" in siblings) or ("pytorch_model.bin" in siblings)
+              except Exception:
+                  return False
+
+          # Build a local runtime pipeline config with dependency/path overrides.
+          # 1) Prefix relative ckpts paths with model_id
+          # 2) Replace gated repos with public fallbacks for Colab PoC
+          src_cfg = hf_hub_download(model_id, "pipeline.json", token=hf_token)
+          with open(src_cfg, "r", encoding="utf-8") as f:
+              pipeline_cfg = json.load(f)
+
+          model_map = pipeline_cfg.get("args", {}).get("models", {})
+          for k, v in list(model_map.items()):
+              if isinstance(v, str) and v.startswith("ckpts/"):
+                  model_map[k] = f"{model_id}/{v}"
+
+          overrides = {}
+          image_cond_args = pipeline_cfg.get("args", {}).get("image_cond_model", {}).get("args", {})
+          if image_cond_args.get("model_name") == "facebook/dinov3-vitl16-pretrain-lvd1689m":
+              fallback_dino = os.environ.get(
+                  "TRELLIS_DINO_MODEL",
+                  "camenduru/dinov3-vitl16-pretrain-lvd1689m",
+              )
+              if _repo_has_model_weights(fallback_dino):
+                  image_cond_args["model_name"] = fallback_dino
+                  overrides["image_cond_model"] = fallback_dino
+              else:
+                  # Hard fallback to DINOv2 extractor when DINOv3 replacement is unavailable.
+                  dinov2_name = os.environ.get("TRELLIS_DINOV2_MODEL", "dinov2_vitl14")
+                  pipeline_cfg["args"]["image_cond_model"] = {
+                      "name": "DinoV2FeatureExtractor",
+                      "args": {"model_name": dinov2_name},
+                  }
+                  overrides["image_cond_model"] = f"DinoV2FeatureExtractor({dinov2_name})"
+                  overrides["image_cond_fallback_reason"] = (
+                      f"{fallback_dino} unavailable or missing model.safetensors/pytorch_model.bin"
+                  )
+
+          rembg_args = pipeline_cfg.get("args", {}).get("rembg_model", {}).get("args", {})
+          if rembg_args.get("model_name") == "briaai/RMBG-2.0":
+              fallback_rembg = os.environ.get(
+                  "TRELLIS_RMBG_MODEL",
+                  "ZhengPeng7/BiRefNet",
+              )
+              rembg_args["model_name"] = fallback_rembg
+              overrides["rembg_model"] = fallback_rembg
+
+          runtime_cfg_dir = f"{CP2_ROOT}/runtime_cfg"
+          os.makedirs(runtime_cfg_dir, exist_ok=True)
+          runtime_cfg_path = f"{runtime_cfg_dir}/pipeline.json"
+          with open(runtime_cfg_path, "w", encoding="utf-8") as f:
+              json.dump(pipeline_cfg, f, indent=2)
+
+          report["artifacts"]["runtime_pipeline_config"] = runtime_cfg_path
+          if overrides:
+              report["model_overrides"] = overrides
+
+          from trellis2.pipelines import Trellis2ImageTo3DPipeline
+          pipeline = Trellis2ImageTo3DPipeline.from_pretrained(runtime_cfg_dir)
+          if torch.cuda.is_available():
+              pipeline.cuda()
+
+          image = Image.open(input_path).convert("RGB")
+          run_attempts = []
+          mesh_outputs = None
+          latents = None
+
+          # Match official TRELLIS.2 Space defaults as much as possible.
+          infer_cfg = {
+              "pipeline_type": os.environ.get("TRELLIS_PIPELINE_TYPE", "1024_cascade"),
+              "preprocess_image": os.environ.get("TRELLIS_PREPROCESS_IMAGE", "0").lower() in {"1", "true", "yes"},
+              "ss_steps": int(os.environ.get("TRELLIS_SS_STEPS", "12")),
+              "ss_guidance_strength": float(os.environ.get("TRELLIS_SS_CFG", "7.5")),
+              "ss_guidance_rescale": float(os.environ.get("TRELLIS_SS_RESCALE", "0.7")),
+              "ss_rescale_t": float(os.environ.get("TRELLIS_SS_RESCALE_T", "5.0")),
+              "shape_slat_steps": int(os.environ.get("TRELLIS_SHAPE_SLAT_STEPS", "12")),
+              "shape_slat_guidance_strength": float(os.environ.get("TRELLIS_SHAPE_SLAT_CFG", "7.5")),
+              "shape_slat_guidance_rescale": float(os.environ.get("TRELLIS_SHAPE_SLAT_RESCALE", "0.5")),
+              "shape_slat_rescale_t": float(os.environ.get("TRELLIS_SHAPE_SLAT_RESCALE_T", "3.0")),
+              "tex_slat_steps": int(os.environ.get("TRELLIS_TEX_SLAT_STEPS", "12")),
+              "tex_slat_guidance_strength": float(os.environ.get("TRELLIS_TEX_SLAT_CFG", "1.0")),
+              "tex_slat_guidance_rescale": float(os.environ.get("TRELLIS_TEX_SLAT_RESCALE", "0.0")),
+              "tex_slat_rescale_t": float(os.environ.get("TRELLIS_TEX_SLAT_RESCALE_T", "3.0")),
+              "decimation_target": int(os.environ.get("TRELLIS_DECIMATION_TARGET", "1000000")),
+              "texture_size": int(os.environ.get("TRELLIS_TEXTURE_SIZE", "4096")),
+              "remesh": os.environ.get("TRELLIS_REMESH", "1").lower() not in {"0", "false", "no"},
+              "remesh_band": int(os.environ.get("TRELLIS_REMESH_BAND", "1")),
+              "remesh_project": int(os.environ.get("TRELLIS_REMESH_PROJECT", "0")),
+          }
+          report["inference_config"] = infer_cfg
+
+          # BiRefNet can load fp16 weights while its input pipeline stays fp32.
+          # Normalize to fp32 first, then run; if still failing, skip preprocess.
+          try:
+              if hasattr(pipeline, "rembg_model") and hasattr(pipeline.rembg_model, "model"):
+                  pipeline.rembg_model.model = pipeline.rembg_model.model.float()
+                  report["rembg_dtype_fix"] = "forced_fp32"
+          except Exception as _dtype_e:
+              run_attempts.append(f"rembg float-cast skipped: {_dtype_e}")
+
+          run_kwargs_primary = dict(
+              pipeline_type=infer_cfg["pipeline_type"],
+              preprocess_image=infer_cfg["preprocess_image"],
+              sparse_structure_sampler_params={
+                  "steps": infer_cfg["ss_steps"],
+                  "guidance_strength": infer_cfg["ss_guidance_strength"],
+                  "guidance_rescale": infer_cfg["ss_guidance_rescale"],
+                  "rescale_t": infer_cfg["ss_rescale_t"],
+              },
+              shape_slat_sampler_params={
+                  "steps": infer_cfg["shape_slat_steps"],
+                  "guidance_strength": infer_cfg["shape_slat_guidance_strength"],
+                  "guidance_rescale": infer_cfg["shape_slat_guidance_rescale"],
+                  "rescale_t": infer_cfg["shape_slat_rescale_t"],
+              },
+              tex_slat_sampler_params={
+                  "steps": infer_cfg["tex_slat_steps"],
+                  "guidance_strength": infer_cfg["tex_slat_guidance_strength"],
+                  "guidance_rescale": infer_cfg["tex_slat_guidance_rescale"],
+                  "rescale_t": infer_cfg["tex_slat_rescale_t"],
+              },
+              return_latent=True,
+          )
+
+          # Legacy compatibility for older TRELLIS.2 API signatures.
+          run_kwargs_legacy = dict(
+              pipeline_type=infer_cfg["pipeline_type"],
+              preprocess_image=infer_cfg["preprocess_image"],
+              sparse_structure_sampler_params={
+                  "steps": infer_cfg["ss_steps"],
+                  "cfg_strength": infer_cfg["ss_guidance_strength"],
+                  "cfg_rescale": infer_cfg["ss_guidance_rescale"],
+              },
+              slat_sampler_params={
+                  "steps": infer_cfg["shape_slat_steps"],
+                  "cfg_strength": infer_cfg["shape_slat_guidance_strength"],
+                  "cfg_rescale": infer_cfg["shape_slat_guidance_rescale"],
+              },
+              return_latent=True,
+          )
+
+          def _run_with_api_compat(preprocess_flag: bool):
+              run_kwargs_primary["preprocess_image"] = bool(preprocess_flag)
+              run_kwargs_legacy["preprocess_image"] = bool(preprocess_flag)
+              try:
+                  rr = pipeline.run(image, **run_kwargs_primary)
+                  run_attempts.append(
+                      f"run(primary_api, preprocess_image={preprocess_flag}, pipeline_type={infer_cfg['pipeline_type']})"
+                  )
+                  return rr
+              except TypeError as te:
+                  te_msg = str(te)
+                  if (
+                      "shape_slat_sampler_params" in te_msg
+                      or "tex_slat_sampler_params" in te_msg
+                      or "guidance_strength" in te_msg
+                      or "unexpected keyword" in te_msg
+                  ):
+                      run_attempts.append(f"primary_api_unsupported: {te_msg[:180]}")
+                      rr = pipeline.run(image, **run_kwargs_legacy)
+                      run_attempts.append(
+                          f"run(legacy_api, preprocess_image={preprocess_flag}, pipeline_type={infer_cfg['pipeline_type']})"
+                      )
+                      return rr
+                  raise
+
+          try:
+              run_result = _run_with_api_compat(infer_cfg["preprocess_image"])
+          except Exception as first_run_error:
+              msg = str(first_run_error)
+              run_attempts.append(f"run(preprocess_image={infer_cfg['preprocess_image']}) failed: {msg[:180]}")
+
+              # Fallback path for rembg runtime issues in Colab mixed-precision envs.
+              if (
+                  infer_cfg["preprocess_image"]
+                  and (
+                  "Input type (float) and bias type (c10::Half)" in msg
+                  or "BiRefNet" in msg
+                  or "birefnet.py" in msg.lower()
+                  )
+              ):
+                  run_result = _run_with_api_compat(False)
+                  run_attempts.append("run(preprocess_image=False) fallback due to rembg dtype/runtime issue")
+                  report["preprocess_fallback"] = "disabled_rembg_due_to_dtype_mismatch"
+              else:
+                  raise
+
+          if isinstance(run_result, tuple) and len(run_result) == 2:
+              mesh_outputs, latents = run_result
+          else:
+              mesh_outputs = run_result
+
+          report["run_attempts"] = run_attempts
+          if not mesh_outputs:
+              raise RuntimeError("pipeline.run returned empty output")
+
+          mesh = mesh_outputs[0]
+          report["status"] = "inference_ok"
+
+          stats = {}
+          if hasattr(mesh, "vertices"):
+              try:
+                  stats["vertex_count"] = int(mesh.vertices.shape[0])
+              except Exception:
+                  pass
+          if hasattr(mesh, "faces"):
+              try:
+                  stats["face_count"] = int(mesh.faces.shape[0])
+              except Exception:
+                  pass
+
+          stats_path = f"{CP2_OUTPUT}/mesh_stats.json"
+          with open(stats_path, "w", encoding="utf-8") as f:
+              json.dump(stats, f, indent=2)
+          report["artifacts"]["mesh_stats"] = stats_path
+
+          # Optional GLB export path (depends on optional postprocess bindings)
+          try:
+              import o_voxel
+
+              export_mesh = mesh
+              export_grid_size = None
+              if latents and len(latents) >= 3:
+                  try:
+                      shape_slat, tex_slat, export_grid_size = latents
+                      export_mesh = pipeline.decode_latent(shape_slat, tex_slat, export_grid_size)[0]
+                      export_mesh.simplify(16777216)
+                  except Exception as _decode_e:
+                      report["glb_decode_latent_fallback"] = str(_decode_e)
+                      export_mesh = mesh
+                      export_grid_size = None
+
+              attr_layout = getattr(pipeline, "pbr_attr_layout", None)
+              if attr_layout is None:
+                  attr_layout = getattr(export_mesh, "layout", None)
+
+              glb_kwargs = {
+                  "vertices": export_mesh.vertices,
+                  "faces": export_mesh.faces,
+                  "attr_volume": export_mesh.attrs,
+                  "coords": export_mesh.coords,
+                  "attr_layout": attr_layout,
+                  "decimation_target": infer_cfg["decimation_target"],
+                  "texture_size": infer_cfg["texture_size"],
+                  "remesh": infer_cfg["remesh"],
+                  "remesh_band": infer_cfg["remesh_band"],
+                  "remesh_project": infer_cfg["remesh_project"],
+              }
+              if export_grid_size is not None:
+                  glb_kwargs["grid_size"] = int(export_grid_size)
+              else:
+                  glb_kwargs["voxel_size"] = float(export_mesh.voxel_size)
+
+              try:
+                  glb = o_voxel.postprocess.to_glb(**glb_kwargs)
+              except TypeError as _glb_te:
+                  _msg = str(_glb_te)
+                  if "remesh_project" in _msg:
+                      glb_kwargs.pop("remesh_project", None)
+                      report["glb_export_compat"] = "dropped_remesh_project_for_legacy_o_voxel"
+                      glb = o_voxel.postprocess.to_glb(**glb_kwargs)
+                  else:
+                      raise
+              glb_path = f"{CP2_OUTPUT}/sample.glb"
+              glb.export(glb_path)
+              report["artifacts"]["glb"] = glb_path
+              report["glb_export_config"] = {
+                  "decimation_target": infer_cfg["decimation_target"],
+                  "texture_size": infer_cfg["texture_size"],
+                  "remesh": infer_cfg["remesh"],
+                  "remesh_band": infer_cfg["remesh_band"],
+                  "grid_size": int(export_grid_size) if export_grid_size is not None else None,
+                  "uv_attr_layout": str(type(attr_layout).__name__),
+              }
+              report["status"] = "success"
+          except Exception as e:
+              report["status"] = "partial_success_no_glb"
+              report["glb_export_error"] = str(e)
+
+      except Exception as e:
+          report["status"] = "failed"
+          report["error"] = str(e)
+          report["traceback_tail"] = traceback.format_exc().splitlines()[-30:]
+
+      report_path = f"{CP2_OUTPUT}/cp2_report.json"
+      with open(report_path, "w", encoding="utf-8") as f:
+          json.dump(report, f, indent=2)
+
+      print(json.dumps(report, indent=2))
+      print("Report:", report_path)
+
+  - type: code
+    source: |
+      # CP2-6: List produced artifacts
+      import os, glob
+
+      files = sorted(glob.glob(f"{CP2_ROOT}/**", recursive=True))
+      for p in files:
+          if os.path.isfile(p):
+              size_mb = os.path.getsize(p) / (1024 * 1024)
+              print(f"{p}  ({size_mb:.2f} MB)")
+
+  - type: markdown
+    source: |
+      ## CP2 User Evidence to Send Back
+      1. CP2-5 printed JSON report (full)
+      2. `CP2-6` artifact list output
+      3. If present, `sample.glb` file size
+      4. Error log tail if status is `failed`
+
+  - type: markdown
+    source: |
+      ## CP3 - Output Validation
+
+      Goal:
+      - Validate CP2 outputs for existence, size, and basic integrity
+      - Produce pass/fail report for checkpoint gate
+
+  - type: code
+    source: |
+      # CP3-1: Validate CP2 artifacts and build pass/fail report
+      import os, json
+
+      cp2_report_path = f"{CP2_OUTPUT}/cp2_report.json"
+      cp3_report_path = f"{CP2_OUTPUT}/cp3_validation.json"
+
+      checks = []
+      def add_check(name, passed, detail, required=True):
+          checks.append({
+              "name": name,
+              "passed": bool(passed),
+              "required": bool(required),
+              "detail": str(detail),
+          })
+
+      cp2 = None
+      if not os.path.exists(cp2_report_path):
+          add_check("cp2_report_exists", False, cp2_report_path, required=True)
+      else:
+          try:
+              with open(cp2_report_path, "r", encoding="utf-8") as f:
+                  cp2 = json.load(f)
+              add_check("cp2_report_valid_json", isinstance(cp2, dict), "cp2_report.json parsed", required=True)
+          except Exception as e:
+              add_check("cp2_report_valid_json", False, e, required=True)
+
+      artifacts = {}
+      cp2_status = None
+      if isinstance(cp2, dict):
+          artifacts = cp2.get("artifacts", {}) if isinstance(cp2.get("artifacts"), dict) else {}
+          cp2_status = cp2.get("status")
+
+      allowed_cp2_status = {"success", "partial_success_no_glb", "inference_ok"}
+      add_check(
+          "cp2_status_allowed",
+          cp2_status in allowed_cp2_status,
+          f"status={cp2_status!r}",
+          required=True
+      )
+
+      # Input image exists
+      input_count = 0
+      if os.path.isdir(CP2_INPUT):
+          input_count = len([n for n in os.listdir(CP2_INPUT) if os.path.isfile(os.path.join(CP2_INPUT, n))])
+      add_check("input_image_present", input_count > 0, f"count={input_count}", required=True)
+
+      # Mesh stats
+      mesh_stats_path = artifacts.get("mesh_stats", f"{CP2_OUTPUT}/mesh_stats.json")
+      mesh_stats = None
+      if not os.path.exists(mesh_stats_path):
+          add_check("mesh_stats_exists", False, mesh_stats_path, required=True)
+      else:
+          try:
+              with open(mesh_stats_path, "r", encoding="utf-8") as f:
+                  mesh_stats = json.load(f)
+              add_check("mesh_stats_valid_json", isinstance(mesh_stats, dict), mesh_stats_path, required=True)
+          except Exception as e:
+              add_check("mesh_stats_valid_json", False, e, required=True)
+
+      vcount = mesh_stats.get("vertex_count") if isinstance(mesh_stats, dict) else None
+      fcount = mesh_stats.get("face_count") if isinstance(mesh_stats, dict) else None
+      add_check("vertex_count_positive", isinstance(vcount, int) and vcount > 0, f"vertex_count={vcount}", required=True)
+      add_check("face_count_positive", isinstance(fcount, int) and fcount > 0, f"face_count={fcount}", required=True)
+
+      # GLB checks (required when cp2 status is success)
+      glb_required = cp2_status == "success"
+      glb_path = artifacts.get("glb")
+      if glb_path:
+          glb_exists = os.path.exists(glb_path)
+          add_check("glb_exists", glb_exists, glb_path, required=glb_required)
+          if glb_exists:
+              glb_size_mb = os.path.getsize(glb_path) / (1024 * 1024)
+              add_check("glb_size_minimum", glb_size_mb >= 0.05, f"size_mb={glb_size_mb:.3f}", required=glb_required)
+              try:
+                  with open(glb_path, "rb") as f:
+                      hdr = f.read(12)
+                  magic_ok = len(hdr) >= 4 and hdr[:4] == b"glTF"
+                  add_check("glb_magic_header", magic_ok, f"magic={hdr[:4]}", required=glb_required)
+              except Exception as e:
+                  add_check("glb_magic_header", False, e, required=glb_required)
+      else:
+          add_check("glb_missing_allowed", not glb_required, f"cp2_status={cp2_status!r}", required=glb_required)
+
+      required_checks = [c for c in checks if c["required"]]
+      required_passed = [c for c in required_checks if c["passed"]]
+      overall_pass = len(required_checks) == len(required_passed)
+
+      cp3 = {
+          "cp2_status": cp2_status,
+          "overall_pass": overall_pass,
+          "required_checks_total": len(required_checks),
+          "required_checks_passed": len(required_passed),
+          "checks": checks,
+      }
+      with open(cp3_report_path, "w", encoding="utf-8") as f:
+          json.dump(cp3, f, indent=2)
+
+      print(json.dumps(cp3, indent=2))
+      print("CP3 report:", cp3_report_path)
+
+  - type: code
+    source: |
+      # CP3-2: Pass/fail summary table
+      import json
+
+      cp3_report_path = f"{CP2_OUTPUT}/cp3_validation.json"
+      with open(cp3_report_path, "r", encoding="utf-8") as f:
+          cp3 = json.load(f)
+
+      print("=== CP3 CHECK TABLE ===")
+      for c in cp3["checks"]:
+          status = "PASS" if c["passed"] else "FAIL"
+          req = "REQ" if c["required"] else "OPT"
+          print(f"{status:4} {req:3}  {c['name']:<26}  {c['detail']}")
+
+      print("")
+      print(f"overall_pass: {cp3['overall_pass']}")
+      print(f"required_checks: {cp3['required_checks_passed']}/{cp3['required_checks_total']}")
+
+      if not cp3["overall_pass"]:
+          raise RuntimeError("CP3 gate failed. Check cp3_validation.json details.")
+
+  - type: markdown
+    source: |
+      ## CP3 User Evidence to Send Back
+      1. Full `CP3-1` JSON output
+      2. `CP3-2` table output
+      3. `cp3_validation.json` path and `overall_pass` value
+

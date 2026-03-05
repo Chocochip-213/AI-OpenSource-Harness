@@ -1,0 +1,25 @@
+name: trellis-colab
+version: "0.1.0"
+description: >
+  TRELLIS.2 Colab harness recipe for staged checkpoint execution.
+  Target runtime: Google Colab with RTX 6000 Blackwell-class VRAM.
+
+# Which requirements file to use (opt1 = minimal, opt2 = full)
+requirements: requirements_opt1.txt
+
+# Entry point
+main: run.sh
+
+# Colab notebook generation
+notebook_manifest: notebook_manifest.yaml
+
+# Docs triad (SSOT)
+docs:
+  plan: docs/plan.md
+  context: docs/context.md
+  tasks: docs/tasks.md
+
+runtime:
+  target: google-colab
+  gpu_target: RTX 6000 Blackwell (reported ~94GB VRAM)
+  fallback_gpu: A100/H100 class

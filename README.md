@@ -161,6 +161,94 @@ run: "python inference.py"
 | `/session-end` | 세션 마무리 — 문서 저장, 커밋, 핸드오프 프롬프트 생성 |
 | `/pre-compact` | 컨텍스트 부족 시 — 중요 맥락 영속화 + compact 요약 제안 |
 
+## `/fresh-start` — 맥락 오염 없는 세션 리셋
+
+Claude Code로 장시간 작업하다 보면 컨텍스트 윈도우가 가득 차는 문제가 발생합니다.
+일반적으로 `/compact`를 사용하지만, 반복할수록 **요약의 요약**이 누적되어 맥락이 오염됩니다 (hallucination 위험 증가).
+
+`/fresh-start`는 이 문제를 근본적으로 해결합니다:
+
+### `/compact` vs `/fresh-start`
+
+| | `/compact` | `/fresh-start` |
+|---|---|---|
+| 방식 | 대화를 요약하여 압축 | SSOT 파일에 저장 → `/clear` → 재로드 |
+| 반복 시 | lossy summary 누적 → 맥락 오염 | 항상 파일 기반 → 오염 없음 |
+| 맥락 유실 | 요약 과정에서 세부사항 손실 | 모든 맥락이 파일에 영속화 |
+| 예측 가능성 | 낮음 (어떤 맥락이 남았는지 불확실) | 높음 (파일에 있는 것만 사용) |
+
+### 작동 원리
+
+```
+┌─────────────────────────────────────────────────┐
+│  1. 미저장 맥락을 SSOT 파일에 영속화            │
+│     - context.md: 의사결정, 발견된 이슈          │
+│     - tasks.md: 완료 체크, 새 항목 추가          │
+│     - _resume_state.md: 현재 작업 상태 스냅샷    │
+│                                                  │
+│  2. Context pack 재생성                          │
+│     - SSOT docs + resume state → 단일 파일로 통합│
+│                                                  │
+│  3. /clear 안내                                  │
+│     - 사용자가 /clear 실행                       │
+│     - 대화 기록 완전 초기화                      │
+│                                                  │
+│  4. 자동 복구                                    │
+│     - Context pack이 자동 로드 (CLAUDE.md 참조)  │
+│     - "이어서 해줘" 한마디로 작업 재개           │
+└─────────────────────────────────────────────────┘
+```
+
+### 사용 방법
+
+**Step 1**: 컨텍스트가 커졌다고 느껴지면 Claude에게 입력:
+```
+/fresh-start
+```
+
+**Step 2**: Claude가 현재 맥락을 파일에 저장하고 안내합니다:
+```
+준비 완료. 아래를 실행하세요:
+  /clear
+그 후 아무 작업 요청만 하면 됩니다 (예: "이어서 작업해줘").
+```
+
+**Step 3**: `/clear` 실행 후 작업 재개:
+```
+이어서 작업해줘
+```
+→ Claude가 SSOT 파일에서 맥락을 자동으로 읽어 바로 작업을 이어갑니다.
+
+### 핵심 메커니즘: `_resume_state.md`
+
+`/fresh-start`가 생성하는 상태 스냅샷 파일입니다. `git diff`를 분석하여 **실제 진행 중인 작업**을 기록합니다:
+
+```markdown
+## Uncommitted Changes (진행 중인 작업의 근거)
+- M recipes/my-model/notebook_manifest.yaml — 셀 D 수정 중
+
+## Current Work
+- Cell D의 native ext 빌드 스크립트 디버깅 중
+
+## Next Steps
+- Cell E 테스트 진행
+- tasks.md의 다음 미완료 항목 확인
+
+## Key Files
+- recipes/my-model/notebook_manifest.yaml
+```
+
+이 파일은 context pack에 자동 포함되므로, `/clear` 후에도 Claude가 즉시 맥락을 파악합니다.
+
+### 언제 사용하나요?
+
+- 대화가 길어져서 Claude 응답이 느려지거나 부정확해질 때
+- `/compact`를 이미 2회 이상 사용했을 때
+- 다른 컴퓨터/세션에서 작업을 이어받을 때
+- Claude가 이전 맥락을 혼동하기 시작할 때
+
+> **팁**: 이 하네스에서는 모든 맥락이 SSOT 파일에 영속화되므로, `/compact`보다 `/fresh-start`를 항상 권장합니다.
+
 ## Colab 런타임 패키지 추적
 
 `colab-runtimes/` 디렉토리에 [googlecolab/backend-info](https://github.com/googlecolab/backend-info)에서 자동 수집한 Colab 런타임별 패키지 버전이 저장됩니다.
@@ -373,6 +461,94 @@ run: "python inference.py"
 | `/fresh-start` | Context pollution — save to SSOT + `/clear` for clean restart |
 | `/session-end` | Wrap up session — save docs, commit, generate handoff prompt |
 | `/pre-compact` | Context running low — persist critical context + suggest compact summary |
+
+## `/fresh-start` — Context-Clean Session Reset
+
+When working with Claude Code for extended periods, the context window fills up.
+The usual fix is `/compact`, but repeated compaction creates **summaries of summaries**, leading to context pollution (increased hallucination risk).
+
+`/fresh-start` solves this problem at the root:
+
+### `/compact` vs `/fresh-start`
+
+| | `/compact` | `/fresh-start` |
+|---|---|---|
+| Method | Summarize and compress the conversation | Save to SSOT files → `/clear` → reload |
+| On repeat | Lossy summaries accumulate → context pollution | Always file-based → no pollution |
+| Context loss | Details lost during summarization | All context persisted in files |
+| Predictability | Low (unclear what context remains) | High (only uses what's in files) |
+
+### How It Works
+
+```
+┌──────────────────────────────────────────────────────┐
+│  1. Persist unsaved context to SSOT files            │
+│     - context.md: decisions, discovered issues       │
+│     - tasks.md: check off completed, add new items   │
+│     - _resume_state.md: current work state snapshot  │
+│                                                      │
+│  2. Rebuild context pack                             │
+│     - SSOT docs + resume state → single file         │
+│                                                      │
+│  3. Prompt user to /clear                            │
+│     - User runs /clear                               │
+│     - Conversation history fully reset               │
+│                                                      │
+│  4. Auto-recovery                                    │
+│     - Context pack auto-loads (referenced by CLAUDE.md)│
+│     - Say "continue" and work resumes instantly      │
+└──────────────────────────────────────────────────────┘
+```
+
+### Usage
+
+**Step 1**: When you feel the context is getting large, type:
+```
+/fresh-start
+```
+
+**Step 2**: Claude saves current context to files and prompts you:
+```
+Ready. Run the following:
+  /clear
+Then just ask to continue (e.g., "continue where we left off").
+```
+
+**Step 3**: After `/clear`, resume work:
+```
+continue where we left off
+```
+→ Claude auto-reads context from SSOT files and picks up right where you left off.
+
+### Key Mechanism: `_resume_state.md`
+
+A state snapshot file generated by `/fresh-start`. It analyzes `git diff` to record **what's actually in progress**:
+
+```markdown
+## Uncommitted Changes (evidence of in-progress work)
+- M recipes/my-model/notebook_manifest.yaml — editing cell D
+
+## Current Work
+- Debugging native ext build script in Cell D
+
+## Next Steps
+- Proceed to Cell E testing
+- Check next incomplete item in tasks.md
+
+## Key Files
+- recipes/my-model/notebook_manifest.yaml
+```
+
+This file is auto-included in the context pack, so Claude immediately understands the context even after `/clear`.
+
+### When to Use
+
+- Conversation is long and Claude responses become slow or inaccurate
+- You've already used `/compact` 2+ times
+- Handing off work to a different machine or session
+- Claude starts confusing previous context
+
+> **Tip**: In this harness, all context is persisted in SSOT files, so `/fresh-start` is always preferred over `/compact`.
 
 ## Colab Runtime Tracking
 

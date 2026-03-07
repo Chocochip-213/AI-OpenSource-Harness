@@ -1,14 +1,52 @@
-title: "Template Recipe Notebook"
+# Notebook Manifest — Extended Format (recommended)
+#
+# Two formats supported:
+#   Extended: cells list with type/source (this format)
+#   Legacy: install/files/run sections
+#
+# Optional: gpu_type: A100 (default) | T4 | L4 | V100
 
-# pip packages to install in Colab
-install:
-  # - some-package
+title: "My Model — Colab Notebook"
+# gpu_type: A100
 
-# Files to write into Colab via %%writefile
-files:
-  # - src: main.py
-  #   dst: main.py
-  #   description: "Main entry point"
+cells:
+  # --- Header ---
+  - type: markdown
+    source: |
+      # My Model
+      Auto-generated notebook.
 
-# Command to run after all files are written
-run: "echo 'Hello from _template recipe!'"
+  # --- GPU Check ---
+  # - type: code
+  #   source: |
+  #     import subprocess
+  #     result = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
+  #     print(result.stdout)
+
+  # --- Install deps ---
+  # - type: code
+  #   source: |
+  #     !pip install -q torch transformers
+
+  # --- Clone + run ---
+  # - type: code
+  #   source: |
+  #     !git clone --depth 1 https://github.com/org/repo.git
+  #     import sys; sys.path.insert(0, "repo")
+
+  # --- Inference ---
+  # - type: code
+  #   source: |
+  #     # Your inference code here
+
+
+# ─── Legacy format (alternative) ───
+# title: "My Model"
+# install:
+#   - torch
+#   - transformers
+# files:
+#   - src: patch.py
+#     dst: patch.py
+#     description: "Compatibility patch"
+# run: "python run.py"

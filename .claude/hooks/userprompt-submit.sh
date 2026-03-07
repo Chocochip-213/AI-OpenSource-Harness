@@ -5,10 +5,11 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+LOG_DIR="$REPO_ROOT/.claude"
 
 # Pipe stdin (hook payload JSON) to skill suggest engine
-# If python fails, fall back to a simple reminder
-SUGGEST_OUTPUT=$(cat | uv run python "$REPO_ROOT/.claude/hooks/skill_suggest.py" 2>/dev/null || true)
+# Log errors instead of silently discarding
+SUGGEST_OUTPUT=$(cat | uv run python "$REPO_ROOT/.claude/hooks/skill_suggest.py" 2>>"$LOG_DIR/_skill_suggest.log" || true)
 
 if [ -n "$SUGGEST_OUTPUT" ]; then
   echo "$SUGGEST_OUTPUT"

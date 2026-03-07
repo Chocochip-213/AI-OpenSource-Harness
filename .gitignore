@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.claude/_edited_files.log
+.claude/_context_pack.md
+.claude/settings.local.json
+outputs/

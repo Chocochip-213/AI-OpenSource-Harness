@@ -1,19 +1,26 @@
 name: _template
 version: "0.1.0"
 description: >
-  Skeleton recipe — copy this folder to start a new OSS Colab test.
+  Template recipe. Copy this to start a new recipe.
 
-# Which requirements file to use (opt1 = minimal, opt2 = full)
+upstream:
+  repo: https://github.com/org/repo.git
+  ref: main  # Pin to specific commit SHA for reproducibility
+  branch: main
+
 requirements: requirements_opt1.txt
 
-# Entry point
 main: run.sh
 
-# Colab notebook generation
 notebook_manifest: notebook_manifest.yaml
 
-# Docs triad (SSOT)
 docs:
   plan: docs/plan.md
   context: docs/context.md
   tasks: docs/tasks.md
+
+runtime:
+  gpu: A100
+  python: "3.11"
+  disk_gb: 20
+  vram_min_gb: 24

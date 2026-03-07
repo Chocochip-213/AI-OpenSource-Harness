@@ -37,36 +37,75 @@ Scripts and hooks read this to know which recipe's docs to consult.
 ## Hooks (auto-configured in `.claude/settings.json`)
 
 - **SessionStart** → `session-start.sh` → rebuilds context pack
-- **UserPromptSubmit** → `userprompt-submit.sh` → **스킬 자동 추천** (skill-rules.json 기반 매칭 → additionalContext 주입)
-- **PostToolUse** → `post-tool-use.sh` → 편집된 파일 경로를 `_edited_files.log`에 추적
-- **Stop** → `stop.sh` → **NoMessLeftBehind 검증** (편집 이력 있을 때만: compileall + smoke_test + context_pack 갱신)
+- **UserPromptSubmit** → `userprompt-submit.sh` → skill auto-suggestion (skill-rules.json matching)
+- **PostToolUse** → `post-tool-use.sh` → tracks edited files to `_edited_files.log`
+- **Stop** → `stop.sh` → NoMessLeftBehind validation (compileall + smoke_test + context_pack)
 
-## Skill Auto-Suggestion
+## Skills
 
-`UserPromptSubmit` 훅이 `.claude/skill-rules.json`의 규칙과 프롬프트를 매칭하여 관련 스킬을 자동 추천한다.
-현재 등록된 스킬: **recipe-authoring**, **colab-debugging**, **notebook-builder**.
+`UserPromptSubmit` hook matches prompts against `.claude/skill-rules.json` and auto-suggests relevant skills.
 
-## NoMessLeftBehind (diet103-lite)
+| Skill | Trigger | Description |
+|-------|---------|-------------|
+| `/recipe-authoring` | recipe, template, SSOT | Create/modify recipes and docs |
+| `/colab-debugging` | pip error, CUDA, ImportError | Debug Colab compatibility issues |
+| `/notebook-builder` | notebook, generate, manifest | Generate notebooks from manifests |
+| `/session-end` | session end, handoff | Wrap up: docs + memory + commit + push + handoff prompt |
+| `/pre-compact` | compact, context full | Persist critical context before auto-compact |
 
-Stop 훅에서 `_edited_files.log`를 확인하여, 편집된 파일이 있을 때만:
-1. `python -m compileall .` — 문법 검증
-2. `scripts/smoke_test.py` — 임포트/컴파일 체크
-3. `scripts/make_context_pack.py` — 컨텍스트 팩 갱신
+### `/session-end`
+1. Update SSOT docs (context.md, tasks.md)
+2. Update memory files
+3. Context pack rebuild
+4. Git commit + push
+5. Generate handoff prompt for next session
 
-포맷터(`ruff format` / `black`)는 자동 실행하지 않고 권장만 출력한다.
+### `/pre-compact`
+1. Identify critical conversation context
+2. Persist to docs and memory files
+3. Suggest optimal `/compact <summary>` command
+
+> **Rule**: Run `/pre-compact` when context is ~80-90% full to minimize auto-compact information loss.
 
 ## Sub-Agents (`.claude/agents/`)
 
 | Agent | Role | Auto-delegate when |
 |-------|------|--------------------|
-| `code-reviewer` | 코드 리뷰, 일관성 검증 | 코드 완성 후 커밋 전, "review" 요청 시 |
-| `compat-debugger` | 설치/패키지 충돌 해결 | pip 실패, ImportError, Colab 호환성 문제 시 |
-| `plan-architect` | SSOT docs 생성/관리 | 새 레시피 시작, 아키텍처 결정 필요 시 |
+| `code-reviewer` | Code review, consistency | Code complete, before commit, "review" |
+| `compat-debugger` | Install/package conflicts | pip fail, ImportError, Colab issues |
+| `plan-architect` | SSOT docs creation | New recipe, architecture decisions |
+
+## NoMessLeftBehind (diet103-lite)
+
+Stop hook checks `_edited_files.log` and runs (only if edits exist):
+1. `python -m compileall .` — syntax check
+2. `scripts/smoke_test.py` — import/compile check
+3. `scripts/make_context_pack.py` — context pack refresh
 
 ## Adding a New Recipe
 
 ```bash
 cp -r recipes/_template recipes/<new-name>
 echo "<new-name>" > .claude/last_recipe.txt
-# Then edit recipes/<new-name>/docs/plan.md to define the goal
+# Edit recipes/<new-name>/docs/plan.md to define the goal
 ```
+
+## Colab Porting Patterns
+
+### Two Strategies
+- **Direct pip** — Lightweight models. Keep Colab's stock torch, install extras.
+- **Conda isolation** — Heavy models with native C extensions. Use condacolab.
+
+### Common Fixes
+| Problem | Solution |
+|---------|----------|
+| C extension conflicts (numpy, Pillow .so) | Conda isolated env |
+| flash-attn unavailable | `ATTN_BACKEND=xformers` |
+| spconv wheel missing | `spconv-cu124` or `torchsparse` fallback |
+| Native ext build failure | Staged install, latent-only fallback |
+| rembg/BiRefNet dependency chain | `preprocess_image=False`, RGBA input |
+| GPU arch mismatch | Auto-detect compute capability |
+
+### Requirements Rules
+- **Never pin**: numpy, scipy, Pillow, matplotlib (keep Colab defaults)
+- **Always pin**: torch, diffusers, xformers (version-sensitive)

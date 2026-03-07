@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(uv run:*)",
-      "Bash(echo '{\"prompt\":\"add a new recipe for SwiftTry\"}' | bash .claude/hooks/userprompt-submit.sh 2>&1)",
-      "Bash(bash:*)"
-    ]
-  }
-}

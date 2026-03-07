@@ -4,16 +4,25 @@
       "name": "recipe-authoring",
       "description": "Recipe creation, modification, and SSOT docs management",
       "keywords": [
-        "recipe", "레시피", "template", "plan.md", "context.md", "tasks.md",
-        "recipe.yaml", "requirements", "install.sh", "run.sh", "SSOT"
+        "recipe", "template", "plan.md", "context.md", "tasks.md",
+        "recipe.yaml", "requirements", "install.sh", "run.sh", "SSOT",
+        "scaffold", "boilerplate",
+        "레시피", "템플릿", "아키텍처", "구조", "설계", "문서"
       ],
       "intentPatterns": [
-        "(?i)(add|create|new|modify|update|edit)\\s.*(recipe|레시피)",
+        "(?i)(add|create|new|modify|update|edit|start)\s.*(recipe|레시피)",
         "(?i)(copy|cp).*_template",
-        "(?i)(plan|context|tasks)\\s*(doc|md|문서)",
-        "(?i)recipe\\.yaml"
+        "(?i)(plan|context|tasks)\s*(doc|md|문서)",
+        "(?i)recipe\.yaml",
+        "(?i)(architecture|structure|design)\s+(for|of)",
+        "(?i)(새|시작|추가).*레시피"
       ],
-      "pathPatterns": ["recipes/**/docs/**", "recipes/**/recipe.yaml"],
+      "pathPatterns": [
+        "recipes/*/docs/plan.md",
+        "recipes/*/docs/context.md",
+        "recipes/*/docs/tasks.md",
+        "recipes/*/recipe.yaml"
+      ],
       "priority": 10,
       "enforcement": "suggest",
       "hint": "Read the SSOT triad (plan/context/tasks.md) before making changes. Update tasks.md after each step."
@@ -23,17 +32,32 @@
       "description": "Colab runtime issues: install failures, package conflicts, CUDA/GPU, OOM",
       "keywords": [
         "colab", "install", "pip", "cuda", "gpu", "oom", "runtime",
-        "conflict", "dependency", "error", "fail", "crash", "패키지", "충돌",
-        "설치", "메모리", "ImportError", "ModuleNotFoundError",
+        "conflict", "dependency", "error", "fail", "crash",
+        "ImportError", "ModuleNotFoundError", "RuntimeError",
         "torch", "torchvision", "diffusers", "transformers", "accelerate",
         "xformers", "triton", "safetensors", "nvidia-smi", "cu12", "cudnn",
-        "illegal memory access", "segfault", "Killed"
+        "condacolab", "conda", "mamba",
+        "spconv", "nvdiffrast", "cumesh", "flash-attn", "flash_attn",
+        "wheel", "binary", "compilation", "build error", "build fail",
+        "kernel restart", "timeout", "SIGKILL", "segfault",
+        "C extension", "native extension", ".so",
+        "CUDA mismatch", "compute capability", "sm_80", "sm_120",
+        "VRAM", "out of memory", "torch.cuda",
+        "dtype", "ABI", "version mismatch",
+        "ATTN_BACKEND", "SPARSE_CONV_BACKEND",
+        "패키지", "충돌", "설치", "메모리", "오류", "에러",
+        "컴파일", "빌드", "환경", "버전", "호환", "재시작",
+        "illegal memory access", "Killed"
       ],
       "intentPatterns": [
-        "(?i)(fix|debug|solve|resolve)\\s.*(install|import|package|dependency|colab|error)",
-        "(?i)(pip|conda)\\s*(install|conflict|error)",
-        "(?i)(cuda|gpu|oom|out.of.memory)",
-        "(?i)(ModuleNotFoundError|ImportError|RuntimeError)"
+        "(?i)(fix|debug|solve|resolve)\s.*(install|import|package|dependency|colab|error)",
+        "(?i)(pip|conda|mamba)\s*(install|conflict|error)",
+        "(?i)(cuda|gpu|oom|out[\s._]of[\s._]memory)",
+        "(?i)(ModuleNotFoundError|ImportError|RuntimeError|AttributeError|ValueError)",
+        "(?i)(build|compile|wheel)\s*(fail|error)",
+        "(?i)(version|ABI|dtype)\s*(mismatch|conflict|error)",
+        "(?i)(설치|빌드|컴파일).*(실패|에러|오류)",
+        "(?i)(호환|버전).*(문제|충돌|오류)"
       ],
       "pathPatterns": ["recipes/**/requirements*.txt", "recipes/**/install.sh"],
       "priority": 20,
@@ -42,21 +66,63 @@
     },
     {
       "name": "notebook-builder",
-      "description": "Colab notebook generation from manifest, %%writefile cells, install/run cells",
+      "description": "Colab notebook generation from manifest, cell definitions, install/run cells",
       "keywords": [
-        "notebook", "노트북", "ipynb", "colab", "generate", "manifest",
-        "writefile", "cell", "셀", "generate_notebook"
+        "notebook", "ipynb", "colab", "generate", "manifest",
+        "writefile", "cell", "generate_notebook",
+        "notebook_manifest", "colab notebook",
+        "노트북", "셀", "생성"
       ],
       "intentPatterns": [
-        "(?i)(generate|create|build|make)\\s.*(notebook|ipynb|노트북)",
+        "(?i)(generate|create|build|make)\s.*(notebook|ipynb|노트북)",
         "(?i)notebook_manifest",
         "(?i)%%writefile",
-        "(?i)generate_notebook"
+        "(?i)generate_notebook",
+        "(?i)(노트북|셀).*(생성|만들)"
       ],
       "pathPatterns": ["recipes/**/notebook_manifest.yaml", "outputs/notebooks/**"],
       "priority": 15,
       "enforcement": "suggest",
       "hint": "Ensure notebook_manifest.yaml is up-to-date before generating. Run: uv run python tools/generate_notebook.py <recipe>"
+    },
+    {
+      "name": "session-end",
+      "description": "Session wrap-up: update docs, memory, commit, push, generate handoff prompt",
+      "keywords": [
+        "session-end", "handoff", "wrap up",
+        "세션종료", "마무리", "핸드오프", "다른세션", "다른컴퓨터",
+        "세션마무리", "인수인계", "이어가기"
+      ],
+      "intentPatterns": [
+        "(?i)(session|세션)\s*(end|종료|마무리|close)",
+        "(?i)(wrap|finish|conclude)\s*(up|session)",
+        "(?i)(다른|새)\s*(세션|컴퓨터|머신)",
+        "(?i)handoff|핸드오프|인수인계"
+      ],
+      "pathPatterns": [],
+      "priority": 5,
+      "enforcement": "suggest",
+      "hint": "Run /session-end to save all context, commit, push, and generate a handoff prompt."
+    },
+    {
+      "name": "pre-compact",
+      "description": "Pre-compact preparation: persist critical context before auto-compact triggers",
+      "keywords": [
+        "pre-compact", "compact", "context save",
+        "컴팩트", "맥락정리", "컨텍스트",
+        "context full", "context limit", "token limit",
+        "맥락 부족", "압축", "축약"
+      ],
+      "intentPatterns": [
+        "(?i)(pre[\s-]?compact|before.*compact)",
+        "(?i)(context|맥락|컨텍스트).*(full|limit|가득|부족|정리|저장|save)",
+        "(?i)compact.*전에",
+        "(?i)(save|persist|preserve).*context"
+      ],
+      "pathPatterns": [],
+      "priority": 3,
+      "enforcement": "suggest",
+      "hint": "Run /pre-compact to persist critical context to files and get a recommended /compact summary."
     }
   ]
 }

@@ -1,21 +1,19 @@
 # Tasks
 
 ## Setup
-- [ ] Copy _template to `recipes/<name>`
-- [ ] Update `recipe.yaml` with real values
-- [ ] Fill out `docs/plan.md`
+- [ ] Copy _template → `recipes/<name>/`
+- [ ] Update `recipe.yaml`
+- [ ] Write `docs/plan.md`
 
 ## Implementation
-- [ ] Add main code files
-- [ ] Add dependencies to `requirements_opt1.txt`
-- [ ] Update `notebook_manifest.yaml`
+- [ ] `notebook_manifest.yaml` 셀 작성
+- [ ] `requirements_opt1.txt` 의존성 추가
 
 ## Validation
-- [ ] Run `install.sh` successfully
-- [ ] Run `run.sh` successfully
-- [ ] Generate and test Colab notebook
+- [ ] `generate_notebook.py` 성공
+- [ ] `smoke_test.py` 통과
+- [ ] Colab 셀 단위 테스트
+- [ ] End-to-end 성공
 
 ---
-
-> **Rule**: Check off each task immediately upon completion.
-> Every decision made during implementation must be recorded in `context.md` → "Key Decisions".
+> Check off immediately. Decisions → `context.md`.

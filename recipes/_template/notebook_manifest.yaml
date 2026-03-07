@@ -1,52 +1,42 @@
-# Notebook Manifest — Extended Format (recommended)
+# Notebook Manifest
 #
-# Two formats supported:
-#   Extended: cells list with type/source (this format)
-#   Legacy: install/files/run sections
+# Run: uv run python tools/generate_notebook.py <recipe-name>
+# Output: outputs/notebooks/<recipe-name>.ipynb
 #
-# Optional: gpu_type: A100 (default) | T4 | L4 | V100
+# Each cell: type (code|markdown) + source (content string)
+# Add/remove cells freely. Order = execution order in Colab.
 
-title: "My Model — Colab Notebook"
+title: "Model Name — Colab Notebook"
 # gpu_type: A100
 
 cells:
-  # --- Header ---
   - type: markdown
     source: |
-      # My Model
-      Auto-generated notebook.
+      # Model Name
+      Auto-generated from `notebook_manifest.yaml`.
 
-  # --- GPU Check ---
-  # - type: code
-  #   source: |
-  #     import subprocess
-  #     result = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
-  #     print(result.stdout)
+  - type: code
+    source: |
+      #@title A) GPU Check { run: "auto" }
+      # TODO: nvidia-smi, VRAM check, fail fast if insufficient
 
-  # --- Install deps ---
-  # - type: code
-  #   source: |
-  #     !pip install -q torch transformers
+  - type: code
+    source: |
+      #@title B) Install Dependencies { run: "auto" }
+      # TODO: pip install only what Colab doesn't have
+      # Check colab-runtimes/runtimes.json for pre-installed packages
 
-  # --- Clone + run ---
-  # - type: code
-  #   source: |
-  #     !git clone --depth 1 https://github.com/org/repo.git
-  #     import sys; sys.path.insert(0, "repo")
+  - type: code
+    source: |
+      #@title C) Clone & Setup { run: "auto" }
+      # TODO: git clone upstream, pip install -e, or sys.path.insert
 
-  # --- Inference ---
-  # - type: code
-  #   source: |
-  #     # Your inference code here
+  - type: code
+    source: |
+      #@title D) Load Model { run: "auto" }
+      # TODO: import pipeline/model, load weights, move to GPU
 
-
-# ─── Legacy format (alternative) ───
-# title: "My Model"
-# install:
-#   - torch
-#   - transformers
-# files:
-#   - src: patch.py
-#     dst: patch.py
-#     description: "Compatibility patch"
-# run: "python run.py"
+  - type: code
+    source: |
+      #@title E) Inference { run: "auto" }
+      # TODO: load input, run model, display output

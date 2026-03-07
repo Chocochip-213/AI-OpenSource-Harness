@@ -1,2 +1,3 @@
-# Option 1: Minimal dependencies
-# Add your pip packages here, one per line
+# Minimal: only packages NOT in Colab runtime
+# Check colab-runtimes/runtimes.json before adding
+# Do NOT pin numpy, scipy, Pillow (keep Colab defaults)

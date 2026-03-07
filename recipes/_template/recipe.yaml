@@ -1,17 +1,13 @@
 name: _template
 version: "0.1.0"
-description: >
-  Template recipe. Copy this to start a new recipe.
+description: "Template recipe. Copy to recipes/<name>/ to start."
 
 upstream:
   repo: https://github.com/org/repo.git
-  ref: main  # Pin to specific commit SHA for reproducibility
-  branch: main
+  ref: main  # Pin to commit SHA after first successful test
 
 requirements: requirements_opt1.txt
-
 main: run.sh
-
 notebook_manifest: notebook_manifest.yaml
 
 docs:

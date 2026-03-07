@@ -1,3 +1,2 @@
-# Option 2: Full dependencies (includes dev/test tools)
-# Add your pip packages here, one per line
-pytest
+# Full: all deps for standalone / local dev
+# May conflict with Colab pre-installed packages

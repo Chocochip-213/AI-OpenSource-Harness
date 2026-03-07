@@ -132,6 +132,25 @@
       "priority": 3,
       "enforcement": "suggest",
       "hint": "Run /pre-compact to persist critical context to files and get a recommended /compact summary."
+    },
+    {
+      "name": "fresh-start",
+      "description": "Save context to SSOT docs, then /clear for a clean slate (better than repeated /compact)",
+      "keywords": [
+        "fresh-start", "clear", "fresh start", "clean slate",
+        "새로 시작", "깨끗하게", "클리어", "초기화",
+        "context poisoning", "맥락 오염"
+      ],
+      "intentPatterns": [
+        "(?i)(fresh[\\s-]?start|clean\\s*slate)",
+        "(?i)(clear|클리어).*(시작|resume|이어|재개)",
+        "(?i)(context|맥락).*(오염|poison|꼬|이상)",
+        "(?i)(새로|처음부터|깨끗).*(시작|재개)"
+      ],
+      "pathPatterns": [],
+      "priority": 2,
+      "enforcement": "suggest",
+      "hint": "Run /fresh-start to save context to SSOT docs, then /clear for a clean restart. Better than repeated /compact."
     }
   ]
 }

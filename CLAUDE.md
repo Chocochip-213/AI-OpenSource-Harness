@@ -52,6 +52,7 @@ Scripts and hooks read this to know which recipe's docs to consult.
 | `/notebook-builder` | notebook, generate, manifest | Generate notebooks from manifests |
 | `/session-end` | session end, handoff | Wrap up: docs + memory + commit + push + handoff prompt |
 | `/pre-compact` | compact, context full | Persist critical context before auto-compact |
+| `/fresh-start` | clear, fresh start, context poisoning | Save to SSOT + /clear for clean restart |
 
 ### `/session-end`
 1. Update SSOT docs (context.md, tasks.md)
@@ -65,7 +66,14 @@ Scripts and hooks read this to know which recipe's docs to consult.
 2. Persist to docs and memory files
 3. Suggest optimal `/compact <summary>` command
 
-> **Rule**: Run `/pre-compact` when context is ~80-90% full to minimize auto-compact information loss.
+### `/fresh-start`
+`/compact` 반복보다 `/clear` + SSOT 재읽기가 안정적. compact는 lossy summary 누적으로 맥락 오염 위험.
+1. 미저장 맥락을 SSOT docs에 저장
+2. Context pack 재생성
+3. `/clear` 후 붙여넣을 resume 프롬프트 생성
+4. 사용자가 `/clear` 실행 후 프롬프트 붙여넣기 → SSOT 기반 clean restart
+
+> **Rule**: context가 커졌을 때 `/compact` 대신 `/fresh-start`를 권장. SSOT에 모든 맥락이 영속화되어 있으므로 유실 없음.
 
 ## Sub-Agents (`.claude/agents/`)
 

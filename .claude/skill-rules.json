@@ -120,7 +120,8 @@
         "pre-compact", "compact", "context save",
         "컴팩트", "맥락정리", "컨텍스트",
         "context full", "context limit", "token limit",
-        "맥락 부족", "압축", "축약"
+        "맥락 부족", "압축", "축약",
+        "auto-compact", "auto compact"
       ],
       "intentPatterns": [
         "(?i)(pre[\\s-]?compact|before.*compact)",
@@ -138,14 +139,20 @@
       "description": "Save context to SSOT docs, then /clear for a clean slate (better than repeated /compact)",
       "keywords": [
         "fresh-start", "clear", "fresh start", "clean slate",
+        "auto-compact", "auto compact", "autocompact",
+        "context window", "context limit",
         "새로 시작", "깨끗하게", "클리어", "초기화",
-        "context poisoning", "맥락 오염"
+        "context poisoning", "맥락 오염",
+        "컨텍스트 부족", "컨텍스트 한계", "토큰 부족",
+        "compact 얼마", "곧 compact"
       ],
       "intentPatterns": [
         "(?i)(fresh[\\s-]?start|clean\\s*slate)",
         "(?i)(clear|클리어).*(시작|resume|이어|재개)",
         "(?i)(context|맥락).*(오염|poison|꼬|이상)",
-        "(?i)(새로|처음부터|깨끗).*(시작|재개)"
+        "(?i)(새로|처음부터|깨끗).*(시작|재개)",
+        "(?i)(auto[\\s-]?compact).*(soon|near|close|임박|가까|얼마)",
+        "(?i)(context|컨텍스트|토큰).*(부족|한계|limit|full|거의|얼마)"
       ],
       "pathPatterns": [],
       "priority": 2,

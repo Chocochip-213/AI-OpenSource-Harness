@@ -7,15 +7,17 @@
         "recipe", "template", "plan.md", "context.md", "tasks.md",
         "recipe.yaml", "requirements", "install.sh", "run.sh", "SSOT",
         "scaffold", "boilerplate",
-        "레시피", "템플릿", "아키텍처", "구조", "설계", "문서"
+        "레시피", "템플릿", "아키텍처", "구조", "설계", "문서",
+        "의사결정", "계획", "범위", "접근법"
       ],
       "intentPatterns": [
-        "(?i)(add|create|new|modify|update|edit|start)\s.*(recipe|레시피)",
+        "(?i)(add|create|new|modify|update|edit|start)\\s.*(recipe|레시피)",
         "(?i)(copy|cp).*_template",
-        "(?i)(plan|context|tasks)\s*(doc|md|문서)",
-        "(?i)recipe\.yaml",
-        "(?i)(architecture|structure|design)\s+(for|of)",
-        "(?i)(새|시작|추가).*레시피"
+        "(?i)(plan|context|tasks)\\s*(doc|md|문서|업데이트|수정)",
+        "(?i)recipe\\.yaml",
+        "(?i)(architecture|structure|design)\\s+(for|of)",
+        "(?i)(새|시작|추가|수정|업데이트).*레시피",
+        "(?i)(결정|판단).*(기록|저장|남기)"
       ],
       "pathPatterns": [
         "recipes/*/docs/plan.md",
@@ -45,40 +47,46 @@
         "VRAM", "out of memory", "torch.cuda",
         "dtype", "ABI", "version mismatch",
         "ATTN_BACKEND", "SPARSE_CONV_BACKEND",
+        "코랩", "런타임", "의존성",
         "패키지", "충돌", "설치", "메모리", "오류", "에러",
         "컴파일", "빌드", "환경", "버전", "호환", "재시작",
-        "illegal memory access", "Killed"
+        "안돌아", "안됨", "실패",
+        "illegal memory access", "Killed", "pip-freeze",
+        "rollback", "롤백", "이전 런타임"
       ],
       "intentPatterns": [
-        "(?i)(fix|debug|solve|resolve)\s.*(install|import|package|dependency|colab|error)",
-        "(?i)(pip|conda|mamba)\s*(install|conflict|error)",
-        "(?i)(cuda|gpu|oom|out[\s._]of[\s._]memory)",
+        "(?i)(fix|debug|solve|resolve)\\s.*(install|import|package|dependency|colab|error)",
+        "(?i)(pip|conda|mamba)\\s*(install|conflict|error)",
+        "(?i)(cuda|gpu|oom|out[\\s._]of[\\s._]memory)",
         "(?i)(ModuleNotFoundError|ImportError|RuntimeError|AttributeError|ValueError)",
-        "(?i)(build|compile|wheel)\s*(fail|error)",
-        "(?i)(version|ABI|dtype)\s*(mismatch|conflict|error)",
+        "(?i)(build|compile|wheel)\\s*(fail|error)",
+        "(?i)(version|ABI|dtype)\\s*(mismatch|conflict|error)",
         "(?i)(설치|빌드|컴파일).*(실패|에러|오류)",
-        "(?i)(호환|버전).*(문제|충돌|오류)"
+        "(?i)(호환|버전).*(문제|충돌|오류)",
+        "(?i)(코랩|colab).*(안돼|안됨|에러|오류|문제|실패)",
+        "(?i)(런타임|runtime).*(변경|롤백|버전|문제)"
       ],
       "pathPatterns": ["recipes/**/requirements*.txt", "recipes/**/install.sh"],
       "priority": 20,
       "enforcement": "suggest",
-      "hint": "Check requirements files for version pins. Use compat-debugger agent for complex conflicts."
+      "hint": "Check colab-runtimes/runtimes.json for pre-installed versions. Use compat-debugger agent for complex conflicts.",
+      "injectFiles": ["colab-runtimes/quick-reference.md"]
     },
     {
       "name": "notebook-builder",
       "description": "Colab notebook generation from manifest, cell definitions, install/run cells",
       "keywords": [
-        "notebook", "ipynb", "colab", "generate", "manifest",
+        "notebook", "ipynb", "generate", "manifest",
         "writefile", "cell", "generate_notebook",
         "notebook_manifest", "colab notebook",
-        "노트북", "셀", "생성"
+        "노트북", "셀", "생성", "매니페스트"
       ],
       "intentPatterns": [
-        "(?i)(generate|create|build|make)\s.*(notebook|ipynb|노트북)",
+        "(?i)(generate|create|build|make)\\s.*(notebook|ipynb|노트북)",
         "(?i)notebook_manifest",
         "(?i)%%writefile",
         "(?i)generate_notebook",
-        "(?i)(노트북|셀).*(생성|만들)"
+        "(?i)(노트북|셀).*(생성|만들|수정)"
       ],
       "pathPatterns": ["recipes/**/notebook_manifest.yaml", "outputs/notebooks/**"],
       "priority": 15,
@@ -91,13 +99,14 @@
       "keywords": [
         "session-end", "handoff", "wrap up",
         "세션종료", "마무리", "핸드오프", "다른세션", "다른컴퓨터",
-        "세션마무리", "인수인계", "이어가기"
+        "세션마무리", "인수인계", "이어가기", "넘기기"
       ],
       "intentPatterns": [
-        "(?i)(session|세션)\s*(end|종료|마무리|close)",
-        "(?i)(wrap|finish|conclude)\s*(up|session)",
-        "(?i)(다른|새)\s*(세션|컴퓨터|머신)",
-        "(?i)handoff|핸드오프|인수인계"
+        "(?i)(session|세션)\\s*(end|종료|마무리|close)",
+        "(?i)(wrap|finish|conclude)\\s*(up|session)",
+        "(?i)(다른|새)\\s*(세션|컴퓨터|머신)",
+        "(?i)handoff|핸드오프|인수인계",
+        "(?i)(오늘|이번).*(마무리|끝|종료)"
       ],
       "pathPatterns": [],
       "priority": 5,
@@ -114,7 +123,7 @@
         "맥락 부족", "압축", "축약"
       ],
       "intentPatterns": [
-        "(?i)(pre[\s-]?compact|before.*compact)",
+        "(?i)(pre[\\s-]?compact|before.*compact)",
         "(?i)(context|맥락|컨텍스트).*(full|limit|가득|부족|정리|저장|save)",
         "(?i)compact.*전에",
         "(?i)(save|persist|preserve).*context"

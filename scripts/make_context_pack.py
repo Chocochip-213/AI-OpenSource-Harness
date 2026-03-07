@@ -55,13 +55,27 @@ def build_context_pack(repo: Path) -> str:
         sections.append(f"### {doc_name}\n")
         sections.append(f"```\n{read_file_safe(doc_path)}\n```\n")
 
-    # --- Git status ---
-    sections.append("## Git Status\n")
-    sections.append(f"```\n{git_command(['status', '--short'], repo)}\n```\n")
+    # --- Uncommitted changes (strongest signal of current work) ---
+    git_status = git_command(['status', '--short'], repo)
+    git_diff_stat = git_command(['diff', '--stat'], repo)
+    git_diff_names = git_command(['diff', '--name-only'], repo)
+    has_changes = bool(git_status.strip()) and not git_status.startswith("(git")
 
-    # --- Git diff stat ---
-    sections.append("## Git Diff (stat)\n")
-    sections.append(f"```\n{git_command(['diff', '--stat'], repo)}\n```\n")
+    if has_changes:
+        sections.append("## Uncommitted Changes (IN PROGRESS)\n")
+        sections.append(f"```\n{git_status}\n```\n")
+        sections.append(f"Changed files:\n```\n{git_diff_stat}\n```\n")
+
+    # --- Resume state (written by /fresh-start skill) ---
+    resume_path = repo / ".claude" / "_resume_state.md"
+    if resume_path.exists():
+        sections.append("## Resume State (from /fresh-start)\n")
+        sections.append(read_file_safe(resume_path, max_lines=40))
+        sections.append("")
+
+    if not has_changes:
+        sections.append("## Git Status\n")
+        sections.append(f"```\n{git_status}\n```\n")
 
     return "\n".join(sections)
 

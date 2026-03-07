@@ -21,43 +21,63 @@ RECIPE=$(cat .claude/last_recipe.txt)
 - `recipes/$RECIPE/docs/tasks.md` → 완료 항목 `[x]` 체크, 새 항목 추가
 - Memory files → 세션에서 얻은 안정적 패턴/인사이트
 
-### 2. Rebuild context pack
+### 2. Analyze uncommitted changes (CRITICAL)
+`git diff --stat`과 `git status`를 반드시 실행하여 현재 실제로 수정 중인 파일을 파악한다.
+**uncommitted 변경이 resume state의 가장 강력한 신호** — tasks.md보다 우선.
+
+### 3. Write resume state
+`.claude/_resume_state.md`에 현재 작업 상태를 저장 (context pack에 자동 포함됨):
+
+```markdown
+## Uncommitted Changes (진행 중인 작업의 근거)
+- [git diff에서 파악한 수정/삭제/추가 파일 목록]
+- [각 변경이 무엇을 위한 것인지 한줄 설명]
+
+## Current Work
+- [uncommitted changes 기반으로 실제 진행 중인 작업 설명]
+- [recipe 작업인지, 인프라 작업인지, 정리 작업인지 명확히]
+
+## Next Steps
+- [현재 작업의 남은 부분]
+- [그 다음 tasks.md 미완료 항목]
+
+## Key Files
+- [작업 중인 파일 경로들]
+
+## Notes
+- [clear 후 알아야 할 주의사항]
+- [어떤 브랜치/리모트에서 작업 중인지]
+```
+
+**규칙**: "Current Work"는 반드시 uncommitted changes와 일치해야 함.
+tasks.md의 다음 항목이 아니라, git diff가 보여주는 실제 작업을 기술할 것.
+
+이 파일은 `make_context_pack.py`가 자동으로 context pack에 포함시킨다.
+→ `/clear` 후 아무 말만 해도 Claude가 resume state를 자동으로 읽는다.
+
+### 4. Rebuild context pack
 ```bash
 uv run python scripts/make_context_pack.py
 ```
+이 시점에서 _context_pack.md에 SSOT docs + resume state가 모두 포함됨.
 
-### 3. Generate resume prompt
-`/clear` 후 붙여넣을 프롬프트를 코드 블록으로 출력:
-
-```
-## Resume Prompt (paste after /clear)
-
-레시피 `$RECIPE` 작업 이어서 진행.
-
-### 현재 상태
-- [무엇이 동작하는지]
-- [무엇이 안 되는지]
-
-### 다음 작업
-- [tasks.md에서 다음 미완료 항목]
-
-### 핵심 파일
-- [작업 중인 파일 경로들]
-
-먼저 `recipes/$RECIPE/docs/{plan,context,tasks}.md`를 읽고 현재 상태를 파악한 후 다음 작업을 진행해줘.
-```
-
-### 4. Instruct user
+### 5. Instruct user
 다음 안내를 출력:
 
 ```
-위 프롬프트를 복사한 후:
-1. /clear 실행
-2. 복사한 프롬프트 붙여넣기
-3. Claude가 SSOT 문서를 읽고 작업 재개
+준비 완료. 아래를 실행하세요:
+  /clear
+그 후 아무 작업 요청만 하면 됩니다 (예: "이어서 작업해줘").
+SSOT 문서와 resume state가 자동으로 로드됩니다.
 ```
+
+## After /clear Flow
+1. 사용자가 `/clear` 실행
+2. `_context_pack.md`는 CLAUDE.md에서 참조 → 항상 자동 로드
+3. Context pack 안에 resume state 포함 → Claude가 즉시 맥락 파악
+4. 사용자가 "이어서 해줘" 한마디면 작업 재개
 
 ## Constraints
 - 파일에 반영 안 된 중요 맥락이 있으면 반드시 저장 후 clear 안내
-- resume 프롬프트에 "먼저 docs를 읽어라"를 반드시 포함 (Claude가 SSOT부터 읽도록)
+- `_resume_state.md`는 간결하게 (30줄 이내) — context pack 크기 제한
 - compact와 달리 유실 걱정 없음 — 모든 맥락이 파일에 영속화됨

@@ -74,7 +74,7 @@ Colab에 업로드하고 테스트!
 AI-OpenSource-Harness/
 ├── .claude/                      # Claude Code 인프라
 │   ├── hooks/                    # 라이프사이클 훅 (4개)
-│   ├── skills/                   # 슬래시 명령 정의 (5개)
+│   ├── skills/                   # 슬래시 명령 정의 (6개)
 │   ├── agents/                   # 서브에이전트 정의 (3개)
 │   ├── settings.json             # 훅 설정
 │   └── skill-rules.json          # 스킬 매칭 규칙
@@ -157,6 +157,7 @@ run: "python inference.py"
 | `/recipe-authoring` | 레시피 생성/수정 |
 | `/colab-debugging` | Colab 설치/런타임 에러 디버깅 |
 | `/notebook-builder` | 매니페스트에서 노트북 생성 |
+| `/fresh-start` | 맥락 오염 시 — SSOT 저장 + `/clear` 후 자동 복구 |
 | `/session-end` | 세션 마무리 — 문서 저장, 커밋, 핸드오프 프롬프트 생성 |
 | `/pre-compact` | 컨텍스트 부족 시 — 중요 맥락 영속화 + compact 요약 제안 |
 
@@ -250,7 +251,7 @@ uv run python tools/generate_notebook.py my-model
 - **SSOT Triad**: `plan.md` (goal) + `context.md` (decisions) + `tasks.md` (checklist)
 - **Manifest**: YAML cell definitions -> `.ipynb` notebook
 - **Hooks**: Auto-validate on stop, auto-suggest skills on prompt
-- **Skills**: `/recipe-authoring`, `/colab-debugging`, `/notebook-builder`, `/session-end`, `/pre-compact`
+- **Skills**: `/recipe-authoring`, `/colab-debugging`, `/notebook-builder`, `/fresh-start`, `/session-end`, `/pre-compact`
 
 ## Colab Runtime Tracking
 

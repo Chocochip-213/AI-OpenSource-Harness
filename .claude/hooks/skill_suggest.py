@@ -134,33 +134,50 @@ def main():
 
     matches = suggest_skills(prompt, edited_paths, repo_root)
 
-    if not matches:
+    # Check for resume state BEFORE early exit — must inject even with no skill match
+    resume_path = repo_root / ".claude" / "_resume_state.md"
+    has_resume = resume_path.exists()
+
+    if not matches and not has_resume:
         sys.exit(0)
 
-    # Build additionalContext output — MINIMAL to conserve tokens.
-    # Only include skill name + hint (1-2 lines per skill).
-    # Inject small data files ONLY when explicitly configured via injectFiles.
-    lines = ["[Skill Suggestions]"]
-    for m in matches:
-        lines.append(f"  -> /{m['name']} (matched: {m['reason']})")
-        if m["hint"]:
-            lines.append(f"     {m['hint']}")
+    # Build additionalContext output
+    lines = []
 
-        # Inject small reference files (e.g., colab runtime quick-reference)
-        for rel_path in m.get("injectFiles", []):
-            inject_file = repo_root / rel_path
-            if inject_file.exists():
-                try:
-                    content = inject_file.read_text(encoding="utf-8").strip()
-                    # Safety: only inject files under 50 lines to prevent token waste
-                    line_count = len(content.splitlines())
-                    if line_count <= 50:
-                        lines.append(f"  [{rel_path}]")
-                        lines.append(content)
-                    else:
-                        lines.append(f"  [{rel_path}] ({line_count} lines — read manually)")
-                except Exception:
-                    pass
+    # Resume state injection (highest priority — appears first)
+    if has_resume:
+        try:
+            resume_content = resume_path.read_text(encoding="utf-8").strip()
+            if resume_content:
+                lines.append("[Resume State — from /fresh-start, read this FIRST]")
+                lines.append(resume_content)
+                lines.append("[/Resume State]")
+                lines.append("")
+        except Exception:
+            pass
+
+    # Skill suggestions
+    if matches:
+        lines.append("[Skill Suggestions]")
+        for m in matches:
+            lines.append(f"  -> /{m['name']} (matched: {m['reason']})")
+            if m["hint"]:
+                lines.append(f"     {m['hint']}")
+
+            # Inject small reference files (e.g., colab runtime quick-reference)
+            for rel_path in m.get("injectFiles", []):
+                inject_file = repo_root / rel_path
+                if inject_file.exists():
+                    try:
+                        content = inject_file.read_text(encoding="utf-8").strip()
+                        line_count = len(content.splitlines())
+                        if line_count <= 50:
+                            lines.append(f"  [{rel_path}]")
+                            lines.append(content)
+                        else:
+                            lines.append(f"  [{rel_path}] ({line_count} lines — read manually)")
+                    except Exception:
+                        pass
 
     # Read active recipe for SSOT reminder
     recipe = "_template"

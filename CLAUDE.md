@@ -1,5 +1,13 @@
 # AI OSS Colab Test Template — CLAUDE.md
 
+## Session Resume
+
+If `.claude/_resume_state.md` exists, it contains critical context from a previous `/fresh-start`.
+**Read it FIRST before responding to any user message.** Resume state describes the actual in-progress work
+and takes priority over recipe SSOT docs for understanding "current work."
+
+After successfully resuming (user confirms context is correct), delete `_resume_state.md` to prevent stale state.
+
 ## Single Source of Truth (SSOT)
 
 Every recipe lives under `recipes/<recipe>/` and its **docs triad** is the SSOT:
@@ -17,7 +25,7 @@ Every recipe lives under `recipes/<recipe>/` and its **docs triad** is the SSOT:
 
 1. **No orphan files** — every generated file must be referenced in a recipe's `notebook_manifest.yaml` or `recipe.yaml`.
 2. **No silent failures** — all scripts must exit with non-zero on error; hooks must surface errors visibly.
-3. **No stale context** — the context pack (`.claude/_context_pack.md`) is regenerated on session start and after every stop hook.
+3. **No stale context** — the context pack (`.claude/CLAUDE.md`) is regenerated on session start and after every stop hook. This file is auto-loaded by Claude Code.
 4. **No untracked recipes** — running `recipes/<name>/run.sh` must work standalone after `install.sh`.
 5. **Commit early, commit often** — each completed task in `tasks.md` should correspond to a commit.
 
@@ -30,7 +38,7 @@ Scripts and hooks read this to know which recipe's docs to consult.
 
 | Command | Description |
 |---------|-------------|
-| `uv run python scripts/make_context_pack.py` | Rebuild `.claude/_context_pack.md` |
+| `uv run python scripts/make_context_pack.py` | Rebuild `.claude/CLAUDE.md` (auto-loaded context pack) |
 | `uv run python scripts/smoke_test.py` | Run basic compile + import checks |
 | `uv run python tools/generate_notebook.py <recipe>` | Generate Colab notebook from manifest |
 

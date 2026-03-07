@@ -82,12 +82,19 @@ def build_context_pack(repo: Path) -> str:
 
 def main():
     repo = get_repo_root()
-    pack_path = repo / ".claude" / "_context_pack.md"
-    pack_path.parent.mkdir(parents=True, exist_ok=True)
+    claude_dir = repo / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
 
     content = build_context_pack(repo)
-    pack_path.write_text(content, encoding="utf-8")
-    print(f"[make_context_pack] Written to {pack_path.relative_to(repo)}")
+
+    # Primary: .claude/CLAUDE.md — auto-loaded by Claude Code on every session
+    auto_load_path = claude_dir / "CLAUDE.md"
+    auto_load_path.write_text(content, encoding="utf-8")
+    print(f"[make_context_pack] Written to {auto_load_path.relative_to(repo)}")
+
+    # Legacy: _context_pack.md — keep for backward compat (gitignored)
+    legacy_path = claude_dir / "_context_pack.md"
+    legacy_path.write_text(content, encoding="utf-8")
 
 
 if __name__ == "__main__":

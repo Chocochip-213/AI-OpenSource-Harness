@@ -7,4 +7,4 @@ cd "$REPO_ROOT"
 
 echo "[hook:session-start] Rebuilding context pack..."
 uv run python scripts/make_context_pack.py
-echo "[hook:session-start] Context pack ready: .claude/_context_pack.md"
+echo "[hook:session-start] Context pack ready: .claude/CLAUDE.md (auto-loaded)"

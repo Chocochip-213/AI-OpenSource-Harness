@@ -6,11 +6,12 @@
 
 ## Dependencies
 
+<!-- Check colab-runtimes/runtimes.json for actual Colab stock versions -->
 | Package | Upstream | Colab Stock | Strategy |
 |---------|----------|-------------|----------|
-| Python | <!-- 3.10 --> | <!-- 3.11 --> | <!-- direct / conda --> |
-| PyTorch | <!-- 2.6.0/cu124 --> | <!-- 2.6.0/cu124 --> | <!-- keep stock / pip --> |
-| CUDA | <!-- 12.4 --> | <!-- 12.4 --> | <!-- host toolkit --> |
+| Python | <!-- e.g. 3.10 --> | <!-- check runtimes.json --> | <!-- direct / conda --> |
+| PyTorch | <!-- e.g. 2.6.0/cu124 --> | <!-- check runtimes.json --> | <!-- keep stock / pip --> |
+| CUDA | <!-- e.g. 12.4 --> | <!-- check nvidia-smi on Colab --> | <!-- host toolkit --> |
 | <!-- key dep --> | <!-- version --> | <!-- version --> | <!-- pip / patch --> |
 
 ## Colab Compatibility

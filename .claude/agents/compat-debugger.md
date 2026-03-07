@@ -6,6 +6,7 @@ description: |
   - ImportError / ModuleNotFoundError at runtime
   - CUDA/GPU compatibility issues in Colab
   - Package version mismatches between local and Colab environments
+  - Native C extension build failures
   - User mentions "doesn't work in Colab" or similar
 allowed_tools:
   - Read
@@ -23,18 +24,34 @@ Diagnose and fix installation failures, package conflicts, and runtime errors sp
 
 ## Debugging Process
 1. **Read** the recipe's `requirements_opt1.txt` / `requirements_opt2.txt`
-2. **Check** for known Colab version pins (torch, transformers, etc.)
-3. **Search** for conflicting version specifiers across files
-4. **Verify** CUDA compatibility if GPU packages are involved
-5. **Test** with `pip install --dry-run` when possible
+2. **Check** `colab-runtimes/runtimes.json` for the target runtime's pre-installed package versions
+3. **Compare** upstream model requirements with Colab stock versions to identify exact conflicts
+4. **Search** for conflicting version specifiers across recipe files
+5. **Verify** CUDA compatibility: `nvidia-smi` CUDA driver vs torch CUDA build vs extension requirements
+6. **Evaluate strategy**: direct pip, runtime rollback, or conda isolation?
 
-## Colab Environment Reference
-- Python: typically 3.10-3.11
-- Pre-installed: numpy, pandas, torch (version varies), transformers
-- GPU: T4 (free), A100/V100 (Pro)
-- RAM: 12GB (free), 25-50GB (Pro)
+## Colab Runtime Reference
+Read `colab-runtimes/runtimes.json` for accurate, up-to-date package versions per runtime.
+Do NOT hardcode version numbers — they become stale. Always check the data files.
+
+## Strategy Decision Tree
+```
+Model needs specific torch version?
+  -> Check if any Colab runtime has it (colab-runtimes/SUMMARY.md)
+  -> If yes, suggest runtime rollback as simplest option
+  -> If no, evaluate pip upgrade or conda isolation
+
+Native C extensions required?
+  -> Staged install with try/except (fail-tolerant)
+  -> Lazy import patches for optional extensions
+
+Pre-installed .so conflicts?
+  -> Cannot fix with pip alone (in-process .so replacement fails)
+  -> Need process-level isolation (conda) or runtime rollback
+```
 
 ## Output Format
-- Root cause
-- Recommended fix (exact version pins or alternatives)
-- Updated requirements file content if needed
+- Root cause analysis (with evidence)
+- Strategy recommendation with rationale
+- Specific fix (exact commands or file changes)
+- Risk assessment (what might break)

@@ -1,0 +1,46 @@
+name: Sync Colab Runtimes
+
+on:
+  schedule:
+    # Run daily at 09:00 UTC (18:00 KST)
+    - cron: '0 9 * * *'
+  workflow_dispatch:  # Manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run sync script
+        run: python scripts/sync_colab_runtimes.py --output-dir colab-runtimes
+
+      - name: Check for changes
+        id: check
+        run: |
+          git add colab-runtimes/
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No changes detected."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Changes detected!"
+            git diff --cached --stat
+          fi
+
+      - name: Commit and push
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: sync Colab runtime snapshots ($(date -u +%Y-%m-%d))"
+          git push

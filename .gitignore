@@ -10,6 +10,7 @@ build/
 .DS_Store
 Thumbs.db
 .claude/_edited_files.log
+.claude/_skill_suggest.log
 .claude/_context_pack.md
 .claude/settings.local.json
 outputs/

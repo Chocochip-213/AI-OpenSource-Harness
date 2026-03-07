@@ -1,49 +1,40 @@
 #!/usr/bin/env bash
 # Hook: PostToolUse — track edited files for NoMessLeftBehind verification
-# Reads hook payload from stdin, appends edit events to _edited_files.log
+# Single python invocation to minimize overhead (runs on EVERY tool call)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 LOG_FILE="$REPO_ROOT/.claude/_edited_files.log"
 
-# Read hook payload from stdin
-PAYLOAD=$(cat)
-
-# Extract tool name and file path from payload
-TOOL_NAME=$(echo "$PAYLOAD" | uv run python -c "
+# Single python call: parse payload, check tool, write log entry
+cat | uv run python -c "
 import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d.get('tool_name', ''))
-except: pass
-" 2>/dev/null || true)
-
-# Only track file-editing tools
-case "$TOOL_NAME" in
-  Edit|Write|NotebookEdit)
-    FILE_PATH=$(echo "$PAYLOAD" | uv run python -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    inp = d.get('tool_input', {})
-    print(inp.get('file_path', inp.get('notebook_path', '')))
-except: pass
-" 2>/dev/null || true)
-    if [ -n "$FILE_PATH" ]; then
-      # Append as JSONL (use env vars to avoid quoting/escape issues)
-      _TOOL="$TOOL_NAME" _FILE="$FILE_PATH" uv run python -c "
-import json, os
 from datetime import datetime, timezone
-entry = {
-    'ts': datetime.now(timezone.utc).isoformat(),
-    'tool': os.environ['_TOOL'],
-    'file': os.environ['_FILE']
-}
-print(json.dumps(entry))
-" >> "$LOG_FILE" 2>/dev/null || true
-    fi
-    ;;
-esac
+from pathlib import Path
 
-# Never block — always exit 0
+log_file = Path('$LOG_FILE')
+
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+
+tool = d.get('tool_name', '')
+if tool not in ('Edit', 'Write', 'NotebookEdit'):
+    sys.exit(0)
+
+inp = d.get('tool_input', {})
+fp = inp.get('file_path', inp.get('notebook_path', ''))
+if not fp:
+    sys.exit(0)
+
+entry = json.dumps({
+    'ts': datetime.now(timezone.utc).isoformat(),
+    'tool': tool,
+    'file': fp,
+})
+with open(log_file, 'a', encoding='utf-8') as f:
+    f.write(entry + '\n')
+" 2>/dev/null || true
+
 exit 0

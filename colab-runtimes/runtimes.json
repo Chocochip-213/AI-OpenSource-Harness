@@ -1,0 +1,101 @@
+{
+  "source": "https://github.com/googlecolab/backend-info.git",
+  "runtimes": {
+    "2026.01": {
+      "commit_sha": "bd8aaa4580401a7fbf96a52fab5a7acf96f50b73",
+      "os": {
+        "ubuntu": "Ubuntu 22.04.4 LTS",
+        "python": "3.12.12",
+        "r": "R version 4.5.2 (2025-10-31) -- \"[Not] Part in a Rumble\"",
+        "julia": "1.11.5"
+      },
+      "total_gpu_packages": 719,
+      "key_packages": {
+        "torch": "2.9.0+cu126",
+        "torchvision": "0.24.0+cu126",
+        "torchaudio": "2.9.0+cu126",
+        "numpy": "2.0.2",
+        "scipy": "1.16.3",
+        "pillow": "11.3.0",
+        "transformers": "4.57.6",
+        "diffusers": "0.36.0",
+        "accelerate": "1.12.0",
+        "huggingface-hub": "0.36.0",
+        "huggingface_hub": "0.36.0",
+        "safetensors": "0.7.0",
+        "tensorflow": "2.19.0",
+        "jax": "0.7.2",
+        "jaxlib": "0.7.2",
+        "triton": "3.5.0",
+        "opencv-python": "4.12.0.88",
+        "opencv-python-headless": "4.12.0.88",
+        "gradio": "5.50.0",
+        "peft": "0.18.1"
+      }
+    },
+    "2025.10": {
+      "commit_sha": "7a0599e3401b4c158fc34a8023e042fa3691be32",
+      "os": {
+        "ubuntu": "Ubuntu 22.04.4 LTS",
+        "python": "3.12.12",
+        "r": "R version 4.5.1 (2025-06-13) -- \"Great Square Root\"",
+        "julia": "1.11.5"
+      },
+      "total_gpu_packages": 671,
+      "key_packages": {
+        "torch": "2.8.0+cu126",
+        "torchvision": "0.23.0+cu126",
+        "torchaudio": "2.8.0+cu126",
+        "numpy": "2.0.2",
+        "scipy": "1.16.2",
+        "pillow": "11.3.0",
+        "transformers": "4.57.0",
+        "diffusers": "0.35.1",
+        "accelerate": "1.10.1",
+        "huggingface-hub": "0.35.3",
+        "huggingface_hub": "0.35.3",
+        "safetensors": "0.6.2",
+        "tensorflow": "2.19.0",
+        "jax": "0.5.3",
+        "jaxlib": "0.5.3",
+        "triton": "3.4.0",
+        "opencv-python": "4.12.0.88",
+        "opencv-python-headless": "4.12.0.88",
+        "gradio": "5.49.0",
+        "peft": "0.17.1"
+      }
+    },
+    "2025.07": {
+      "commit_sha": "ef1cba030a9f7a39bf42912a42f6462d6d4908e8",
+      "os": {
+        "ubuntu": "Ubuntu 22.04.4 LTS",
+        "python": "3.11.13",
+        "r": "R version 4.5.1 (2025-06-13) -- \"Great Square Root\"",
+        "julia": "1.10.9"
+      },
+      "total_gpu_packages": 636,
+      "key_packages": {
+        "torch": "2.6.0+cu124",
+        "torchvision": "0.21.0+cu124",
+        "torchaudio": "2.6.0+cu124",
+        "numpy": "2.0.2",
+        "scipy": "1.15.3",
+        "pillow": "11.2.1",
+        "transformers": "4.53.2",
+        "diffusers": "0.34.0",
+        "accelerate": "1.8.1",
+        "huggingface-hub": "0.33.4",
+        "huggingface_hub": "0.33.4",
+        "safetensors": "0.5.3",
+        "tensorflow": "2.18.0",
+        "jax": "0.5.2",
+        "jaxlib": "0.5.1",
+        "triton": "3.2.0",
+        "opencv-python": "4.11.0.86",
+        "opencv-python-headless": "4.12.0.88",
+        "gradio": "5.31.0",
+        "peft": "0.16.0"
+      }
+    }
+  }
+}

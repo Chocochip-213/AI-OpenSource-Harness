@@ -90,22 +90,40 @@ echo "<new-name>" > .claude/last_recipe.txt
 # Edit recipes/<new-name>/docs/plan.md to define the goal
 ```
 
+## Colab Runtime Reference
+
+`colab-runtimes/` contains auto-synced package snapshots from [googlecolab/backend-info](https://github.com/googlecolab/backend-info).
+
+| File | Description |
+|------|-------------|
+| `colab-runtimes/runtimes.json` | Key packages per runtime version |
+| `colab-runtimes/SUMMARY.md` | Side-by-side comparison table |
+| `colab-runtimes/<version>/packages.json` | Full package list for a specific runtime |
+| `colab-runtimes/quick-reference.md` | Compact reference for AI context |
+
+Sync manually: `python scripts/sync_colab_runtimes.py`
+Auto-sync: GitHub Action runs daily (`.github/workflows/sync-colab-runtimes.yml`)
+
+> **Rule**: Before deciding on an install strategy, check `colab-runtimes/runtimes.json` for the target runtime's pre-installed packages. Do NOT hardcode version assumptions.
+
 ## Colab Porting Patterns
 
-### Two Strategies
-- **Direct pip** — Lightweight models. Keep Colab's stock torch, install extras.
-- **Conda isolation** — Heavy models with native C extensions. Use condacolab.
+### Strategy Options (evaluate per model)
+- **Direct pip** — When model deps are close to Colab stock versions. Simplest.
+- **Runtime rollback** — When an older Colab runtime has matching torch/Python. Often the easiest fix.
+- **Conda isolation** — When native C extensions require a fully different environment. Most complex.
 
-### Common Fixes
-| Problem | Solution |
-|---------|----------|
-| C extension conflicts (numpy, Pillow .so) | Conda isolated env |
-| flash-attn unavailable | `ATTN_BACKEND=xformers` |
-| spconv wheel missing | `spconv-cu124` or `torchsparse` fallback |
-| Native ext build failure | Staged install, latent-only fallback |
-| rembg/BiRefNet dependency chain | `preprocess_image=False`, RGBA input |
-| GPU arch mismatch | Auto-detect compute capability |
+> Each strategy must be **verified in Colab** before documenting as confirmed. Record results in `context.md`.
+
+### Patterns to Investigate (verify before confirming)
+| Symptom | Potential Approach |
+|---------|-------------------|
+| C extension .so conflict | Conda isolation or runtime rollback |
+| flash-attn build failure | `ATTN_BACKEND=xformers` env var |
+| Native ext build failure | Staged install with try/except |
+| Heavy preprocessing deps | Skip with flag (e.g. `preprocess_image=False`) |
+| GPU arch mismatch | `TORCH_CUDA_ARCH_LIST` env var |
 
 ### Requirements Rules
-- **Never pin**: numpy, scipy, Pillow, matplotlib (keep Colab defaults)
-- **Always pin**: torch, diffusers, xformers (version-sensitive)
+- **Avoid pinning**: numpy, scipy, Pillow, matplotlib (keep Colab defaults when possible)
+- **Pin carefully**: torch, diffusers, xformers (version-sensitive, check Colab stock first)

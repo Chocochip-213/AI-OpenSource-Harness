@@ -135,20 +135,14 @@ def main():
     if not matches:
         sys.exit(0)
 
-    # Build additionalContext output (progressive disclosure)
+    # Build additionalContext output — MINIMAL to conserve tokens.
+    # Only include skill name + hint (1-2 lines per skill).
+    # Do NOT inject full SKILL.md content — Claude will read it if needed.
     lines = ["[Skill Suggestions]"]
     for m in matches:
-        lines.append(f"  -> {m['name']} (matched: {m['reason']})")
+        lines.append(f"  -> /{m['name']} (matched: {m['reason']})")
         if m["hint"]:
-            lines.append(f"     Hint: {m['hint']}")
-        # Load skill resource file if available
-        skill_file = repo_root / ".claude" / "skills" / m["name"] / "SKILL.md"
-        if skill_file.exists():
-            content = skill_file.read_text(encoding="utf-8", errors="replace")
-            # Truncate to keep context lean (first 40 lines)
-            truncated = "\n".join(content.splitlines()[:40])
-            lines.append(f"     [Resource: .claude/skills/{m['name']}/SKILL.md]")
-            lines.append(truncated)
+            lines.append(f"     {m['hint']}")
 
     # Read active recipe for SSOT reminder
     recipe = "_template"

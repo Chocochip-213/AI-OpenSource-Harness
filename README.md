@@ -20,7 +20,7 @@ GitHub에서 흥미로운 AI 오픈소스 모델을 발견했을 때, Colab에�
 - **레시피 시스템** — 모델별 포팅 프로젝트를 체계적으로 관리
 - **노트북 생성기** — YAML 매니페스트 -> Colab `.ipynb` 자동 생성
 - **Claude Code 훅** — 자동 검증, 스킬 추천, 맥락 관리
-- **실전 패턴** — 여러 모델 포팅에서 축적한 Colab 호환성 솔루션
+- **Colab 런타임 추적** — Colab 런타임별 패키지 버전 자동 수집 및 비교
 
 ## 빠른 시작
 
@@ -88,11 +88,18 @@ AI-OpenSource-Harness/
 │       ├── notebook_manifest.yaml # 노트북 셀 정의
 │       ├── install.sh / run.sh
 │       └── requirements_*.txt
+├── colab-runtimes/                  # Colab 런타임 패키지 데이터 (자동 생성)
+│   ├── runtimes.json              # 런타임별 주요 패키지 버전
+│   ├── SUMMARY.md                 # 비교표
+│   └── <version>/packages.json   # 전체 패키지 목록
 ├── scripts/
 │   ├── make_context_pack.py      # 컨텍스트 팩 생성기
-│   └── smoke_test.py             # 문법 + 임포트 검증
+│   ├── smoke_test.py             # 문법 + 임포트 검증
+│   └── sync_colab_runtimes.py    # Colab 런타임 데이터 동기화
 ├── tools/
 │   └── generate_notebook.py      # YAML -> .ipynb 변환기
+├── .github/workflows/
+│   └── sync-colab-runtimes.yml   # 일일 자동 동기화
 ├── docs/RUNBOOK.md               # 훅 검증 가이드
 └── CLAUDE.md                     # Claude Code 지시사항
 ```
@@ -153,34 +160,46 @@ run: "python inference.py"
 | `/session-end` | 세션 마무리 — 문서 저장, 커밋, 핸드오프 프롬프트 생성 |
 | `/pre-compact` | 컨텍스트 부족 시 — 중요 맥락 영속화 + compact 요약 제안 |
 
-## Colab 포팅 패턴
+## Colab 런타임 패키지 추적
 
-여러 모델 포팅 경험에서 얻은 교훈 (SwiftTry, TRELLIS.2, Flux2-VTON, Flux2-TPose):
+`colab-runtimes/` 디렉토리에 [googlecolab/backend-info](https://github.com/googlecolab/backend-info)에서 자동 수집한 Colab 런타임별 패키지 버전이 저장됩니다.
 
-### 전략 선택
+```bash
+# 수동 동기화
+python scripts/sync_colab_runtimes.py
 
-| 모델 유형 | 전략 | 조건 |
-|-----------|------|------|
-| 경량 (pip만 필요) | **Direct pip** | Colab 기본 torch 유지 |
-| 중량 (네이티브 C 확장) | **Conda 격리** | condacolab으로 깨끗한 환경 |
+# 자동 동기화 (GitHub Action, 매일 실행)
+# .github/workflows/sync-colab-runtimes.yml
+```
 
-### 자주 발생하는 문제와 해결법
+### 주요 파일
+| 파일 | 설명 |
+|------|------|
+| `colab-runtimes/runtimes.json` | 런타임별 주요 패키지 버전 (JSON) |
+| `colab-runtimes/SUMMARY.md` | 런타임 비교표 (사람 읽기용) |
+| `colab-runtimes/<version>/packages.json` | 특정 런타임의 전체 패키지 목록 |
+| `colab-runtimes/quick-reference.md` | AI 컨텍스트용 간결 참조 |
 
-| 문제 | 해결법 |
-|------|--------|
-| numpy/Pillow C extension 충돌 | Conda 격리 (프로세스 내 .so 교체 불가) |
-| flash-attn 빌드 실패 | `ATTN_BACKEND=xformers` |
-| spconv wheel 없음 | `spconv-cu124`, 대안 `torchsparse` |
-| 네이티브 확장 빌드 실패 | 단계적 설치 (try/except), 로컬 클론 경로 사용 |
-| GPU 아키텍처 불일치 (Blackwell) | compute capability 자동 감지, torch 버전 매칭 |
-| rembg/BiRefNet 의존성 체인 | `preprocess_image=False` + RGBA 입력 |
-| condacolab이 Python 3.12에서 실패 | runtime 2025.07 (Python 3.11) 사용 |
+### 활용 방법
+오픈소스 모델을 Colab에 포팅할 때:
+1. 모델이 필요로 하는 torch/Python 버전 확인
+2. `colab-runtimes/SUMMARY.md`에서 어떤 런타임이 가장 잘 맞는지 비교
+3. 런타임 롤백이 가능하면 가장 간단한 해결책 (Colab: Runtime > Change runtime type > Runtime version)
+
+## Colab 포팅 시 체크리스트
+
+오픈소스 AI 모델을 Colab에 포팅할 때 확인할 사항:
+
+1. **타겟 런타임 선택**: `colab-runtimes/SUMMARY.md`에서 모델 요구사항과 가장 가까운 런타임 확인
+2. **의존성 비교**: 모델의 `requirements.txt` vs Colab 사전 설치 패키지 비교
+3. **충돌 유형 파악**: pip으로 해결 가능한가? 런타임 롤백이 필요한가? 격리 환경이 필요한가?
+4. **단계별 검증**: 각 설치 단계를 Colab에서 실제로 실행하여 결과 확인
 
 ### Requirements 파일 규칙
 
-- **절대 고정하지 말 것**: numpy, scipy, Pillow, matplotlib (Colab 기본값 유지)
-- **반드시 고정할 것**: torch, diffusers, xformers (버전 민감, ABI 영향)
-- **Upstream 버전에 맞출 것**: 모델 저자가 테스트한 버전과 일치
+- **Colab 기본 패키지 주의**: numpy, scipy, Pillow 등은 Colab에 사전 설치되어 있으므로 버전 충돌 가능
+- **버전 민감 패키지 고정**: torch, diffusers, xformers 등은 정확한 버전 지정 필요
+- **Upstream 기준**: 모델 저자가 테스트한 환경과 최대한 일치시키기
 
 ## 작업 흐름
 
@@ -207,7 +226,7 @@ This harness automates the process of getting open-source AI models running on G
 - **Recipe system** — structured project for each porting effort
 - **Notebook generator** — YAML manifest to Colab `.ipynb`
 - **Claude Code hooks** — auto-validation, skill suggestions, context management
-- **Battle-tested patterns** — solutions from porting SwiftTry, TRELLIS.2, Flux2-VTON, Flux2-TPose
+- **Colab runtime tracking** — auto-synced package snapshots for dependency planning
 
 ## Quick Start
 
@@ -233,16 +252,16 @@ uv run python tools/generate_notebook.py my-model
 - **Hooks**: Auto-validate on stop, auto-suggest skills on prompt
 - **Skills**: `/recipe-authoring`, `/colab-debugging`, `/notebook-builder`, `/session-end`, `/pre-compact`
 
-## Colab Patterns
+## Colab Runtime Tracking
 
-| Problem | Solution |
-|---------|----------|
-| C extension conflicts | Conda isolated env |
-| flash-attn fails | `ATTN_BACKEND=xformers` |
-| spconv missing | `spconv-cu124` or `torchsparse` |
-| Native ext fails | Staged install, local paths |
-| GPU mismatch | Auto-detect compute cap |
-| condacolab on 3.12 | Use runtime 2025.07 |
+`colab-runtimes/` auto-syncs package snapshots from [googlecolab/backend-info](https://github.com/googlecolab/backend-info).
+
+```bash
+python scripts/sync_colab_runtimes.py   # Manual sync
+# GitHub Action runs daily: .github/workflows/sync-colab-runtimes.yml
+```
+
+When porting a model, check `colab-runtimes/SUMMARY.md` to find the best-matching runtime version.
 
 ## Architecture
 

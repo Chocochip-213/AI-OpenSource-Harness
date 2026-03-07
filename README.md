@@ -223,62 +223,212 @@ A Claude Code-powered harness for porting open-source AI models to Google Colab 
 
 ## What is this?
 
-This harness automates the process of getting open-source AI models running on Google Colab:
-- **Recipe system** — structured project for each porting effort
-- **Notebook generator** — YAML manifest to Colab `.ipynb`
-- **Claude Code hooks** — auto-validation, skill suggestions, context management
-- **Colab runtime tracking** — auto-synced package snapshots for dependency planning
+When you find an interesting open-source AI model on GitHub and want to run it on Colab, you typically face these challenges:
+- Dependency conflicts with Colab's pre-installed packages (numpy, Pillow, and other C extensions)
+- CUDA/GPU compatibility issues (Blackwell, A100, and T4 each require different torch versions)
+- Native C extension build failures (nvdiffrast, CuMesh, etc.)
+- Environment constraints (runtime resets, disk limits, session timeouts)
+
+This harness structures and automates that entire process:
+- **Recipe system** — manage each model's porting project in a structured, reproducible way
+- **Notebook generator** — auto-generate Colab `.ipynb` notebooks from YAML manifests
+- **Claude Code hooks** — auto-validation, skill suggestions, and context management
+- **Colab runtime tracking** — auto-collect and compare package versions across Colab runtimes
 
 ## Quick Start
+
+### Prerequisites
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
+- [uv](https://docs.astral.sh/uv/) (Python package manager)
+- Git
+
+### 1. Clone
 
 ```bash
 git clone https://github.com/Chocochip-213/AI-OpenSource-Harness.git
 cd AI-OpenSource-Harness
-claude  # Start Claude Code — hooks auto-configure
+```
 
-# Create a recipe
+### 2. Start Claude Code
+
+```bash
+claude
+```
+
+Hooks auto-configure on the first session start:
+```
+[hook:session-start] Context pack ready
+```
+
+### 3. Create a Recipe
+
+```bash
 cp -r recipes/_template recipes/my-model
 echo "my-model" > .claude/last_recipe.txt
+```
 
-# Generate notebook
+Then tell Claude: **"Edit recipes/my-model/docs/plan.md. I want to run [model name] on Colab."**
+
+### 4. Generate the Notebook
+
+After editing `recipes/my-model/notebook_manifest.yaml`:
+
+```bash
 uv run python tools/generate_notebook.py my-model
-# Upload outputs/notebooks/my-model.ipynb to Colab
+# -> outputs/notebooks/my-model.ipynb
+```
+
+Upload to Colab and test!
+
+## Project Structure
+
+```
+AI-OpenSource-Harness/
+├── .claude/                      # Claude Code infrastructure
+│   ├── hooks/                    # Lifecycle hooks (4)
+│   ├── skills/                   # Slash command definitions (6)
+│   ├── agents/                   # Sub-agent definitions (3)
+│   ├── settings.json             # Hook configuration
+│   └── skill-rules.json          # Skill matching rules
+├── recipes/
+│   └── _template/                # Base template for new recipes
+│       ├── docs/                 # SSOT documentation triad
+│       │   ├── plan.md           # Goal, scope, approach
+│       │   ├── context.md        # Architecture, decisions, Colab compatibility
+│       │   └── tasks.md          # Ordered checklist
+│       ├── recipe.yaml           # Metadata + runtime requirements
+│       ├── notebook_manifest.yaml # Notebook cell definitions
+│       ├── install.sh / run.sh
+│       └── requirements_*.txt
+├── colab-runtimes/               # Colab runtime package data (auto-generated)
+│   ├── runtimes.json             # Key package versions per runtime
+│   ├── SUMMARY.md                # Side-by-side comparison table
+│   └── <version>/packages.json   # Full package list per runtime
+├── scripts/
+│   ├── make_context_pack.py      # Context pack generator
+│   ├── smoke_test.py             # Syntax + import validation
+│   └── sync_colab_runtimes.py    # Colab runtime data sync
+├── tools/
+│   └── generate_notebook.py      # YAML -> .ipynb converter
+├── .github/workflows/
+│   └── sync-colab-runtimes.yml   # Daily auto-sync
+├── docs/RUNBOOK.md               # Hook verification guide
+└── CLAUDE.md                     # Claude Code instructions
 ```
 
 ## Key Concepts
 
-- **Recipe**: Self-contained porting project in `recipes/<name>/`
-- **SSOT Triad**: `plan.md` (goal) + `context.md` (decisions) + `tasks.md` (checklist)
-- **Manifest**: YAML cell definitions -> `.ipynb` notebook
-- **Hooks**: Auto-validate on stop, auto-suggest skills on prompt
-- **Skills**: `/recipe-authoring`, `/colab-debugging`, `/notebook-builder`, `/fresh-start`, `/session-end`, `/pre-compact`
+### Recipe
+
+A self-contained project unit for porting a single open-source model to Colab.
+Everything needed to generate a Colab notebook lives under `recipes/<name>/`.
+
+### SSOT Documentation Triad
+
+| File | Purpose |
+|------|---------|
+| `plan.md` | Goal, scope, target environment, success criteria |
+| `context.md` | Architecture, dependencies, decisions (with reasoning), Colab compatibility notes |
+| `tasks.md` | Ordered checklist (check off items as they are completed) |
+
+### Notebook Manifest
+
+**Extended format** (recommended):
+```yaml
+title: "My Model"
+gpu_type: A100  # optional, defaults to A100
+cells:
+  - type: markdown
+    source: |
+      # My Model
+  - type: code
+    source: |
+      !pip install torch transformers
+```
+
+**Legacy format** (simple):
+```yaml
+title: "My Model"
+install: [torch, transformers]
+run: "python inference.py"
+```
+
+### Hooks
+
+| Hook | Trigger | Action |
+|------|---------|--------|
+| SessionStart | Session begins | Rebuild context pack |
+| UserPromptSubmit | Message sent | Auto-suggest relevant skills |
+| PostToolUse | File edited | Track edit history |
+| Stop | Session ends | Code validation, context refresh |
+
+### Skills (Slash Commands)
+
+| Command | Purpose |
+|---------|---------|
+| `/recipe-authoring` | Create or modify recipes |
+| `/colab-debugging` | Debug Colab install/runtime errors |
+| `/notebook-builder` | Generate notebooks from manifests |
+| `/fresh-start` | Context pollution — save to SSOT + `/clear` for clean restart |
+| `/session-end` | Wrap up session — save docs, commit, generate handoff prompt |
+| `/pre-compact` | Context running low — persist critical context + suggest compact summary |
 
 ## Colab Runtime Tracking
 
-`colab-runtimes/` auto-syncs package snapshots from [googlecolab/backend-info](https://github.com/googlecolab/backend-info).
+The `colab-runtimes/` directory stores per-runtime package versions auto-collected from [googlecolab/backend-info](https://github.com/googlecolab/backend-info).
 
 ```bash
-python scripts/sync_colab_runtimes.py   # Manual sync
-# GitHub Action runs daily: .github/workflows/sync-colab-runtimes.yml
+# Manual sync
+python scripts/sync_colab_runtimes.py
+
+# Auto sync (GitHub Action, runs daily)
+# .github/workflows/sync-colab-runtimes.yml
 ```
 
-When porting a model, check `colab-runtimes/SUMMARY.md` to find the best-matching runtime version.
+### Key Files
 
-## Architecture
+| File | Description |
+|------|-------------|
+| `colab-runtimes/runtimes.json` | Key package versions per runtime (JSON) |
+| `colab-runtimes/SUMMARY.md` | Runtime comparison table (human-readable) |
+| `colab-runtimes/<version>/packages.json` | Full package list for a specific runtime |
+| `colab-runtimes/quick-reference.md` | Compact reference for AI context windows |
 
-See [Korean section above](#프로젝트-구조) for full directory tree.
+### How to Use
 
-## Verifying Setup
+When porting an open-source model to Colab:
+1. Check the torch/Python versions the model requires
+2. Compare against `colab-runtimes/SUMMARY.md` to find the best-matching runtime
+3. If a runtime rollback works, that's the simplest fix (Colab: Runtime > Change runtime type > Runtime version)
 
-```bash
-# Check hooks
-uv run python scripts/smoke_test.py
+## Colab Porting Checklist
 
-# Test skill suggestion
-echo '{"prompt":"fix pip install error in colab"}' | bash .claude/hooks/userprompt-submit.sh
+Things to verify when porting an open-source AI model to Colab:
+
+1. **Choose target runtime**: Check `colab-runtimes/SUMMARY.md` for the runtime closest to model requirements
+2. **Compare dependencies**: Model's `requirements.txt` vs Colab's pre-installed packages
+3. **Identify conflict type**: Solvable with pip? Need a runtime rollback? Need an isolated environment?
+4. **Validate step by step**: Run each install step in Colab and verify the results
+
+### Requirements File Rules
+
+- **Watch Colab defaults**: numpy, scipy, Pillow, etc. are pre-installed — version conflicts are common
+- **Pin version-sensitive packages**: torch, diffusers, xformers need exact version pinning
+- **Match upstream**: Align as closely as possible with the environment the model author tested on
+
+## Workflow
+
 ```
-
-See `docs/RUNBOOK.md` for detailed hook testing.
+1. Find an interesting AI model on GitHub
+2. Create a recipe:  cp -r recipes/_template recipes/my-model
+3. Tell Claude your porting goal
+4. Claude writes the plan, resolves dependencies, generates the notebook manifest
+5. Generate notebook:  uv run python tools/generate_notebook.py my-model
+6. Test on Colab — when errors occur, paste them back to Claude
+7. Iterate until it works
+8. Wrap up with /session-end
+```
 
 ## License
 

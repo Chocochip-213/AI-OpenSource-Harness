@@ -244,10 +244,94 @@ Claude Code로 장시간 작업하다 보면 컨텍스트 윈도우가 가득 �
 
 - 대화가 길어져서 Claude 응답이 느려지거나 부정확해질 때
 - `/compact`를 이미 2회 이상 사용했을 때
-- 다른 컴퓨터/세션에서 작업을 이어받을 때
 - Claude가 이전 맥락을 혼동하기 시작할 때
 
 > **팁**: 이 하네스에서는 모든 맥락이 SSOT 파일에 영속화되므로, `/compact`보다 `/fresh-start`를 항상 권장합니다.
+> **주의**: 다른 컴퓨터로 작업을 이동할 때는 `/fresh-start`가 아니라 `/session-end`를 사용하세요 (아래 "세션 연속성" 참조).
+
+## 세션 연속성 (Session Continuity)
+
+이 하네스는 세 가지 시나리오에서 작업 맥락이 유실되지 않도록 설계되었습니다.
+
+### 시나리오 비교
+
+| 상황 | 사용 명령 | 맥락 전달 경로 |
+|------|-----------|----------------|
+| **같은 PC, 컨텍스트 오버플로** | `/fresh-start` | `_resume_state.md` (로컬 파일) + SSOT docs |
+| **같은/다른 PC, 세션 종료** | `/session-end` | SSOT docs (git 커밋) + 핸드오프 프롬프트 |
+| **새로 git clone** | 없음 | SSOT docs만 (plan + context + tasks) |
+
+핵심 차이: `_resume_state.md`는 로컬 전용 파일(gitignored)이므로 **같은 PC에서만 동작**합니다.
+다른 PC로 이동하거나 새로 clone할 때는 SSOT docs가 유일한 맥락 원천입니다.
+
+### 시나리오 1: 같은 PC에서 컨텍스트 오버플로
+
+작업 중 Claude의 컨텍스트 윈도우가 가득 찼을 때.
+
+```
+사용자: /fresh-start
+Claude: [SSOT 파일 업데이트 + _resume_state.md 생성]
+        준비 완료. /clear 를 실행하세요.
+사용자: /clear
+사용자: 이어서 해줘
+Claude: [_resume_state.md + SSOT 자동 로드 → 즉시 작업 재개]
+```
+
+`_resume_state.md`에 uncommitted changes와 현재 작업 상태가 기록되므로,
+커밋하지 않은 작업 중간 상태에서도 완벽하게 복구됩니다.
+
+### 시나리오 2: 다른 PC로 작업 이동 (또는 세션 마무리)
+
+작업을 멈추고 다른 환경에서 이어받을 때.
+
+```
+사용자: /session-end
+Claude: [SSOT 파일 업데이트 + git commit + push]
+        핸드오프 프롬프트:
+        ┌────────────────────────────────────┐
+        │ 프로젝트: my-model                  │
+        │ 이전 세션: Cell D까지 성공           │
+        │ 다음 작업: Cell E native ext 빌드   │
+        │ 핵심 파일: notebook_manifest.yaml   │
+        └────────────────────────────────────┘
+
+--- 다른 PC에서 ---
+
+$ git pull
+$ claude
+사용자: [핸드오프 프롬프트 붙여넣기]
+Claude: [SSOT docs 자동 로드 + 핸드오프 프롬프트 반영 → 작업 재개]
+```
+
+`/session-end`는 모든 맥락을 SSOT docs에 커밋하고, 핸드오프 프롬프트를 생성합니다.
+새 PC에서는 `git pull` 후 핸드오프 프롬프트를 붙여넣으면 됩니다.
+
+### 시나리오 3: 새로 git clone (핸드오프 프롬프트 없이)
+
+핸드오프 프롬프트를 잃어버렸거나, 시간이 지난 후 작업을 재개할 때.
+
+```
+$ git clone <repo-url>
+$ cd <repo>
+$ claude
+사용자: recipes/my-model 레시피 이어서 작업해줘
+Claude: [SSOT docs 자동 로드 → plan/context/tasks 기반으로 작업 재개]
+```
+
+SSOT docs(`plan.md`, `context.md`, `tasks.md`)만으로도 작업 재개가 가능합니다.
+`tasks.md`의 체크리스트에서 마지막 완료 항목을 보고 다음 작업을 판단합니다.
+
+> **핵심 원칙**: 모든 중요 맥락은 반드시 SSOT 파일에 영속화됩니다.
+> `_resume_state.md`와 핸드오프 프롬프트는 **편의성을 위한 가속기**이지, 유일한 맥락 원천이 아닙니다.
+> 둘 다 없어도 SSOT docs만으로 작업 재개가 가능하도록 설계되었습니다.
+
+### 어떤 명령을 사용해야 하나요?
+
+```
+컨텍스트가 커졌다 → /fresh-start
+오늘 작업 끝     → /session-end
+compact가 필요   → /pre-compact (하지만 /fresh-start 권장)
+```
 
 ## Colab 런타임 패키지 추적
 
@@ -545,10 +629,94 @@ This file is auto-included in the context pack, so Claude immediately understand
 
 - Conversation is long and Claude responses become slow or inaccurate
 - You've already used `/compact` 2+ times
-- Handing off work to a different machine or session
 - Claude starts confusing previous context
 
 > **Tip**: In this harness, all context is persisted in SSOT files, so `/fresh-start` is always preferred over `/compact`.
+> **Note**: To hand off work to a different machine, use `/session-end` instead (see "Session Continuity" below).
+
+## Session Continuity
+
+This harness is designed to preserve work context across three scenarios.
+
+### Scenario Comparison
+
+| Situation | Command | Context Transfer |
+|-----------|---------|-----------------|
+| **Same PC, context overflow** | `/fresh-start` | `_resume_state.md` (local file) + SSOT docs |
+| **Same/different PC, end of session** | `/session-end` | SSOT docs (git committed) + handoff prompt |
+| **Fresh git clone** | none | SSOT docs only (plan + context + tasks) |
+
+Key difference: `_resume_state.md` is a local-only file (gitignored) — it **only works on the same machine**.
+When moving to another PC or cloning fresh, SSOT docs are the sole source of context.
+
+### Scenario 1: Same PC, Context Overflow
+
+When Claude's context window fills up during a long session.
+
+```
+You:    /fresh-start
+Claude: [Updates SSOT files + creates _resume_state.md]
+        Ready. Run /clear.
+You:    /clear
+You:    continue where we left off
+Claude: [Auto-loads _resume_state.md + SSOT → instantly resumes]
+```
+
+`_resume_state.md` records uncommitted changes and current work state,
+so even mid-work with uncommitted changes, recovery is seamless.
+
+### Scenario 2: Moving to Another PC (or Ending a Session)
+
+When you're done for the day or switching to a different machine.
+
+```
+You:    /session-end
+Claude: [Updates SSOT files + git commit + push]
+        Handoff prompt:
+        ┌────────────────────────────────────────┐
+        │ Project: my-model                       │
+        │ Previous session: Cells A-D passed      │
+        │ Next task: Cell E native ext build      │
+        │ Key file: notebook_manifest.yaml        │
+        └────────────────────────────────────────┘
+
+--- On the new PC ---
+
+$ git pull
+$ claude
+You:    [paste handoff prompt]
+Claude: [Auto-loads SSOT docs + handoff context → resumes work]
+```
+
+`/session-end` commits all context to SSOT docs and generates a handoff prompt.
+On the new PC, just `git pull` and paste the prompt.
+
+### Scenario 3: Fresh Git Clone (No Handoff Prompt)
+
+When you lost the handoff prompt, or are resuming after a long break.
+
+```
+$ git clone <repo-url>
+$ cd <repo>
+$ claude
+You:    continue working on recipes/my-model
+Claude: [Auto-loads SSOT docs → resumes from plan/context/tasks]
+```
+
+SSOT docs alone (`plan.md`, `context.md`, `tasks.md`) are sufficient to resume.
+Claude reads `tasks.md` to find the last completed item and determines the next step.
+
+> **Core principle**: All critical context must be persisted in SSOT files.
+> `_resume_state.md` and handoff prompts are **convenience accelerators**, not the sole source of truth.
+> Even without them, work can resume from SSOT docs alone.
+
+### Which Command Should I Use?
+
+```
+Context getting large → /fresh-start
+Done for the day     → /session-end
+Need to compact      → /pre-compact (but prefer /fresh-start)
+```
 
 ## Colab Runtime Tracking
 

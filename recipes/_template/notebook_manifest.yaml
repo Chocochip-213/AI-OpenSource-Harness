@@ -28,15 +28,38 @@ cells:
 
   - type: code
     source: |
-      #@title C) Clone & Setup { run: "auto" }
+      #@title C) Verify Dependencies { run: "auto" }
+      # Fail-fast: catch missing deps NOW, not 30 min later during inference
+      import sys
+      REQUIRED = {
+          # "torch": lambda: __import__("torch").cuda.is_available(),
+          # "transformers": lambda: __import__("transformers"),
+      }
+      failed = []
+      for name, check in REQUIRED.items():
+          try:
+              check()
+              print(f"  {name}: OK")
+          except Exception as e:
+              print(f"  {name}: FAIL - {e}")
+              failed.append(name)
+      if failed:
+          print(f"\nFATAL: {len(failed)} package(s) missing: {', '.join(failed)}")
+          sys.exit(1)
+      else:
+          print(f"All {len(REQUIRED)} dependencies verified.")
+
+  - type: code
+    source: |
+      #@title D) Clone & Setup { run: "auto" }
       # TODO: git clone upstream, pip install -e, or sys.path.insert
 
   - type: code
     source: |
-      #@title D) Load Model { run: "auto" }
+      #@title E) Load Model { run: "auto" }
       # TODO: import pipeline/model, load weights, move to GPU
 
   - type: code
     source: |
-      #@title E) Inference { run: "auto" }
+      #@title F) Inference { run: "auto" }
       # TODO: load input, run model, display output

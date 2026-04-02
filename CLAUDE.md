@@ -124,22 +124,41 @@ Auto-sync: GitHub Action runs daily (`.github/workflows/sync-colab-runtimes.yml`
 
 ## Colab Porting Patterns
 
-### Strategy Options (evaluate per model)
-- **Direct pip** — When model deps are close to Colab stock versions. Simplest.
-- **Runtime rollback** — When an older Colab runtime has matching torch/Python. Often the easiest fix.
-- **Conda isolation** — When native C extensions require a fully different environment. Most complex.
+> Detailed strategies with code: `docs/PORTING_PATTERNS.md`
+> Error pattern database: `docs/COMMON_ERRORS.md`
+
+### Strategy Selection (evaluate in order)
+1. **Direct pip** — Model deps match Colab stock. Only install missing packages. **Simplest.**
+2. **Runtime rollback** — Older Colab runtime has matching torch/Python. **Change runtime version in UI.**
+3. **Selective downgrade + patch** — One package needs older version. Downgrade it only, patch API breaks. **Targeted.**
+4. **Shim / monkey-patch** — Build fails but torch-native substitute exists (e.g. flash-attn → SDPA). **No build needed.**
+5. **Conda isolation** — Multiple C extensions with conflicting ABIs (spconv, nvdiffrast). **Last resort, 3-5 min setup.**
 
 > Each strategy must be **verified in Colab** before documenting as confirmed. Record results in `context.md`.
 
-### Patterns to Investigate (verify before confirming)
-| Symptom | Potential Approach |
-|---------|-------------------|
-| C extension .so conflict | Conda isolation or runtime rollback |
-| flash-attn build failure | `ATTN_BACKEND=xformers` env var |
-| Native ext build failure | Staged install with try/except |
-| Heavy preprocessing deps | Skip with flag (e.g. `preprocess_image=False`) |
+### Verified Symptom → Fix Table
+| Symptom | Verified Fix |
+|---------|-------------|
+| C extension .so conflict (spconv cumm) | Conda isolation (condacolab 0.1.x + runtime 2025.07) |
+| flash-attn build failure | SDPA shim — see `docs/PORTING_PATTERNS.md` §4 |
+| numpy/Pillow downgrade crash | Never downgrade. Keep Colab defaults. Conda if truly needed |
+| Florence-2 on transformers 5.x | Replace with Qwen2.5-VL or similar native VLM |
+| diffusers private API breakage | Selective downgrade + compatibility patch file |
+| torch.load weights_only error | `torch.serialization.add_safe_globals([TargetClass])` |
+| importlib.metadata for shim | Create `.dist-info/METADATA` file |
 | GPU arch mismatch | `TORCH_CUDA_ARCH_LIST` env var |
+| condacolab + Python 3.12 | Use runtime 2025.07 (Python 3.11) |
+| xformers upgrades torch silently | Pin torch version explicitly in same pip command |
+| Heavy preprocessing deps | Skip with flag (e.g. `preprocess_image=False`) |
 
 ### Requirements Rules
-- **Avoid pinning**: numpy, scipy, Pillow, matplotlib (keep Colab defaults when possible)
-- **Pin carefully**: torch, diffusers, xformers (version-sensitive, check Colab stock first)
+- **Never downgrade**: numpy, scipy, Pillow, matplotlib (Colab C extension ABI)
+- **Never `pip install torch`** in base env (use Colab's pre-compiled version)
+- **Pin carefully**: diffusers, xformers (version-sensitive, check Colab stock first)
+- **Always fail-fast**: Add dependency verification cell after install, before inference
+
+### Notebook Design Rules (from real projects)
+- **Fail-fast verification** — Check all imports immediately after install cells, not 30 min later
+- **Idempotent cells** — Every cell should be safe to re-run (skip detection, assert-guarded patches)
+- **Pipeline caching** — Cache GPU model objects in `globals()` to survive cell re-runs
+- **Config patch with assert** — `str.replace()` without assert is a silent bug source

@@ -50,7 +50,7 @@ When porting an open-source AI model to Colab, check this table to:
 ```python
 # If your model needs torch 2.6.0+cu124:
 #   -> Use runtime 2025.07 (has torch 2.6.0+cu124 natively)
-#   -> On 2026.01 (torch 2.10.0+cu128), you'd need conda isolation
+#   -> On 2026.01 (torch 2.9.0+cu126), you'd need conda isolation
 ```
 
 ### Runtime Rollback

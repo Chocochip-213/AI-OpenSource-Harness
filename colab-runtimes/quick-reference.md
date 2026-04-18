@@ -1,5 +1,14 @@
 # Colab Runtime Quick Reference (auto-generated)
 
+## 2026.04
+- Python 3.12.13, Ubuntu 22.04.5 LTS
+- torch==2.10.0+cu128
+- numpy==2.0.2
+- transformers==5.0.0
+- diffusers==0.37.1
+- jax==0.7.2
+- tensorflow==2.19.0
+
 ## 2026.01
 - Python 3.12.12, Ubuntu 22.04.4 LTS
 - torch==2.9.0+cu126

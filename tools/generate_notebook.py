@@ -257,20 +257,14 @@ def generate_notebook(recipe_name: str, out_path: Path | None = None) -> Path:
         or _rt_gpu
         or "A100"
     )
-    # Colab gpuClass mapping (observed on Colab-generated .ipynb, 2026.04).
-    # Users pick the actual runtime in Runtime > Change runtime type; this
-    # metadata only seeds the default suggestion.
-    gpu_class_map = {
-        "H100": "premium",   # Pro+ tier (added 2026)
-        "A100": "premium",   # Pro tier (40 / 80 GB variants allocated by Colab)
-        "L4": "premium",     # Pro tier
-        "V100": "premium",   # legacy — rarely allocated on current runtimes
-        "T4": "standard",    # Free / Pro tier
-        "CPU": "standard",
-    }
-    # Unknown GPU tag → assume "premium" so Colab doesn't downrank to T4;
-    # the preflight assert cell still checks the actual allocation at runtime.
-    gpu_class = gpu_class_map.get(gpu_type, "premium")
+    # Colab gpuClass mapping is just metadata that seeds the notebook's
+    # default suggestion — the USER always picks the actual runtime in
+    # Runtime > Change runtime type. Exact options shown there depend on
+    # the user's Colab tier and can change whenever Google updates the
+    # product, so we intentionally do not enforce a closed list anywhere.
+    # Known-standard: T4, CPU.  Everything else → premium.
+    _STANDARD_GPUS = {"T4", "CPU"}
+    gpu_class = "standard" if str(gpu_type).upper() in _STANDARD_GPUS else "premium"
 
     notebook = {
         "nbformat": 4,

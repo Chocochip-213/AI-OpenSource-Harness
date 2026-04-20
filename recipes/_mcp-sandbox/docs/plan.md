@@ -23,22 +23,22 @@ attributable to the MCP pipeline, not to model-specific issues.
 
 ## Target Environment
 
-> These are the **sandbox minimums** — values chosen so Phase 2 validation
-> works on a free Colab account. They are NOT a restriction. Colab's
-> `Runtime > Change runtime type` lets the user pick any of
-> `T4 / L4 / A100 / H100` (availability varies by tier). The preflight
-> assert cell only fails if allocation is smaller than these minimums.
+> These are **sandbox minimums**, not restrictions. The real picker is
+> Colab's `Runtime > Change runtime type` menu, and what appears there
+> is decided by Google per tier / region / time — do not treat this
+> table as the authoritative GPU list. The only hard check is
+> `runtime.vram_min_gb`; a GPU-name mismatch only prints `[warn]`.
 
-| Item | Minimum | Upgrades you can pick in Colab |
-|------|---------|-------------------------------|
-| GPU  | T4      | L4, A100, H100 (the matmul finishes in <1s on any of them) |
-| VRAM | 8 GB    | Larger GPUs ship with 22–80 GB; preflight accepts anything ≥ 8 GB |
-| Python | 3.11  | Also fine on 3.12 (runtimes 2025.10 / 2026.01 / 2026.04); the sandbox doesn't use anything runtime-specific |
-| Colab Runtime | 2025.07 | Any current runtime works for torch matmul; 2025.07 is just the minimum tested |
+| Item | Sandbox minimum | Notes |
+|------|-----------------|-------|
+| GPU  | T4 (or anything Colab gives you that has ≥ 8 GB VRAM) | The matmul finishes in <1s on any Colab GPU. Pick whatever your tier offers. |
+| VRAM | 8 GB | Preflight's only hard check. Most current Colab GPUs exceed this by a lot. |
+| Python | 3.11 (or 3.12) | Sandbox uses nothing runtime-specific. |
+| Colab Runtime | 2025.07+ | Any currently-offered runtime works. |
 
-If the allocated GPU is larger than T4, the auto-injected preflight cell
-prints a `[warn]` about the mismatch with `mcp.preferred_gpu: T4` — that's
-expected and informational, not a failure.
+If the allocated GPU doesn't match `mcp.preferred_gpu: T4` exactly, the
+auto-injected preflight cell prints a `[warn]` and keeps going — that's
+by design.
 
 ## Approach
 1. `scripts/set_active_recipe.sh _mcp-sandbox` + `source .claude/.env`

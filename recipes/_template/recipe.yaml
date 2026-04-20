@@ -76,13 +76,16 @@ mcp:
   # .claude/_hook_errors.log. Also emitted as MAX_MCP_OUTPUT_TOKENS in
   # .claude/.env by scripts/set_active_recipe.sh.
   max_tool_output_tokens: 10000
-  # Enforced by tools/generate_notebook.py — injects a Cell A that asserts
-  # torch.cuda.get_device_name(0) matches this value. Catches Colab's silent
-  # A100→L4 downgrades during peak hours.
-  # Valid values (2026-04 Colab): H100 | A100 | L4 | T4 | CPU | null
-  # (V100 still maps correctly but is rarely allocated on current runtimes.)
-  # Users can still pick a different GPU in Colab's Runtime menu — this is
-  # the MCP preflight's recommended match, not a hard constraint.
+  # Enforced by tools/generate_notebook.py — injects a Cell A that
+  # asserts `torch.cuda.get_device_name(0)` contains this string (case-
+  # insensitive). A mismatch only logs `[warn]`, it does not fail the
+  # cell — the hard check is `runtime.vram_min_gb`.
+  #
+  # Accepts ANY free-form string. The actual picker lives in Colab's
+  # `Runtime > Change runtime type` menu and what's available there
+  # depends on your tier (Free / Pro / Pro+) and what Google currently
+  # offers. As of 2026-04 this typically includes T4, L4, A100, H100,
+  # but do NOT treat the harness as authoritative — the menu is.
   preferred_gpu: null
   # Enforced by tools/generate_notebook.py — injects a daemon-thread heartbeat
   # cell that resets Colab's 90-min idle timer.

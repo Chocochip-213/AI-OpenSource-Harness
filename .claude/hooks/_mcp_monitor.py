@@ -51,9 +51,18 @@ MAX_VALUE_LEN = 120
 # ---- redaction rules ----
 
 # Key names (case-insensitive substring) → full redact.
+# English standard set + common Korean/Japanese secret-related terms.
+# Adding Latin coverage beyond English is intentionally narrow — wide CJK
+# matching has high false-positive cost (e.g. "키" alone matches index_key
+# in transliterated kor projects). Stick to unambiguous secret nouns.
 SENSITIVE_KEY_RE = re.compile(
     r"token|secret|password|passphrase|apikey|api_key|auth|bearer|"
-    r"credential|cert|priv|private|session|pem|rsa|ed25519",
+    r"credential|cert|priv|private|session|pem|rsa|ed25519|"
+    r"signature|nonce|"
+    # Korean
+    r"비밀번호|암호|토큰|인증|"
+    # Japanese
+    r"パスワード|トークン|認証|秘密",
     re.IGNORECASE,
 )
 

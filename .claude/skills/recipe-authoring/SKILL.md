@@ -2,6 +2,10 @@
 name: recipe-authoring
 description: Use when the user creates a new recipe, scaffolds a new model porting project, copies recipes/_template, edits recipes/<name>/docs/{plan,context,tasks}.md, modifies recipe.yaml, or mentions "recipe", "template", "SSOT", "plan.md", "context.md", or "tasks.md". Also use proactively when user describes a new OSS model they want to port to Colab. Enforces the SSOT triad protocol — always read plan/context/tasks before editing, and update tasks.md after every completed step.
 allowed-tools: Read Edit Write Glob Grep Bash
+paths:
+  - recipes/*/docs/*.md
+  - recipes/*/recipe.yaml
+  - recipes/_template/**
 ---
 
 # Skill: recipe-authoring
@@ -21,7 +25,7 @@ Triggered when creating, modifying, or managing recipes and their SSOT docs.
 ## New Recipe Checklist
 ```bash
 cp -r recipes/_template recipes/<name>
-echo "<name>" > .claude/last_recipe.txt
+scripts/set_active_recipe.sh <name>   # preferred — writes .claude/.env + rebuilds context pack
 ```
 Then fill: `plan.md` → `recipe.yaml` → code files → `notebook_manifest.yaml` → `tasks.md` checkoffs.
 

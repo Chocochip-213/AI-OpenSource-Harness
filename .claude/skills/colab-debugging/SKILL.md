@@ -2,6 +2,11 @@
 name: colab-debugging
 description: Use when a Colab cell fails with ImportError, ModuleNotFoundError, RuntimeError, pip install failure, CUDA version mismatch, OOM / illegal memory access, C extension build failure (spconv/nvdiffrast/flash-attn), .so ABI conflict, xformers/diffusers version conflicts, or when user says "doesn't work in Colab" / "코랩 안 돼". Checks colab-runtimes/runtimes.json for pre-installed package versions before recommending pins. Considers runtime rollback, selective downgrade, SDPA shim, and conda isolation strategies in that order of simplicity. Delegates complex multi-package conflicts to compat-debugger sub-agent.
 allowed-tools: Read Grep Glob Bash
+paths:
+  - recipes/**/requirements*.txt
+  - recipes/**/notebook_manifest.yaml
+  - outputs/notebooks/*.ipynb
+  - colab-runtimes/runtimes.json
 ---
 
 # Skill: colab-debugging

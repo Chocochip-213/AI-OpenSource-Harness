@@ -2,6 +2,10 @@
 name: notebook-builder
 description: Use when the user wants to generate, edit, or regenerate a Colab notebook, mentions notebook_manifest.yaml, asks to add/modify/reorder cells, runs tools/generate_notebook.py, or edits outputs/notebooks/*.ipynb. Supports both extended format (cells list with type/source) and legacy format (install/files/run). Validates that cells list is non-empty before generation and injects fail-fast verification patterns (idempotent cells, pipeline caching, assert-after-replace) learned from real portings.
 allowed-tools: Read Edit Write Bash
+paths:
+  - recipes/**/notebook_manifest.yaml
+  - tools/generate_notebook.py
+  - outputs/notebooks/*.ipynb
 ---
 
 # Skill: notebook-builder

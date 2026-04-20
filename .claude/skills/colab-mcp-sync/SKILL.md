@@ -2,6 +2,11 @@
 name: colab-mcp-sync
 description: Use after a live Colab MCP session to promote cell-level edits that were made in the browser back into the recipe's notebook_manifest.yaml. Triggers on "mcp sync", "manifest 반영", "promote mcp edits", "sync manifest", "콜랩 변경 반영", "노트북 매니페스트 업데이트", or when the user says the live notebook drifted from the manifest. Produces a diff first; applies only on confirmation. Prevents the "Cell X fix 20 commits" drift that killed Ever's trellis2 iteration.
 allowed-tools: Read Edit Write Bash
+paths:
+  - outputs/mcp-sessions/**/latest-cells.json
+  - outputs/mcp-sessions/**/*.cells.json
+  - scripts/colab_mcp_sync.py
+  - recipes/**/notebook_manifest.yaml
 ---
 
 # Skill: colab-mcp-sync
@@ -23,26 +28,21 @@ will silently overwrite them — the exact failure mode that produced Ever's
 
 ## Workflow
 
-### Step 1 — Dump live cells from Colab
-Ask the MCP server for the current notebook state. The exact tool name is
-set by the colab-mcp browser runtime (`notifications/tools/list_changed`);
-typical names are `get_cells`, `list_cells`, or `get_notebook_state`. Call
-it with no arguments.
+### Step 1 — Dump live cells from Colab (auto-saved)
+Call the MCP `get_cells` tool. The PostToolUse hook
+(`.claude/hooks/_mcp_session_log.py`) **auto-saves** the response to
+`outputs/mcp-sessions/<recipe>/latest-cells.json` — you don't need a
+manual Write step.
 
-Write the result to
-`outputs/mcp-sessions/<recipe>/latest-cells.json` as a JSON array whose
-elements have at minimum `name`, `type`, and `source` (and optionally
-`cell_id`). Example:
-
-```json
-[
-  {"name": "A) GPU preflight", "type": "code", "source": "import torch\n…"},
-  {"name": "## Setup", "type": "markdown", "source": "Install dependencies…"},
-  {"name": "B) Install", "type": "code", "source": "!pip install -q …"}
-]
+```
+mcp__colab-mcp__get_cells (cellIndexStart=0, cellIndexEnd=N, includeOutputs=false)
 ```
 
-Use the Write tool (not a shell heredoc — JSON needs exact escaping).
+If the live notebook is large (the Korean Colab welcome page is ~415 KB
+and trips Claude Code's own MAX_MCP_OUTPUT_TOKENS cap), Claude may
+receive a truncated response — the auto-save then writes only the
+truncated cells. To avoid that, always pass a small `cellIndexEnd`
+matching what the manifest expects (sandbox = 4, typical recipe ≤ 10).
 
 ### Step 2 — Run the diff (dry run by default)
 ```bash
@@ -66,20 +66,33 @@ Summarize the diff back to the user:
 
 Do NOT proceed to step 4 without explicit user confirmation.
 
-### Step 4 — Apply
+### Step 4 — Apply (one shot — manifest + .ipynb together)
 ```bash
 uv run python scripts/colab_mcp_sync.py <recipe> --apply
 ```
-A timestamped backup of `notebook_manifest.yaml` is saved alongside (e.g.
-`notebook_manifest.yaml.sync-20260420T0145Z.bak`) so you can revert if the
-rewrite was wrong.
+This now does **two things in one command**:
+1. Rewrites `notebook_manifest.yaml` (timestamped `.bak` backup saved
+   alongside, e.g. `notebook_manifest.yaml.sync-20260420T0145Z.bak`).
+2. Re-runs `tools/generate_notebook.py <recipe>` automatically so the
+   `.ipynb` in `outputs/notebooks/` stays in lock-step with the manifest.
+   Without this auto-regen, the next manual `generate_notebook.py` run
+   (or the next Colab upload) silently undoes the edits we just promoted.
 
-### Step 5 — Verify
+If you intentionally want to inspect the manifest diff before
+regenerating, pass `--no-regen`:
 ```bash
-uv run python tools/generate_notebook.py <recipe>
+uv run python scripts/colab_mcp_sync.py <recipe> --apply --no-regen
+# inspect recipes/<recipe>/notebook_manifest.yaml
+uv run python tools/generate_notebook.py <recipe>   # when ready
 ```
-Regenerates the `.ipynb` from the updated manifest. The output should match
-the live notebook — if it does not, investigate before closing the session.
+
+### Step 5 — Verify the round-trip
+The `--apply` step printed `[generate_notebook] Written: outputs/notebooks/<recipe>.ipynb`
+already. Open that file (or re-upload to Colab) and confirm it matches
+what was running in the live tab. If it doesn't, the most likely culprit
+is a cell rename that the name-align matcher mis-classified as add+remove —
+fix the manifest cell `name` to exactly match the live cell title and
+re-run the sync.
 
 ### Step 6 — Record in SSOT
 - Check off "MCP edits promoted to manifest" in `recipes/<recipe>/docs/tasks.md`

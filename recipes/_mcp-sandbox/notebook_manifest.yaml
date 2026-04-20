@@ -1,0 +1,42 @@
+# _mcp-sandbox — minimal notebook for Phase 2 MCP handshake validation.
+#
+# generate_notebook.py will auto-prepend a GPU preflight cell because
+# recipe.yaml has mcp.enabled: true AND mcp.preferred_gpu: T4. Do NOT add
+# a duplicate preflight here.
+
+title: "_mcp-sandbox — Phase 2 MCP handshake validation"
+
+cells:
+  - name: "B) Import torch"
+    type: code
+    source: |
+      #@title B) Import torch { run: "auto" }
+      import torch
+      print("torch:", torch.__version__)
+      print("cuda available:", torch.cuda.is_available())
+      assert torch.cuda.is_available(), "Expected CUDA runtime — pick a GPU runtime."
+
+  - name: "C) Tiny matmul sanity check"
+    type: code
+    source: |
+      #@title C) Tiny matmul { run: "auto" }
+      import torch
+      x = torch.randn(1024, 1024, device="cuda")
+      y = torch.randn(1024, 1024, device="cuda")
+      z = x @ y
+      print("shape:", tuple(z.shape))
+      print("max abs:", float(z.abs().max()))
+      # Smoke-test summary — intentionally tiny so output stays under
+      # mcp.max_tool_output_tokens (5000) from recipe.yaml.
+
+  - name: "D) Report"
+    type: code
+    source: |
+      #@title D) Report { run: "auto" }
+      import torch
+      print("Device:", torch.cuda.get_device_name(0))
+      print("VRAM free / total (GB):",
+            round(torch.cuda.mem_get_info()[0] / 1e9, 2),
+            "/",
+            round(torch.cuda.mem_get_info()[1] / 1e9, 2))
+      print("Sandbox OK — Phase 2 handshake validated.")

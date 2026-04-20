@@ -1,0 +1,59 @@
+name: _mcp-sandbox
+version: "0.1.0"
+description: "Phase 2 sandbox recipe — the smallest thing that proves Claude → colab-mcp → live Colab works end-to-end. Not a real model port."
+
+recipe_type: colab-notebook
+
+upstream:
+  repo: https://github.com/pytorch/pytorch.git
+  ref: main   # only used for documentation; sandbox imports torch from Colab stock
+
+requirements: requirements_opt1.txt
+main: run.sh
+notebook_manifest: notebook_manifest.yaml
+
+docs:
+  plan: docs/plan.md
+  context: docs/context.md
+  tasks: docs/tasks.md
+
+runtime:
+  # Sandbox minimum — user may pick a larger GPU in Colab's Runtime menu.
+  # The preflight assert cell is a soft check: it warns on mismatch, only
+  # FAILS if VRAM is below vram_min_gb.
+  gpu: T4                 # Free tier default. L4 / A100 / H100 all fine.
+  python: "3.11"
+  disk_gb: 10
+  vram_min_gb: 8          # T4 = 15 GB, L4 = 22 GB, A100 = 40+, H100 = 80
+  colab_version: "2025.07"   # 2025.10 / 2026.01 / 2026.04 also OK for this sandbox
+
+secrets:
+  required: []
+  optional: []
+
+strategy_history:
+  - version: v1
+    name: Direct pip (sandbox)
+    status: untested
+    reason: "minimum surface — imports torch from Colab stock, no extras"
+    date: 2026-04-20
+
+artifacts:
+  notebook: "outputs/notebooks/{name}.ipynb"
+  e2e_results: "outputs/e2e/{name}/"
+  mcp_sessions: "outputs/mcp-sessions/{name}/"
+
+# Phase 2 target: validate the full enforcement stack lights up for real.
+#   - enabled: true     → PreToolUse lets mcp__* through
+#   - auto-exec: false  → Claude must re-confirm each run_cell (by design)
+#   - preferred_gpu: T4 → generate_notebook.py injects a Cell A GPU assert
+#   - keepalive: false  → short session, skip the heartbeat cell
+#   - max output: 5000  → small sandbox, catch any over-budget early
+#   - timeout: 120s     → quick failure surfacing
+mcp:
+  enabled: true
+  allow_auto_execution: false
+  max_tool_output_tokens: 5000
+  preferred_gpu: T4
+  keepalive: false
+  timeout_seconds: 120

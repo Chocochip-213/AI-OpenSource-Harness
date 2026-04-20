@@ -10,7 +10,7 @@ Provide a recipe name and description, then follow these steps.
 1. **Copy template**:
    ```bash
    cp -r recipes/_template recipes/<recipe-name>
-   echo "<recipe-name>" > .claude/last_recipe.txt
+   scripts/set_active_recipe.sh <recipe-name>   # writes .claude/last_recipe.txt + .claude/.env
    ```
 
 2. **Edit the docs triad** — fill in the three SSOT files:

@@ -6,7 +6,7 @@
 
 ## Setup
 - [ ] Copy `_template` → `recipes/<name>/`
-- [ ] `echo "<name>" > .claude/last_recipe.txt` (or `scripts/set_active_recipe.sh <name>`)
+- [ ] `scripts/set_active_recipe.sh <name>` (writes `.claude/last_recipe.txt` + `.claude/.env`)
 - [ ] Update `recipe.yaml` (`upstream.repo`, `upstream.ref` commit SHA, GPU, Python, runtime, `recipe_type`, `secrets`)
 - [ ] Write `docs/plan.md` (goal, scope, target env, success criteria — fill ALL sections, not just Goal)
 - [ ] Write `docs/context.md` **Dependencies** table (package × upstream ver × Colab stock × strategy)

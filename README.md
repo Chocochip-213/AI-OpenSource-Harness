@@ -52,7 +52,7 @@ claude
 
 ```bash
 cp -r recipes/_template recipes/my-model
-echo "my-model" > .claude/last_recipe.txt
+scripts/set_active_recipe.sh my-model     # writes .claude/last_recipe.txt + .claude/.env, rebuilds context pack
 ```
 
 그리고 Claude에게: **"recipes/my-model/docs/plan.md를 편집해줘. [모델명]을 Colab에서 돌리고 싶어."**
@@ -437,7 +437,7 @@ Hooks auto-configure on the first session start:
 
 ```bash
 cp -r recipes/_template recipes/my-model
-echo "my-model" > .claude/last_recipe.txt
+scripts/set_active_recipe.sh my-model     # writes .claude/last_recipe.txt + .claude/.env, rebuilds context pack
 ```
 
 Then tell Claude: **"Edit recipes/my-model/docs/plan.md. I want to run [model name] on Colab."**

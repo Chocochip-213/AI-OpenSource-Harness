@@ -52,7 +52,7 @@ for s in skills:
 ### Add a New Recipe
 ```bash
 cp -r recipes/_template recipes/<name>
-echo "<name>" > .claude/last_recipe.txt
+scripts/set_active_recipe.sh <name>     # preferred — also writes .claude/.env + rebuilds context pack
 # Edit docs/plan.md, then start implementation
 ```
 

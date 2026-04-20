@@ -57,3 +57,12 @@
 Owner: repo maintainer (@user).
 Trigger: 2 consecutive weeks where (a) `_hook_errors.log` shows zero new MCP-related entries AND (b) zero post-sync "manifest differs from live" regressions in any recipe.
 When trigger fires: flip `_template/recipe.yaml:mcp.enabled` default to `true` and update CLAUDE.md to mark MCP as the primary iteration path.
+
+## Phase 2.5 — 4-agent pre-push final audit (2026-04-20 late)
+- [x] Agent #1 regression audit (19 commits) — 19/19 PASS
+- [x] Agent #2 Claude Code spec re-verification — 5 cosmetic mismatches only
+- [x] Agent #3 MCP × harness deep simulation — P1 findings folded into commit `4898bcf`
+- [x] Agent #4 BE/FE code-example quality — P0 + most P1 folded into commit `3707308`
+- [x] Exports regenerated for `_mcp-sandbox` via updated `tools/generate_export.py`
+- [x] Smoke test passes (`uv run python scripts/smoke_test.py`)
+- [x] Live MCP cycle re-run — **skipped by design**: none of the 2 new commits touch MCP hook code paths (`_mcp_monitor.py`, `_mcp_session_log.py`, `mcp-tool-monitor.sh`, `colab_mcp_sync.py` all untouched). Phase 2's real-handshake validation stands.

@@ -117,3 +117,32 @@ PreToolUse audit captured every call with `code` / `content` fields hashed (`<ha
 - [x] Sync round-trip completed (dry-run shown above; real `--apply` saved for post-Phase-2 commit if the user wants to update the manifest)
 
 **Phase 2 done.** Ready to consider Phase 3 (flip `_template/recipe.yaml:mcp.enabled` default to `true`) once two consecutive weeks pass without an MCP-related regression in `_hook_errors.log`.
+
+## 2026-04-20 (late) — 4-agent pre-push audit
+
+Before pushing the 19 unpushed SSAFY-prep commits, ran a 4-agent
+parallel audit (Opus, background) to catch anything brittle:
+
+| Agent | Scope | Result |
+|-------|-------|--------|
+| 1 | Regression vs 19-commit fix-history | 19/19 PASS, 0 regressions |
+| 2 | Claude Code spec re-verification | 5 cosmetic/docs mismatches (no blockers) |
+| 3 | MCP × harness deep simulation | 0 P0, 3 P1 (1 docs contradiction, 1 docs-claims-unimplemented-feature, 1 fail-open gap), 7 P2 |
+| 4 | Spring/Next.js code-example quality | 7 P0 (javac/tsc breakage), 14 P1 (idiomatic), 11 P2 |
+
+Two follow-up commits landed in response:
+- `3707308 fix(exports): BE/FE compile-safe identifiers + Gradio 5.x /call/predict`
+- `4898bcf docs: align harness docs with verified Claude Code spec + real code paths`
+
+Key corrections worth remembering:
+- The Phase 2 "UPDATED via MCP name normalizer" note above was inaccurate —
+  the sync's 2 `modify` hits came from Pass 1 (cell_id) alone, not from any
+  name-suffix stripping. `scripts/colab_mcp_sync.py` has no such normalizer.
+- Colab ships Gradio 5.x; the legacy `POST /run/predict` one-shot is gone.
+  Templates now describe the two-step queued flow
+  (`POST /call/predict` → `event_id` → `GET /call/predict/<event_id>` SSE).
+- `tools/generate_export.py` previously emitted invalid Java/TS identifiers
+  whenever `recipe_name` contained a hyphen or leading underscore (e.g.
+  `_mcp-sandbox` → `public class _mcp-sandboxController`). Now derives
+  `{RECIPE_CLASS_NAME}` (PascalCase) and `{RECIPE_SNAKE_NAME}`.
+

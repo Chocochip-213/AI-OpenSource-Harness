@@ -292,10 +292,16 @@ def _gradio_serve_cell(recipe_name: str) -> dict:
         "        return {'echo': args, 'kwargs': kwargs}\n"
         "\n"
         "# Single-input fallback signature; recipe authors should customize.\n"
-        f"_iface = gr.Interface(fn=infer, inputs='text', outputs='json', title={recipe_name!r})\n"
+        "# api_name='predict' makes the Gradio 4+/5.x HTTP endpoint predictable:\n"
+        "#   POST  <share>/call/predict          -> {'event_id': '...'}\n"
+        "#   GET   <share>/call/predict/<event>  -> SSE stream (msg=process_completed)\n"
+        "# The Spring side follows exactly that two-step flow — see\n"
+        "# exports/INTEGRATION_BACKEND.md for the client snippet.\n"
+        f"_iface = gr.Interface(fn=infer, inputs='text', outputs='json', title={recipe_name!r}, api_name='predict')\n"
         "_app, _local_url, _share_url = _iface.launch(share=True, prevent_thread_lock=True, quiet=True)\n"
         "print(f'AI_GRADIO_URL = {_share_url}')\n"
         "print('Copy that URL into the backend\\'s AI_GRADIO_URL env var.')\n"
+        "print(f'Backend should POST to {_share_url}/call/predict — see exports/INTEGRATION_BACKEND.md.')\n"
     )
     return make_cell("code", source_to_lines(source),
                      cell_id="auto-gradio-serve")

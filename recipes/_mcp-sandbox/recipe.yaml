@@ -32,6 +32,16 @@ artifacts:
   notebook: outputs/notebooks/{name}.ipynb
   e2e_results: outputs/e2e/{name}/
   mcp_sessions: outputs/mcp-sessions/{name}/
+integration:
+  backend_env_var: AI_GRADIO_URL
+  asset_mime: application/json
+  team_channel: '#ai-endpoint'
+  contract_files:
+  - exports/model_card.md
+  - exports/gradio_api.schema.json
+  - exports/inference_handler.py
+  - exports/INTEGRATION_BACKEND.md
+  - exports/INTEGRATION_FRONTEND.md
 mcp:
   enabled: false
   allow_auto_execution: false

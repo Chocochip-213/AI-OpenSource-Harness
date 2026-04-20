@@ -20,7 +20,7 @@ e.g. "Single photo of a person → rigged GLB avatar (gltf 2.0)." -->
 - **JSON schema**: see `gradio_api.schema.json`
 
 ## Runtime requirements
-- **GPU**: `T4` recommended (any Colab GPU with VRAM ≥ `8` GB works)
+- **GPU**: `T4` recommended (any Colab GPU with VRAM >= `8` GB works)
 - **VRAM**: `8` GB minimum (hard check)
 - **Python**: `3.11`
 - **Colab runtime**: `2025.07`
@@ -39,5 +39,13 @@ e.g. "Input shorter than 3 seconds returns empty audio." -->
 
 ## Failure modes the backend must handle
 - **GPU not allocated** (Colab cold-start) → 503-equivalent in Gradio response
-- **Gradio share URL expired** (Colab session ended) → reconnect SOP in `INTEGRATION_BACKEND.md`
-- **Out of VRAM** (input too large) → 413-equivalent
+- **Gradio share URL expired** (Colab session ended) → reconnect procedure in `INTEGRATION_BACKEND.md`; URL rotation posted to `#ai-endpoint`
+- **Out of VRAM** (input too large) → `413 Payload Too Large`-equivalent
+- **SSE stream truncated** — upstream crashed mid-inference before emitting `msg: process_completed`. Backend should surface as `502 Bad Gateway`.
+
+## Breaking-change policy
+Version bumps marked `major` (e.g. `0.1.0 → 1.0.0`) WILL change the JSON
+schema. Minor bumps (`0.1.0 → 0.2.0`) may add response fields but never
+change the meaning of existing ones. SOP: post diff to `#ai-endpoint` +
+1-week advance notice before merging a major-bump tag to the shared
+`AI/develop` branch.

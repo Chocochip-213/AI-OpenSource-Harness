@@ -16,10 +16,8 @@ single-function so all wrappers stay trivial.
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 
-# ---- Lazy globals — model is loaded once per process ----
 _model: Any = None
 _loaded: bool = False
 
@@ -36,6 +34,7 @@ def _load_model() -> Any:
     if _loaded:
         return _model
     # Example placeholder:
+    # import os
     # import torch
     # from transformers import AutoModel, AutoProcessor
     # processor = AutoProcessor.from_pretrained(os.environ.get("MODEL_ID", "<hf-id>"))
@@ -53,10 +52,17 @@ def infer(*args: Any, **kwargs: Any) -> Any:
     it stable, or bump `recipe.yaml:version` when it changes. The Gradio
     cell + `gradio_api.schema.json` are generated from this signature.
 
-    Recipe authors: replace this stub with real logic. Document the
-    request/response shape in `model_card.md` and `gradio_api.schema.json`.
+    Recipe authors: replace this stub with real logic AND narrow the
+    signature (e.g. `def infer(prompt: str, max_tokens: int = 256) -> dict:`).
+    Document the request/response shape in `model_card.md` and
+    `gradio_api.schema.json`.
     """
-    _ = _load_model()
+    model = _load_model()
+    assert model is not None, (
+        "Recipe author: _load_model() still returns None. Fill in the "
+        "model-loading code before serving — the echo stub is for the "
+        "template only."
+    )
     # <!-- FILL — replace with real inference -->
     # Example:
     #   model, processor = _model
@@ -68,10 +74,16 @@ def infer(*args: Any, **kwargs: Any) -> Any:
     return {"echo": list(args), "kwargs": kwargs}
 
 
-# ---- Local CLI (compatibility only — team plan: never actually run locally) ----
 if __name__ == "__main__":
     import json
     import sys
+    if sys.stdin.isatty():
+        print(
+            "Usage: echo '{\"args\": [...], \"kwargs\": {...}}' | "
+            "python -m inference_handler",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     raw = sys.stdin.read().strip() or "{}"
     payload = json.loads(raw)
     args = payload.get("args", [])

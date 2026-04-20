@@ -70,6 +70,10 @@ integration:
   #   "image/png", "image/jpeg", "model/gltf-binary" (GLB), "application/json"
   #   "video/mp4", "audio/wav"
   asset_mime: "application/json"
+  # Team channel for URL rotation + schema-change announcements.
+  # SSAFY override: "Mattermost: AI-Endpoint" / GitLab MR reviewers /
+  # whatever your team uses instead of Slack.
+  team_channel: "#ai-endpoint"
   # Spring/Next.js teams pull these files from exports/ as the contract.
   # Listed here so a `tasks.md` checklist can verify they exist.
   contract_files:

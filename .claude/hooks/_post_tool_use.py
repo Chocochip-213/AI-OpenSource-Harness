@@ -26,6 +26,13 @@ def log_error(msg: str) -> None:
         ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(ERROR_LOG, "a", encoding="utf-8") as f:
             f.write(f"{datetime.now(timezone.utc).isoformat()} [post_tool_use] {msg}\n")
+        try:
+            if ERROR_LOG.stat().st_size > 50_000:
+                lines = ERROR_LOG.read_text(encoding="utf-8").splitlines()
+                if len(lines) > 500:
+                    ERROR_LOG.write_text("\n".join(lines[-300:]) + "\n", encoding="utf-8")
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -61,7 +68,9 @@ def main() -> int:
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            # ensure_ascii=True for the same lone-surrogate safety reason as
+            # _mcp_monitor — file paths can contain Windows Git Bash CJK.
+            f.write(json.dumps(entry, ensure_ascii=True) + "\n")
     except Exception as e:
         log_error(f"write failed: {e}")
         return 0

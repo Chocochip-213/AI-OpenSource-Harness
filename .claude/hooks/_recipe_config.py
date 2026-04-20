@@ -25,6 +25,15 @@ from typing import Any, Dict
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 LAST_RECIPE_FILE = REPO_ROOT / ".claude" / "last_recipe.txt"
 
+
+def session_id_file_for(recipe: str) -> Path:
+    """Per-recipe session-id file. Splitting prevents cross-recipe contamination
+    when the user switches `last_recipe.txt` while an MCP session is open —
+    each recipe's PostToolUse log stays paired with its own session id.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", recipe) or "_default"
+    return REPO_ROOT / ".claude" / f"_mcp_session_{safe}.txt"
+
 MCP_DEFAULTS: Dict[str, Any] = {
     "enabled": False,
     "allow_auto_execution": False,

@@ -40,19 +40,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ERROR_LOG = REPO_ROOT / ".claude" / "_hook_errors.log"
 LAST_RECIPE_FILE = REPO_ROOT / ".claude" / "last_recipe.txt"
-SESSION_ID_FILE = REPO_ROOT / ".claude" / "_mcp_session.txt"
 
 # Re-use redaction helpers from the PreToolUse monitor so behavior stays aligned.
 sys.path.insert(0, str(Path(__file__).parent))
 try:
     from _mcp_monitor import redact, SENSITIVE_VALUE_RES, FULL_VALUE_POISONS  # type: ignore
-    from _recipe_config import active_recipe_config, MCP_DEFAULTS  # type: ignore
+    from _recipe_config import active_recipe_config, MCP_DEFAULTS, session_id_file_for  # type: ignore
 except Exception as _imp_err:  # pragma: no cover - defensive
     redact = None  # type: ignore
     SENSITIVE_VALUE_RES = []  # type: ignore
     FULL_VALUE_POISONS = None  # type: ignore
     active_recipe_config = None  # type: ignore
     MCP_DEFAULTS = {}  # type: ignore
+    session_id_file_for = None  # type: ignore
     _import_error = _imp_err
 else:
     _import_error = None
@@ -81,17 +81,26 @@ def active_recipe() -> str:
     return "_template"
 
 
-def get_session_id(tool: str) -> str:
-    """Return the current session id. Reset to a fresh one whenever a new
-    connection is opened (the browser handshake tool)."""
+def get_session_id(tool: str, recipe: str) -> str:
+    """Return the current session id for a given recipe. Reset to a fresh one
+    whenever a new connection is opened (the browser handshake tool).
+
+    Per-recipe session file: `.claude/_mcp_session_<recipe>.txt`. Splitting
+    prevents the previous bug where switching recipes mid-session caused
+    PostToolUse to attribute a new recipe's call to the prior recipe's id.
+    """
     now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    session_file = (
+        session_id_file_for(recipe) if callable(session_id_file_for)
+        else REPO_ROOT / ".claude" / f"_mcp_session_{recipe}.txt"
+    )
     if tool.endswith("open_colab_browser_connection"):
-        SESSION_ID_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SESSION_ID_FILE.write_text(now, encoding="utf-8")
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.write_text(now, encoding="utf-8")
         return now
-    if SESSION_ID_FILE.exists():
+    if session_file.exists():
         try:
-            sid = SESSION_ID_FILE.read_text(encoding="utf-8").strip()
+            sid = session_file.read_text(encoding="utf-8").strip()
             if sid:
                 return sid
         except Exception as e:
@@ -118,7 +127,9 @@ def _stringify_output(result) -> str:
     if isinstance(result, str):
         return result
     try:
-        return json.dumps(result, ensure_ascii=False, default=str)
+        # ensure_ascii=True so lone surrogates from Windows Git Bash (CJK
+        # input) don't blow up the dump. Same reasoning as in _mcp_monitor.
+        return json.dumps(result, ensure_ascii=True, default=str)
     except Exception:
         return str(result)
 
@@ -151,7 +162,7 @@ def main() -> int:
     else:
         recipe = active_recipe()
         mcp_cfg = dict(MCP_DEFAULTS)
-    session_id = get_session_id(tool)
+    session_id = get_session_id(tool, recipe)
 
     tool_input = payload.get("tool_input") or {}
     tool_result = payload.get("tool_response")
@@ -213,9 +224,36 @@ def main() -> int:
     try:
         session_log.parent.mkdir(parents=True, exist_ok=True)
         with open(session_log, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            # ensure_ascii=True — same Windows Git Bash CJK lone-surrogate
+            # safety as the audit log.
+            f.write(json.dumps(entry, ensure_ascii=True) + "\n")
     except Exception as e:
         log_error(f"session log write failed: {e}")
+
+    # Auto-save get_cells responses to latest-cells.json so /colab-mcp-sync
+    # can run without an extra "Write the dump to disk" step from Claude.
+    # This closes the manifest-first loop: Colab live → get_cells →
+    # latest-cells.json (here) → colab_mcp_sync.py --apply → manifest +
+    # regenerated .ipynb. Only saves when the response actually has cells
+    # (skips cold/error responses).
+    if tool.endswith("get_cells") and isinstance(tool_result, dict):
+        cells = tool_result.get("cells")
+        if isinstance(cells, list) and cells:
+            latest = REPO_ROOT / "outputs" / "mcp-sessions" / recipe / "latest-cells.json"
+            try:
+                latest.parent.mkdir(parents=True, exist_ok=True)
+                # Save the raw colab-mcp shape — colab_mcp_sync.cells_from_live
+                # already unwraps {"cells": [...]} via its dict-or-list check.
+                latest.write_text(
+                    json.dumps(tool_result, ensure_ascii=True, indent=2),
+                    encoding="utf-8",
+                )
+                log_error(
+                    f"auto-saved latest-cells.json (cells={len(cells)}, "
+                    f"recipe={recipe}) — /colab-mcp-sync ready"
+                )
+            except Exception as e:
+                log_error(f"latest-cells.json save failed: {e}")
     return 0
 
 

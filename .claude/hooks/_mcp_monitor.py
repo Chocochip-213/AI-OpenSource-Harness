@@ -97,6 +97,14 @@ def log_error(msg: str) -> None:
         ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(ERROR_LOG, "a", encoding="utf-8") as f:
             f.write(f"{datetime.now(timezone.utc).isoformat()} [mcp_monitor] {msg}\n")
+        # Bound the error log so a runaway hook doesn't fill disk.
+        try:
+            if ERROR_LOG.stat().st_size > 50_000:
+                lines = ERROR_LOG.read_text(encoding="utf-8").splitlines()
+                if len(lines) > 500:
+                    ERROR_LOG.write_text("\n".join(lines[-300:]) + "\n", encoding="utf-8")
+        except Exception:
+            pass
     except Exception:
         pass  # never crash the hook on error-log write failure
 
@@ -170,6 +178,34 @@ def main() -> int:
 
     recipe, mcp_cfg = active_recipe_config()
 
+    def _audit(status: str, extra: dict | None = None) -> None:
+        """Append one redacted line to the audit log. Used for both allowed
+        and blocked calls so post-mortem reviewers can answer "what was
+        blocked, when?" without joining two log files.
+
+        ensure_ascii=True is intentional: Windows Git Bash forwards lone
+        surrogates (\\udcXX) for CJK input, which json.dumps refuses to
+        encode as utf-8 — that previously dropped audit lines silently.
+        """
+        try:
+            tool_input = payload.get("tool_input") or {}
+            redacted = redact("", tool_input) if callable(redact) else "<redact unavailable>"
+            entry = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "recipe": recipe,
+                "tool": tool,
+                "status": status,
+                "input": redacted,
+            }
+            if extra:
+                entry.update(extra)
+            LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=True) + "\n")
+            rotate_log()
+        except Exception as e:
+            log_error(f"audit write failed for {tool}: {e}")
+
     # --- Gate 1: opt-in check ---
     if not mcp_cfg.get("enabled"):
         msg = (
@@ -179,6 +215,7 @@ def main() -> int:
         )
         sys.stderr.write(f"[hook:mcp_monitor] {msg}\n")
         log_error(f"blocked (gate=enabled): {tool} (recipe={recipe})")
+        _audit("blocked", {"gate": "enabled"})
         return 2
 
     # --- Gate 2: auto-execution consent ---
@@ -197,24 +234,11 @@ def main() -> int:
         )
         sys.stderr.write(f"[hook:mcp_monitor] {msg}\n")
         log_error(f"blocked (gate=auto_exec): {tool} (recipe={recipe})")
+        _audit("blocked", {"gate": "auto_exec"})
         return 2
 
-    # --- Log redacted call ---
-    try:
-        tool_input = payload.get("tool_input") or {}
-        redacted = redact("", tool_input)
-        entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "recipe": recipe,
-            "tool": tool,
-            "input": redacted,
-        }
-        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        rotate_log()
-    except Exception as e:
-        log_error(f"write/redact failed for {tool}: {e}")
+    # --- Log redacted call (allowed) ---
+    _audit("allowed")
     return 0
 
 

@@ -1,40 +1,34 @@
 #!/usr/bin/env bash
-# Hook: PostToolUse — track edited files for NoMessLeftBehind verification
-# Single python invocation to minimize overhead (runs on EVERY tool call)
-set -euo pipefail
+# PostToolUse hook — track Edit/Write/NotebookEdit calls.
+# Thin wrapper. Logic lives in .claude/hooks/_post_tool_use.py.
+set -u
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-LOG_FILE="$REPO_ROOT/.claude/_edited_files.log"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && (pwd -W 2>/dev/null || pwd))"
+ERROR_LOG="$REPO_ROOT/.claude/_hook_errors.log"
 
-# Single python call: parse payload, check tool, write log entry
-cat | uv run python -c "
-import sys, json
-from datetime import datetime, timezone
-from pathlib import Path
+INPUT="$(cat 2>/dev/null || true)"
+[ -z "$INPUT" ] && exit 0
 
-log_file = Path('$LOG_FILE')
+PY=""
+if   command -v uv       >/dev/null 2>&1; then PY="uv run python"
+elif command -v python3  >/dev/null 2>&1; then PY="python3"
+elif command -v python   >/dev/null 2>&1; then PY="python"
+else
+  mkdir -p "$REPO_ROOT/.claude"
+  printf '%s [post-tool-use] WARN no python runtime — hook skipped\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$ERROR_LOG"
+  exit 0
+fi
 
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
+# 1) Normal Edit/Write/NotebookEdit tracking.
+printf '%s' "$INPUT" | $PY "$REPO_ROOT/.claude/hooks/_post_tool_use.py"
 
-tool = d.get('tool_name', '')
-if tool not in ('Edit', 'Write', 'NotebookEdit'):
-    sys.exit(0)
-
-inp = d.get('tool_input', {})
-fp = inp.get('file_path', inp.get('notebook_path', ''))
-if not fp:
-    sys.exit(0)
-
-entry = json.dumps({
-    'ts': datetime.now(timezone.utc).isoformat(),
-    'tool': tool,
-    'file': fp,
-})
-with open(log_file, 'a', encoding='utf-8') as f:
-    f.write(entry + '\n')
-" 2>/dev/null || true
+# 2) MCP tool completion capture (session log). Fast-bail for non-MCP tools
+#    so we don't pay the python startup cost for every tool call.
+case "$INPUT" in
+  *'"tool_name"'*'"mcp__'*)
+    printf '%s' "$INPUT" | $PY "$REPO_ROOT/.claude/hooks/_mcp_session_log.py"
+    ;;
+esac
 
 exit 0

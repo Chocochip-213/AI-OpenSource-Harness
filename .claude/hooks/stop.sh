@@ -1,10 +1,29 @@
 #!/usr/bin/env bash
-# Hook: Stop — NoMessLeftBehind verification (lightweight)
+# Hook: Stop — NoMessLeftBehind verification (lightweight).
 # Only runs checks if files were edited this session.
-set -euo pipefail
+set -u
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && (pwd -W 2>/dev/null || pwd))"
 cd "$REPO_ROOT"
+ERROR_LOG="$REPO_ROOT/.claude/_hook_errors.log"
+
+# --- Infinite loop guard (GitHub #10205) ---
+# If Claude re-triggered Stop while we're still inside a Stop hook,
+# skip immediately to prevent recursion. Read hook payload from stdin once.
+INPUT="$(cat 2>/dev/null || true)"
+if [ -n "$INPUT" ] && printf '%s' "$INPUT" | grep -q '"stop_hook_active"[[:space:]]*:[[:space:]]*true'; then
+  echo "[hook:stop] stop_hook_active=true — skipping to prevent recursion." >&2
+  exit 0
+fi
+
+# Graceful skip when uv not present.
+if ! command -v uv >/dev/null 2>&1; then
+  mkdir -p "$REPO_ROOT/.claude"
+  printf '%s [stop] WARN uv not found — Stop checks skipped\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$ERROR_LOG"
+  echo "[hook:stop] uv not installed — skipping compile/smoke checks. Install uv to enable." >&2
+  exit 0
+fi
 
 LOG_FILE="$REPO_ROOT/.claude/_edited_files.log"
 ERRORS=0
@@ -35,15 +54,19 @@ if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
 
   # (c) refresh context pack
   echo "[hook:stop] Refreshing context pack..." >&2
-  uv run python scripts/make_context_pack.py 2>&1 || true
+  uv run python scripts/make_context_pack.py 2>&1 \
+    || printf '%s [stop] make_context_pack failed\n' \
+       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$ERROR_LOG"
 
   echo "[hook:stop] Tip: consider running 'ruff format .' or 'black .' on edited files." >&2
 
   # Clear the edit log for next session
-  > "$LOG_FILE"
+  : > "$LOG_FILE"
 else
   echo "[hook:stop] No file edits tracked — skipping heavy checks." >&2
-  uv run python scripts/make_context_pack.py 2>&1 || true
+  uv run python scripts/make_context_pack.py 2>&1 \
+    || printf '%s [stop] make_context_pack failed\n' \
+       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$ERROR_LOG"
 fi
 
 if [ "$ERRORS" -gt 0 ]; then

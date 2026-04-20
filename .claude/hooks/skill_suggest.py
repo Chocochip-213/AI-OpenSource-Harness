@@ -144,17 +144,11 @@ def main():
     # Build additionalContext output
     lines = []
 
-    # Resume state injection (highest priority — appears first)
-    if has_resume:
-        try:
-            resume_content = resume_path.read_text(encoding="utf-8").strip()
-            if resume_content:
-                lines.append("[Resume State — from /fresh-start, read this FIRST]")
-                lines.append(resume_content)
-                lines.append("[/Resume State]")
-                lines.append("")
-        except Exception:
-            pass
+    # Resume state is NOT injected here — make_context_pack.py already inlines
+    # _resume_state.md into .claude/CLAUDE.md, and Claude Code auto-loads that
+    # on every turn. Double-injection (context pack + additionalContext) burns
+    # ~30 lines of tokens per turn and creates a "two sources" reconciliation
+    # trap where Claude picks one and ignores the other. Single-channel wins.
 
     # Skill suggestions — actionable but not mandatory. Seleznov's own
     # 650-trial study shows stacking imperative "MUST call" hook text on

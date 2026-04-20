@@ -114,27 +114,6 @@
       "hint": "Run /session-end to save all context, commit, push, and generate a handoff prompt."
     },
     {
-      "name": "pre-compact",
-      "description": "Pre-compact preparation: persist critical context before auto-compact triggers",
-      "keywords": [
-        "pre-compact", "compact", "context save",
-        "컴팩트", "맥락정리", "컨텍스트",
-        "context full", "context limit", "token limit",
-        "맥락 부족", "압축", "축약",
-        "auto-compact", "auto compact"
-      ],
-      "intentPatterns": [
-        "(?i)(pre[\\s-]?compact|before.*compact)",
-        "(?i)(context|맥락|컨텍스트).*(full|limit|가득|부족|정리|저장|save)",
-        "(?i)compact.*전에",
-        "(?i)(save|persist|preserve).*context"
-      ],
-      "pathPatterns": [],
-      "priority": 3,
-      "enforcement": "suggest",
-      "hint": "Run /pre-compact to persist critical context to files and get a recommended /compact summary."
-    },
-    {
       "name": "colab-mcp-sync",
       "description": "Promote MCP-side notebook edits back into notebook_manifest.yaml",
       "keywords": [
@@ -179,15 +158,16 @@
     },
     {
       "name": "fresh-start",
-      "description": "Save context to SSOT docs, then /clear for a clean slate (better than repeated /compact)",
+      "description": "Save context to SSOT docs, then /clear for a clean slate (better than repeated /compact). Also covers /pre-compact intent — /pre-compact skill retired 2026-04-20 as redundant with PreCompact hook.",
       "keywords": [
         "fresh-start", "clear", "fresh start", "clean slate",
         "auto-compact", "auto compact", "autocompact",
-        "context window", "context limit",
+        "pre-compact", "compact", "compact 전에",
+        "context window", "context limit", "token limit",
         "새로 시작", "깨끗하게", "클리어", "초기화",
-        "context poisoning", "맥락 오염",
-        "컨텍스트 부족", "컨텍스트 한계", "토큰 부족",
-        "compact 얼마", "곧 compact"
+        "context poisoning", "맥락 오염", "컨텍스트", "컴팩트",
+        "컨텍스트 부족", "컨텍스트 한계", "토큰 부족", "맥락 부족",
+        "compact 얼마", "곧 compact", "압축", "축약"
       ],
       "intentPatterns": [
         "(?i)(fresh[\\s-]?start|clean\\s*slate)",

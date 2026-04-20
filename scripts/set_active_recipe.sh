@@ -54,6 +54,11 @@ lines = [
     f"export CLAUDE_ACTIVE_RECIPE={recipe}",
     f"export MCP_TIMEOUT={timeout_ms}",
     f"export MAX_MCP_OUTPUT_TOKENS={max_out}",
+    # 1h prompt-cache TTL. Claude Code's 2026-03-06 default reverted to 5m,
+    # causing 17-26% cost inflation on real workloads (GH #46829, #48082).
+    # Critical coupling bug (GH #45381): ANTHROPIC_DISABLE_TELEMETRY=true
+    # SILENTLY disables this 1h TTL — do NOT set that env var here.
+    "export ENABLE_PROMPT_CACHING_1H=true",
     "",
 ]
 out.write_text("\n".join(lines), encoding="utf-8")

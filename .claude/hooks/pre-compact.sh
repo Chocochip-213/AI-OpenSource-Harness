@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Hook: PreCompact — auto-save critical context to SSOT before compaction
-# lossy-summarizes. Runs /pre-compact skill logic automatically so even if
-# auto-compact fires without user intervention, SSOT docs + resume state
-# stay current.
+# lossy-summarizes. Deterministic safety net (the /pre-compact skill was
+# retired 2026-04-20 as redundant with this hook — community audit found
+# skill-level prose duplicated what the hook already does).
 #
 # Non-blocking: always exit 0 so compaction proceeds.
 set -u
@@ -38,10 +38,11 @@ TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 {
   echo "## Auto-saved Pre-Compact State"
   echo ""
-  echo "Saved: $TS (UTC) — triggered by PreCompact hook"
+  echo "Recipe: $RECIPE"
+  echo "Saved: $TS"
+  echo "Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
   echo ""
-  echo "## Active Recipe"
-  echo "$RECIPE"
+  echo "(Auto-saved by PreCompact hook — format matches /fresh-start so make_context_pack.py staleness check works.)"
   echo ""
   echo "## Uncommitted Changes"
   echo '```'
@@ -64,7 +65,7 @@ TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   echo "  1. This file ($RESUME)"
   echo "  2. SSOT docs: recipes/$RECIPE/docs/{plan,context,tasks}.md"
   echo "  3. Context pack: .claude/CLAUDE.md"
-  echo "- For finer control next time, run /pre-compact skill manually before /compact."
+  echo "- For finer control next time, run /fresh-start before /compact (2026-04-20 retired /pre-compact skill — hook-only now)."
 } > "$RESUME"
 
 echo "[hook:pre-compact] Saved resume state + rebuilt context pack before compaction." >&2

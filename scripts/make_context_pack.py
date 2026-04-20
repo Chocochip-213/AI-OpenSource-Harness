@@ -67,11 +67,29 @@ def build_context_pack(repo: Path) -> str:
         sections.append(f"Changed files:\n```\n{git_diff_stat}\n```\n")
 
     # --- Resume state (written by /fresh-start skill) ---
+    # Stale-check: if the resume state was saved for a different recipe than
+    # the one now active, it's leftover from a recipe switch — skip it to
+    # prevent hallucinated reconciliation between two states.
     resume_path = repo / ".claude" / "_resume_state.md"
     if resume_path.exists():
-        sections.append("## Resume State (from /fresh-start)\n")
-        sections.append(read_file_safe(resume_path, max_lines=40))
-        sections.append("")
+        raw = resume_path.read_text(encoding="utf-8", errors="replace")
+        saved_for = None
+        for line in raw.splitlines()[:10]:
+            if line.lower().startswith("recipe:"):
+                saved_for = line.split(":", 1)[1].strip()
+                break
+        if saved_for and saved_for != recipe:
+            sections.append(
+                f"## Resume State — IGNORED (stale: saved for `{saved_for}`, active `{recipe}`)\n"
+                f"A `_resume_state.md` exists but its `Recipe:` header does not match "
+                f"the current active recipe. It is NOT being loaded into this context. "
+                f"Delete `.claude/_resume_state.md` or re-run `/fresh-start` after "
+                f"switching back to `{saved_for}` if that was intentional.\n"
+            )
+        else:
+            sections.append("## Resume State (from /fresh-start)\n")
+            sections.append(read_file_safe(resume_path, max_lines=40))
+            sections.append("")
 
     if not has_changes:
         sections.append("## Git Status\n")

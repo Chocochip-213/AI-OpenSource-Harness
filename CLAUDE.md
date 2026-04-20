@@ -82,29 +82,9 @@ scripts/set_active_recipe.sh --current       # show active recipe
 | `/colab-mcp` | live colab, mcp run, 코랩 실행 | Drive a live Colab runtime via colab-mcp (opt-in per recipe) |
 | `/colab-mcp-sync` | mcp sync, manifest 반영 | Promote MCP-side cell edits back into notebook_manifest.yaml |
 | `/session-end` | session end, handoff | Wrap up: docs + memory + commit + push + handoff prompt |
-| `/pre-compact` | compact, context full | Persist critical context before auto-compact |
-| `/fresh-start` | clear, fresh start, context poisoning | Save to SSOT + /clear for clean restart |
+| `/fresh-start` | clear, fresh start, context poisoning, compact | Save to SSOT + /clear for clean restart. **Covers compact intent** — the `/pre-compact` skill was retired 2026-04-20 as redundant with the PreCompact hook (deterministic, always runs). |
 
-### `/session-end`
-1. Update SSOT docs (context.md, tasks.md)
-2. Update memory files
-3. Context pack rebuild
-4. Git commit + push
-5. Generate handoff prompt for next session
-
-### `/pre-compact`
-1. Identify critical conversation context
-2. Persist to docs and memory files
-3. Suggest optimal `/compact <summary>` command
-
-### `/fresh-start`
-`/compact` 반복보다 `/clear` + SSOT 재읽기가 안정적. compact는 lossy summary 누적으로 맥락 오염 위험.
-1. 미저장 맥락을 SSOT docs에 저장
-2. Context pack 재생성
-3. `/clear` 후 붙여넣을 resume 프롬프트 생성
-4. 사용자가 `/clear` 실행 후 프롬프트 붙여넣기 → SSOT 기반 clean restart
-
-> **Rule**: context가 커졌을 때 `/compact` 대신 `/fresh-start`를 권장. SSOT에 모든 맥락이 영속화되어 있으므로 유실 없음.
+Auto-compact protection is hook-based: `PreCompact` fires before any `/compact` (manual or auto) and auto-writes `.claude/_resume_state.md` + rebuilds the context pack. `/fresh-start` is the user-facing preferred path — `/clear` + SSOT reload is lossless vs `/compact`'s lossy summarization (GH anthropics/claude-code #46602 documents compact summarizer hallucinating fabricated user directives).
 
 ## Sub-Agents (`.claude/agents/`)
 
@@ -216,6 +196,16 @@ instead of Git Bash. This causes hooks to hang or silently fail. If hooks misbeh
 The `/session-end` skill uses explicit paths only. `git add -A` / `git add .` can
 accidentally stage `.env`, credentials, or other untracked sensitive files. See
 `.claude/skills/session-end/SKILL.md` for the vetted staging list.
+
+### 1h prompt-cache TTL + telemetry coupling bug (2026-03 regression)
+`scripts/set_active_recipe.sh` emits `export ENABLE_PROMPT_CACHING_1H=true` into
+`.claude/.env`. Claude Code's 2026-03-06 update silently reverted the default
+TTL from 1h to 5m — real workloads saw 17-26% cost inflation until the env var
+was restored (GH anthropics/claude-code #46829, #48082). **Do NOT also set
+`ANTHROPIC_DISABLE_TELEMETRY=true`** — that flag has a coupling bug (GH #45381)
+that re-disables the 1h TTL even when `ENABLE_PROMPT_CACHING_1H=true` is set.
+Pick one: either 1h cache (keep telemetry on) or telemetry off (accept 5m TTL
++ 17-26% cost inflation).
 
 ## Colab Runtime Reference
 

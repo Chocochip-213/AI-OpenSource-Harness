@@ -83,6 +83,74 @@ def main() -> int:
     except Exception as e:
         log_error(f"rotate failed: {e}")
 
+    # Docs-discipline reminder: if Claude just edited a code/config file under
+    # recipes/<active>/ but has NOT yet touched the SSOT docs (context.md or
+    # tasks.md) of that recipe THIS session, emit a gentle additionalContext
+    # nudge. Deterministic — does not rely on Claude remembering the SSOT rule
+    # in CLAUDE.md:23 (which the 4-agent research showed is unreliable under
+    # context pressure). Pure read of the existing _edited_files.log; no new
+    # state. Silent on false-positive paths (template edits, test files, etc.).
+    try:
+        recipe_file = REPO_ROOT / ".claude" / "last_recipe.txt"
+        if recipe_file.exists():
+            recipe = recipe_file.read_text(encoding="utf-8").strip()
+        else:
+            recipe = ""
+        norm = fp.replace("\\", "/")
+        repo_prefix = str(REPO_ROOT).replace("\\", "/")
+        if norm.startswith(repo_prefix):
+            rel = norm[len(repo_prefix):].lstrip("/")
+        else:
+            rel = norm
+        recipe_code_prefix = f"recipes/{recipe}/" if recipe else ""
+        recipe_docs_prefix = f"recipes/{recipe}/docs/"
+        is_recipe_code = (
+            recipe
+            and rel.startswith(recipe_code_prefix)
+            and not rel.startswith(recipe_docs_prefix)
+            and not rel.startswith(f"recipes/{recipe}/exports/")  # regenerated, not authored
+        )
+        if is_recipe_code:
+            # Check: has Claude touched context.md or tasks.md of this recipe
+            # in the last ~200 log entries (covers one session)?
+            touched_docs = False
+            if LOG_FILE.exists():
+                try:
+                    tail = LOG_FILE.read_text(encoding="utf-8").splitlines()[-200:]
+                    for line in tail:
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        rec_path = (rec.get("file") or "").replace("\\", "/")
+                        if rec_path.startswith(repo_prefix):
+                            rec_path = rec_path[len(repo_prefix):].lstrip("/")
+                        if (
+                            rec_path.startswith(recipe_docs_prefix)
+                            and rec_path.endswith((".md",))
+                            and rec_path.split("/")[-1] in ("context.md", "tasks.md")
+                        ):
+                            touched_docs = True
+                            break
+                except Exception:
+                    pass
+            if not touched_docs:
+                hint = (
+                    f"[docs-discipline] You edited `{rel}` but haven't touched "
+                    f"`recipes/{recipe}/docs/context.md` or `tasks.md` yet this "
+                    f"session. At the next natural break, record the decision or "
+                    f"checkoff — CLAUDE.md:23 SSOT rule. Deferring to /session-end "
+                    f"risks losing mid-session reasoning."
+                )
+                print(json.dumps({
+                    "hookSpecificOutput": {
+                        "hookEventName": "PostToolUse",
+                        "additionalContext": hint,
+                    }
+                }))
+    except Exception as e:
+        log_error(f"docs-discipline reminder failed: {e}")
+
     return 0
 
 

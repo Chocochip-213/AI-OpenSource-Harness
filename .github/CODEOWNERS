@@ -1,0 +1,30 @@
+# CODEOWNERS — required reviewers for high-risk paths.
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# When this harness is dropped into the SSAFY monorepo (`<repo>/ai/`), copy
+# the relevant rules into the monorepo's CODEOWNERS, prefixed with `ai/`.
+# This standalone file is the source of truth for the harness alone.
+
+# === Default — anyone can review docs / general changes ===
+*                                @Chocochip-213
+
+# === Executable config (CVE-2025-59536 family — both spawn child processes
+#     on session start; a malicious PR is arbitrary code execution) ===
+.mcp.json                        @Chocochip-213
+.claude/settings.json            @Chocochip-213
+.claude/hooks/                   @Chocochip-213
+.github/                         @Chocochip-213
+.github/CODEOWNERS               @Chocochip-213
+
+# === Harness core (cascade impact: change here propagates to every recipe) ===
+recipes/_template/               @Chocochip-213
+.claude/skill-rules.json         @Chocochip-213
+.claude/agents/                  @Chocochip-213
+.claude/skills/                  @Chocochip-213
+CLAUDE.md                        @Chocochip-213
+scripts/                         @Chocochip-213
+tools/                           @Chocochip-213
+
+# === Generated / synced content — owners override required ===
+uv.lock                          @Chocochip-213
+colab-runtimes/                  @Chocochip-213

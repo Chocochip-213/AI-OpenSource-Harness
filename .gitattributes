@@ -1,0 +1,32 @@
+# .gitattributes — merge / line-ending / language hints.
+# Matters most when this harness lives inside a multi-OS team monorepo
+# (Windows + Mac + Linux contributors).
+
+# Line endings — keep LF in repo; convert on Windows checkout for shells.
+*               text=auto eol=lf
+*.sh            text eol=lf
+*.bat           text eol=crlf
+*.ps1           text eol=crlf
+
+# Append-only by team convention — `merge=union` lets git keep both sides
+# automatically instead of producing conflict markers.
+.gitignore                          merge=union
+docs/COMMON_ERRORS.md               merge=union
+docs/PORTING_PATTERNS.md            merge=union
+
+# Generated lockfiles — collapse the diff in code review, take ours on
+# merge conflict, then regenerate locally with `uv lock`.
+uv.lock                             linguist-generated=true merge=ours
+
+# Security-sensitive: any merge conflict on these MUST be resolved by hand
+# (we keep ours, then maintainer cherry-picks intended changes from the
+# incoming side). Prevents an attacker who controls a PR from quietly
+# slipping in hook-command changes on a 3-way merge resolution.
+.mcp.json                           merge=ours
+.claude/settings.json               merge=ours
+.claude/hooks/_mcp_monitor.py       merge=ours
+.claude/hooks/_mcp_session_log.py   merge=ours
+
+# Notebook diffs — content-aware merge driver if nbdime is installed
+# (`uv run nbdime config-git --enable`). No-op otherwise.
+*.ipynb                             merge=jupyternotebook diff=jupyternotebook

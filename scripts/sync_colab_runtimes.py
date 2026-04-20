@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 UPSTREAM_URL = "https://github.com/googlecolab/backend-info.git"
@@ -378,11 +379,24 @@ def main():
 
         # 3. Summary markdown
         summary_md = generate_summary_md(runtimes)
+        sync_header = (
+            f"<!-- Last synced: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} "
+            f"by scripts/sync_colab_runtimes.py -->\n"
+        )
         with open(output_dir / "SUMMARY.md", "w", encoding="utf-8") as f:
-            f.write(summary_md)
+            f.write(sync_header + summary_md)
 
         # 4. AI-consumable context file (compact, for CLAUDE.md or context packs)
-        context_lines = ["# Colab Runtime Quick Reference (auto-generated)", ""]
+        sync_ts = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        latest_ver = sorted(runtimes.keys(), reverse=True)[0] if runtimes else "?"
+        context_lines = [
+            "# Colab Runtime Quick Reference (auto-generated)",
+            "",
+            f"> **Last synced**: {sync_ts} (UTC) — latest runtime in this snapshot: `{latest_ver}`",
+            "> Colab updates runtimes ~monthly. If `{today} - Last synced > 30d`, re-run:",
+            "> `python scripts/sync_colab_runtimes.py`",
+            "",
+        ]
         for version in sorted(runtimes.keys(), reverse=True):
             d = runtimes[version]
             os_info = d["os"]

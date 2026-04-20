@@ -6,10 +6,7 @@ description: |
   - User asks "how should we approach X?" or "what's the plan?"
   - Architecture decisions need to be recorded in context.md
   - Task breakdown needed for a complex recipe
-allowed_tools:
-  - Read
-  - Glob
-  - Grep
+tools: Read, Glob, Grep
 ---
 
 # Plan Architect Agent

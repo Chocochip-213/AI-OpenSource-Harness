@@ -1,3 +1,9 @@
+---
+name: fresh-start
+description: Use when context window is getting full, user says "/compact 대신", mentions "맥락 오염", "context pollution", "auto-compact soon", "fresh start", "clean slate", or the conversation has become slow/inaccurate after long work. Saves current in-progress state to .claude/_resume_state.md (based on git diff, not tasks.md speculation), rebuilds context pack, then instructs user to run /clear. After /clear, context pack auto-loads via CLAUDE.md. Battle-tested: prefer this over /compact because repeated compaction accumulates lossy summaries.
+allowed-tools: Read Edit Write Bash
+---
+
 # Skill: fresh-start
 
 ## When to Use

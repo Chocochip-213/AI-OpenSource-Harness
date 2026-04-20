@@ -1,3 +1,9 @@
+---
+name: pre-compact
+description: Use when the user anticipates /compact (manual or auto), says "compact 전에", "맥락 정리", "context almost full", "pre-compact", or auto-compact is imminent. Persists critical context (decisions, error-fix pairs, in-progress state) to SSOT docs and memory files BEFORE compaction lossy-summarizes them. Then generates a recommended /compact summary. NOTE: For long-running sessions, prefer /fresh-start over /compact — file-based recovery has no pollution risk. This skill exists as a fallback when compaction is unavoidable.
+allowed-tools: Read Edit Write Bash
+---
+
 # Skill: pre-compact
 
 ## When to Use

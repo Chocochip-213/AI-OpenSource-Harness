@@ -56,6 +56,27 @@ Check docs/COMMON_ERRORS.md first; add new entries there if generalizable.
 |------|------|------------|
 |      |      |            |
 
+## Decision Log (reversals allowed)
+<!-- Ever lesson: porting difficulty judgements change mid-work.
+Record reversals so "we already decided X" doesn't block re-evaluation.
+Format:
+  2026-03-15 | Initial: too hard to integrate | reason: pipeline dep chain unknown
+  2026-03-22 | Reversed: integration works    | reason: shim-v2 resolved spconv conflict
+-->
+| Date | Decision / Reversal | Reason |
+|------|---------------------|--------|
+|      |                     |        |
+
+## Artifact Locations
+<!-- Prevent "leaked to repo root" bugs (Ever trellis2_pinned_5565 incident).
+List every output directory this recipe writes to.
+-->
+| Path | Contents | Gitignored? |
+|------|----------|-------------|
+| `outputs/notebooks/<name>.ipynb` | Generated Colab notebook | Yes |
+| `outputs/e2e/<name>/` | Per-cell inference outputs | Yes |
+
 ---
 > Record decisions here as they happen. Every decision should have a "why" — not just "what."
 > Failed experiments are as valuable as successes. Document what didn't work and why.
+> Reversals are expected — add to Decision Log rather than editing the original.

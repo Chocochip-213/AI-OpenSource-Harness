@@ -2,9 +2,15 @@ name: _template
 version: "0.1.0"
 description: "Template recipe. Copy to recipes/<name>/ to start."
 
+# Recipe type — how the model is served.
+# - colab-notebook: One-shot Colab execution (default for most recipes)
+# - local-server:   Long-running GPU server (e.g. masking_server, API endpoint)
+# - hybrid:         Both — Colab for experiment, local server for production
+recipe_type: colab-notebook
+
 upstream:
   repo: https://github.com/org/repo.git
-  ref: main  # Pin to commit SHA after first successful test
+  ref: main  # Pin to commit SHA after first successful test (prevents upstream drift)
 
 requirements: requirements_opt1.txt
 main: run.sh
@@ -20,3 +26,63 @@ runtime:
   python: "3.11"
   disk_gb: 20
   vram_min_gb: 24
+  colab_version: "2025.07"  # null = any; or "2025.07" / "2026.01" / "2026.04" — check colab-runtimes/SUMMARY.md
+
+# Secrets required at runtime. NEVER hardcode these in recipe files.
+# Notebook should read from env vars (getpass.getpass or google.colab.userdata).
+# Pre-commit hook scans for accidental commits of values matching these keys.
+secrets:
+  required: []   # e.g. [HF_TOKEN]  — notebook will fail if missing
+  optional: []   # e.g. [NGROK_AUTHTOKEN, WANDB_API_KEY]  — notebook runs without but some features disabled
+
+# Strategy history — populated as porting progresses.
+# Each failure → add entry. Keeps the "why we ended up at vN" trail.
+strategy_history: []
+# Example entry:
+#   - version: v1
+#     name: Direct pip
+#     status: failed
+#     reason: "spconv-cu124 .so conflict with Colab's pre-loaded libcudart"
+#     date: 2026-03-10
+#   - version: v2d
+#     name: Conda Isolation
+#     status: success
+#     reason: "condacolab 0.1.8 + runtime 2025.07 resolved ABI"
+#     date: 2026-03-12
+
+# Artifact paths (recipe-scoped — all under recipes/<name>/ or outputs/).
+# Use this to prevent artifact leak (Ever lesson: trellis2_pinned_5565/ leaked to repo root).
+artifacts:
+  notebook: "outputs/notebooks/{name}.ipynb"   # {name} is replaced with recipe name
+  e2e_results: "outputs/e2e/{name}/"           # Cell-level outputs (gitignored)
+  mcp_sessions: "outputs/mcp-sessions/{name}/" # MCP execution logs (gitignored)
+
+# Colab MCP integration — OPT-IN per recipe.
+# Every field below is live-enforced. See docs/MCP_INTEGRATION.md for details.
+#
+# Important constraints (NOT fixable by config):
+#   - Python 3.13 isolated via uvx (your venv unaffected)
+#   - Single WebSocket connection at a time (one recipe at a time)
+#   - First call pops a browser tab — not headless/CI-safe
+#   - No OAuth token management — uses your browser's Colab session
+mcp:
+  # Gate 1: overall opt-in. PreToolUse hook blocks mcp__* with exit 2 when false.
+  enabled: false
+  # Gate 2: when false, run/execute/exec-family MCP tools are blocked with exit 2
+  # so Claude must confirm each code-execution with the user.
+  allow_auto_execution: false
+  # Enforced by .claude/hooks/_mcp_session_log.py — exceeding this budget
+  # (chars/4 estimate) records an 'output_over_budget' flag and a warning in
+  # .claude/_hook_errors.log. Also emitted as MAX_MCP_OUTPUT_TOKENS in
+  # .claude/.env by scripts/set_active_recipe.sh.
+  max_tool_output_tokens: 10000
+  # Enforced by tools/generate_notebook.py — injects a Cell A that asserts
+  # torch.cuda.get_device_name(0) matches this value. Catches Colab's silent
+  # A100→L4 downgrades during peak hours.
+  preferred_gpu: null             # A100 | V100 | L4 | T4 | null
+  # Enforced by tools/generate_notebook.py — injects a daemon-thread heartbeat
+  # cell that resets Colab's 90-min idle timer.
+  keepalive: false
+  # Enforced by scripts/set_active_recipe.sh — written as MCP_TIMEOUT (ms) to
+  # .claude/.env. `source .claude/.env && claude` applies it.
+  timeout_seconds: 300

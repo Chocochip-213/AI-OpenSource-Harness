@@ -5,11 +5,7 @@ description: |
   - A recipe's code files are completed and need review before commit
   - User asks for code review, quality check, or "is this ready?"
   - Multiple files were edited and need consistency verification
-allowed_tools:
-  - Read
-  - Glob
-  - Grep
-  - Bash
+tools: Read, Glob, Grep, Bash
 ---
 
 # Code Reviewer Agent

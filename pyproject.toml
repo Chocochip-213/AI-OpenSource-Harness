@@ -1,0 +1,16 @@
+[project]
+name = "ai-oss-harness"
+version = "0.1.0"
+description = "Claude Code harness for porting open-source AI models to Google Colab."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+# Runtime dependencies the harness's own scripts/tools need.
+# This does NOT include dependencies used inside recipes themselves.
+dependencies = [
+  "pyyaml>=6.0",
+]
+
+[tool.uv]
+# Keep the dev env lean — no testing deps yet.
+package = false

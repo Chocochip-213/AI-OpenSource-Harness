@@ -1,3 +1,9 @@
+---
+name: recipe-authoring
+description: Use when the user creates a new recipe, scaffolds a new model porting project, copies recipes/_template, edits recipes/<name>/docs/{plan,context,tasks}.md, modifies recipe.yaml, or mentions "recipe", "template", "SSOT", "plan.md", "context.md", or "tasks.md". Also use proactively when user describes a new OSS model they want to port to Colab. Enforces the SSOT triad protocol — always read plan/context/tasks before editing, and update tasks.md after every completed step.
+allowed-tools: Read Edit Write Glob Grep Bash
+---
+
 # Skill: recipe-authoring
 
 ## When Active

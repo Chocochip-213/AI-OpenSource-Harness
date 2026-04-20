@@ -8,11 +8,7 @@ description: |
   - Package version mismatches between local and Colab environments
   - Native C extension build failures
   - User mentions "doesn't work in Colab" or similar
-allowed_tools:
-  - Read
-  - Glob
-  - Grep
-  - Bash
+tools: Read, Glob, Grep, Bash
 ---
 
 # Compatibility Debugger Agent

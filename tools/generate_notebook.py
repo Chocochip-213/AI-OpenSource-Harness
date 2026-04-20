@@ -242,17 +242,34 @@ def generate_notebook(recipe_name: str, out_path: Path | None = None) -> Path:
         cells.insert(insert_at, _keepalive_cell())
         print("[generate_notebook] Injected keepalive cell (mcp.keepalive: true).")
 
-    # GPU type from manifest or default
-    gpu_type = manifest.get("gpu_type", "A100")
-    # Colab gpuClass mapping: "premium" = A100/V100, "standard" = T4, "high-memory" = L4
-    # Reference: Colab's own generated .ipynb metadata (as of 2026.04)
+    # GPU type resolution order (SSOT-first):
+    #   1. notebook_manifest.yaml:gpu_type — explicit override wins
+    #   2. recipe.yaml:mcp.preferred_gpu  — what MCP is about to assert against
+    #   3. recipe.yaml:runtime.gpu        — declared runtime target
+    #   4. "A100" fallback
+    # Prevents drift where the recipe says "T4" but the notebook metadata
+    # quietly recommends A100 because no one set manifest.gpu_type.
+    _mcp_pref = mcp_cfg.get("preferred_gpu") if isinstance(mcp_cfg, dict) else None
+    _rt_gpu = runtime_cfg.get("gpu") if isinstance(runtime_cfg, dict) else None
+    gpu_type = (
+        manifest.get("gpu_type")
+        or _mcp_pref
+        or _rt_gpu
+        or "A100"
+    )
+    # Colab gpuClass mapping (observed on Colab-generated .ipynb, 2026.04).
+    # Users pick the actual runtime in Runtime > Change runtime type; this
+    # metadata only seeds the default suggestion.
     gpu_class_map = {
-        "A100": "premium",
-        "V100": "premium",
-        "L4": "premium",
-        "T4": "standard",
+        "H100": "premium",   # Pro+ tier (added 2026)
+        "A100": "premium",   # Pro tier (40 / 80 GB variants allocated by Colab)
+        "L4": "premium",     # Pro tier
+        "V100": "premium",   # legacy — rarely allocated on current runtimes
+        "T4": "standard",    # Free / Pro tier
         "CPU": "standard",
     }
+    # Unknown GPU tag → assume "premium" so Colab doesn't downrank to T4;
+    # the preflight assert cell still checks the actual allocation at runtime.
     gpu_class = gpu_class_map.get(gpu_type, "premium")
 
     notebook = {

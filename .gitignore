@@ -11,8 +11,14 @@ build/
 Thumbs.db
 .claude/_edited_files.log
 .claude/_skill_suggest.log
+.claude/_mcp_tool_calls.log
+.claude/_hook_errors.log
+.claude/_mcp_session.txt
 .claude/_context_pack.md
 .claude/_resume_state.md
 .claude/CLAUDE.md
 .claude/settings.local.json
+.claude/last_recipe.txt
+.claude/.env
+.mcp.json.local
 outputs/

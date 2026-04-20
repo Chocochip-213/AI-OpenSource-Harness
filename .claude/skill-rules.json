@@ -135,6 +135,49 @@
       "hint": "Run /pre-compact to persist critical context to files and get a recommended /compact summary."
     },
     {
+      "name": "colab-mcp-sync",
+      "description": "Promote MCP-side notebook edits back into notebook_manifest.yaml",
+      "keywords": [
+        "mcp sync", "colab mcp sync", "manifest 반영", "manifest sync",
+        "promote mcp edits", "sync manifest", "콜랩 변경 반영", "노트북 매니페스트 업데이트",
+        "mcp 결과 반영", "cell promotion", "promote cells"
+      ],
+      "intentPatterns": [
+        "(?i)mcp.*sync",
+        "(?i)promote.*(cell|manifest|mcp)",
+        "(?i)(콜랩|colab).*(변경|수정).*(반영|동기|업데이트)",
+        "(?i)(manifest|매니페스트).*(sync|동기|반영|업데이트)",
+        "(?i)/colab-mcp-sync"
+      ],
+      "pathPatterns": ["outputs/mcp-sessions/**/latest-cells.json", "outputs/mcp-sessions/**/*.cells.json"],
+      "priority": 17,
+      "enforcement": "suggest",
+      "hint": "Run AFTER a /colab-mcp session to promote live Colab cell edits back into notebook_manifest.yaml. Dry-run first; apply only after diff review.",
+      "injectFiles": []
+    },
+    {
+      "name": "colab-mcp",
+      "description": "Drive a live Colab runtime via colab-mcp server (opt-in per recipe)",
+      "keywords": [
+        "colab mcp", "colab-mcp", "mcp run", "run on colab", "live colab",
+        "iterate cells", "interactive colab", "execute notebook live",
+        "코랩 MCP", "코랩에서 실행", "live 실행", "셀 실행", "노트북 실행",
+        "mcp connect", "open colab", "브라우저 연결"
+      ],
+      "intentPatterns": [
+        "(?i)(run|execute|start|iterate).*(colab|코랩).*(live|mcp|실행|iterate)",
+        "(?i)(mcp).*(colab|run|연결|connect)",
+        "(?i)(코랩|colab).*(연결|실행|라이브|live|mcp)",
+        "(?i)open_colab_browser_connection",
+        "(?i)/colab-mcp"
+      ],
+      "pathPatterns": ["recipes/**/recipe.yaml", ".mcp.json", "outputs/mcp-sessions/**"],
+      "priority": 18,
+      "enforcement": "suggest",
+      "hint": "Verify recipe.yaml mcp.enabled=true before invoking. See docs/MCP_INTEGRATION.md for constraints (single-connection, browser required, Python 3.13 isolated via uvx).",
+      "injectFiles": []
+    },
+    {
       "name": "fresh-start",
       "description": "Save context to SSOT docs, then /clear for a clean slate (better than repeated /compact)",
       "keywords": [

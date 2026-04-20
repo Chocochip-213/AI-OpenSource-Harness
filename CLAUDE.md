@@ -34,6 +34,17 @@ Every recipe lives under `recipes/<recipe>/` and its **docs triad** is the SSOT:
 The file `.claude/last_recipe.txt` holds the name of the currently active recipe.
 Scripts and hooks read this to know which recipe's docs to consult.
 
+Switch between recipes with the helper (rebuilds context pack automatically):
+```bash
+scripts/set_active_recipe.sh <recipe-name>   # switch
+scripts/set_active_recipe.sh --list          # list available recipes
+scripts/set_active_recipe.sh --current       # show active recipe
+```
+
+> **Multi-recipe rule**: only one recipe is "active" at a time — the SSOT docs triad
+> of the active recipe is what Claude reads on session start. When working on
+> several recipes in one day, switch explicitly with the helper.
+
 ## Standard Commands
 
 | Command | Description |
@@ -45,9 +56,10 @@ Scripts and hooks read this to know which recipe's docs to consult.
 ## Hooks (auto-configured in `.claude/settings.json`)
 
 - **SessionStart** → `session-start.sh` → rebuilds context pack
-- **UserPromptSubmit** → `userprompt-submit.sh` → skill auto-suggestion (skill-rules.json matching)
-- **PostToolUse** → `post-tool-use.sh` → tracks edited files to `_edited_files.log`
-- **Stop** → `stop.sh` → NoMessLeftBehind validation (compileall + smoke_test + context_pack)
+- **UserPromptSubmit** → `userprompt-submit.sh` → skill auto-suggestion (skill-rules.json matching) + resume-state injection
+- **PostToolUse** → `post-tool-use.sh` → tracks edited files to `_edited_files.log` (auto-rotates at 1000 entries)
+- **PreCompact** → `pre-compact.sh` → auto-saves SSOT + `_resume_state.md` BEFORE compaction (lossy summary safety net)
+- **Stop** → `stop.sh` → NoMessLeftBehind validation (compileall + smoke_test + context_pack); `stop_hook_active` guard prevents recursion (GH #10205)
 
 ## Skills
 
@@ -85,11 +97,17 @@ Scripts and hooks read this to know which recipe's docs to consult.
 
 ## Sub-Agents (`.claude/agents/`)
 
+Frontmatter follows Claude Code spec: `name`, `description`, `tools` (space-separated).
+Claude auto-delegates based on `description` matching current task.
+
 | Agent | Role | Auto-delegate when |
 |-------|------|--------------------|
-| `code-reviewer` | Code review, consistency | Code complete, before commit, "review" |
-| `compat-debugger` | Install/package conflicts | pip fail, ImportError, Colab issues |
-| `plan-architect` | SSOT docs creation | New recipe, architecture decisions |
+| `code-reviewer` | Code review, consistency, NoMessLeftBehind | Multiple files edited, before commit, user asks "review" / "ready to ship?" |
+| `compat-debugger` | Dependency/ABI resolution | `pip install` fails, `ImportError`, CUDA mismatch, C-ext build fail, "doesn't work in Colab" |
+| `plan-architect` | SSOT scaffolding, architecture decisions | New recipe, user asks "how should we approach X?" / "what's the plan?" |
+
+> To force delegation: use Task tool with `subagent_type: <agent-name>`. Claude otherwise
+> judges from `description`. Agents receive an isolated context — parent sees only their final summary.
 
 ## NoMessLeftBehind (diet103-lite)
 
@@ -102,9 +120,72 @@ Stop hook checks `_edited_files.log` and runs (only if edits exist):
 
 ```bash
 cp -r recipes/_template recipes/<new-name>
-echo "<new-name>" > .claude/last_recipe.txt
+scripts/set_active_recipe.sh <new-name>   # atomically switches active recipe + rebuilds context pack
 # Edit recipes/<new-name>/docs/plan.md to define the goal
 ```
+
+## Colab MCP Integration (opt-in)
+
+The repo's `.mcp.json` pins [googlecolab/colab-mcp @ v1.0.2](https://github.com/googlecolab/colab-mcp)
+so Claude Code can drive a live Colab runtime (cell CRUD + execution) instead
+of the manual "regenerate → upload → retest" loop.
+
+**Authoritative docs**: `docs/MCP_INTEGRATION.md` (SSOT). This section only summarizes
+workflow entry points — do not copy content back from there.
+
+### Flow
+1. `scripts/set_active_recipe.sh <recipe>` — writes `.claude/.env` with the
+   recipe's `mcp.timeout_seconds` and `max_tool_output_tokens` as MCP envs.
+2. `source .claude/.env && claude` — starts Claude with those envs applied.
+3. `recipes/<recipe>/recipe.yaml` must have `mcp.enabled: true`. The PreToolUse
+   hook `_mcp_monitor.py` blocks every `mcp__*` call with exit 2 otherwise.
+4. `/colab-mcp` — opens the Colab tab and iterates cells. Every call is
+   redacted and appended to `.claude/_mcp_tool_calls.log`; tool output is
+   captured to `outputs/mcp-sessions/<recipe>/<session>.jsonl`.
+5. `/colab-mcp-sync <recipe>` — before session end, diffs live notebook
+   against `notebook_manifest.yaml` and promotes the edits (with user review).
+
+### What is enforced automatically
+- `mcp.enabled` — PreToolUse gate
+- `mcp.allow_auto_execution` — PreToolUse blocks `run_cell`/`execute_*`/`exec_*` when false
+- `mcp.preferred_gpu` — `generate_notebook.py` auto-injects a Cell A that asserts GPU match
+- `mcp.keepalive` — `generate_notebook.py` auto-injects a daemon-thread heartbeat cell
+- `mcp.max_tool_output_tokens` — PostToolUse flags over-budget outputs in `_hook_errors.log`
+- `mcp.timeout_seconds` — exported as `MCP_TIMEOUT` (ms) via `.claude/.env`
+- Secret redaction — 16 known-bypass payload tests pass; see `_mcp_monitor.py`
+
+### Verify setup
+```bash
+uvx --from git+https://github.com/googlecolab/colab-mcp@v1.0.2 colab-mcp --help  # first run ~60s
+claude mcp list                                                                    # expect: colab-mcp registered
+```
+
+## Security & Platform Notes
+
+### `.claude/settings.json` AND `.mcp.json` are both executable (CVE-2025-59536)
+Both files spawn child processes on session start. Treat **any PR that modifies
+either file** with the same scrutiny as code changes that could exec on CI:
+- `.claude/settings.json` runs shell hooks (SessionStart, PreToolUse, etc.).
+- `.mcp.json` spawns MCP server subprocesses; a malicious `command` or `args`
+  is arbitrary code execution with your Google/Colab session rights.
+
+Recommended: add both paths to `CODEOWNERS` so merges require reviewer approval.
+Keep contributor-specific overrides in `.claude/settings.local.json` and
+`.mcp.json.local` (both gitignored) — never commit personal hook/server
+commands to the shared files.
+
+### Windows bash.exe hazard (GH #37634)
+On Windows, `bash` in `PATH` may resolve to WSL's stub (`C:\Windows\System32\bash.exe`)
+instead of Git Bash. This causes hooks to hang or silently fail. If hooks misbehave:
+- Verify with `where bash` — Git Bash should appear first
+- Fallback: edit `.claude/settings.json` to use absolute path, e.g.
+  `"command": "\"C:/Program Files/Git/bin/bash.exe\" .claude/hooks/stop.sh"`
+- Ensure `.bashrc` / `.zshrc` don't echo text unconditionally — it pollutes hook JSON.
+
+### Never `git add -A` in automation
+The `/session-end` skill uses explicit paths only. `git add -A` / `git add .` can
+accidentally stage `.env`, credentials, or other untracked sensitive files. See
+`.claude/skills/session-end/SKILL.md` for the vetted staging list.
 
 ## Colab Runtime Reference
 

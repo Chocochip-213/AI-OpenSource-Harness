@@ -14,6 +14,7 @@ Thumbs.db
 .claude/_mcp_tool_calls.log
 .claude/_hook_errors.log
 .claude/_mcp_session.txt
+.claude/_mcp_session_*.txt
 .claude/_context_pack.md
 .claude/_resume_state.md
 .claude/CLAUDE.md

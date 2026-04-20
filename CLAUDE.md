@@ -64,7 +64,7 @@ scripts/set_active_recipe.sh --current       # show active recipe
 
 ## Skills
 
-`UserPromptSubmit` hook matches prompts against `.claude/skill-rules.json` and auto-suggests relevant skills.
+`UserPromptSubmit` hook matches prompts against `.claude/skill-rules.json` and auto-suggests relevant skills. `skill-rules.json` is a **harness-local convention** read by the hook — it is NOT a first-class Claude Code feature. Claude Code itself discovers skills via `.claude/skills/*/SKILL.md` frontmatter (`description`, `paths`). The harness adds `skill-rules.json` on top as extra keyword-to-skill hints surfaced at prompt-submit time.
 
 | Skill | Trigger | Description |
 |-------|---------|-------------|
@@ -100,7 +100,7 @@ scripts/set_active_recipe.sh --current       # show active recipe
 
 ## Sub-Agents (`.claude/agents/`)
 
-Frontmatter follows Claude Code spec: `name`, `description`, `tools` (space-separated).
+Frontmatter follows Claude Code spec: `name`, `description`, `tools` (comma-separated list — e.g. `Read, Glob, Grep`).
 Claude auto-delegates based on `description` matching current task.
 
 | Agent | Role | Auto-delegate when |
@@ -182,12 +182,17 @@ identically in both modes.
 
 ## Security & Platform Notes
 
-### `.claude/settings.json` AND `.mcp.json` are both executable (CVE-2025-59536)
+### `.claude/settings.json` AND `.mcp.json` are both executable on session start
 Both files spawn child processes on session start. Treat **any PR that modifies
 either file** with the same scrutiny as code changes that could exec on CI:
 - `.claude/settings.json` runs shell hooks (SessionStart, PreToolUse, etc.).
 - `.mcp.json` spawns MCP server subprocesses; a malicious `command` or `args`
   is arbitrary code execution with your Google/Colab session rights.
+
+CVE-2025-59536 (patched in Claude Code 1.0.111) is an adjacent trust-dialog
+bypass — worth knowing about but not specifically about the two files above
+being executable. The rule "review every change to settings.json / .mcp.json"
+stands regardless of that CVE.
 
 Recommended: add both paths to `CODEOWNERS` so merges require reviewer approval.
 Keep contributor-specific overrides in `.claude/settings.local.json` and

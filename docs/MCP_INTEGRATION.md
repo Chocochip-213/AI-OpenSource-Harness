@@ -152,9 +152,12 @@ export MCP_TIMEOUT=600000         # 10 minutes — allows pip install of large p
 export MAX_MCP_OUTPUT_TOKENS=10000 # cap per-tool output to avoid context bloat
 ```
 
-Put these in your shell profile and restart `claude`. The `recipe.yaml:mcp.*`
-fields with similar names are informational only; they do **not** propagate
-to Claude Code today.
+You rarely need to set these by hand — `scripts/set_active_recipe.sh`
+reads `recipe.yaml:mcp.timeout_seconds` + `mcp.max_tool_output_tokens`
+and writes the same two values to `.claude/.env` as `MCP_TIMEOUT` (ms)
+and `MAX_MCP_OUTPUT_TOKENS`. `source .claude/.env && claude` propagates
+them into the Claude Code process. The shell-profile path above is only
+for users who skip the helper.
 
 ### Per-recipe enablement (opt-in)
 

@@ -34,7 +34,7 @@
 
 ## Manifest sync round-trip
 - [x] Live cells dumped via `mcp__colab-mcp__get_cells` → `outputs/mcp-sessions/_mcp-sandbox/latest-cells.json`
-- [x] `uv run python scripts/colab_mcp_sync.py _mcp-sandbox` (dry-run) → `same=0 modify=2 add=1 remove=1` (B's "UPDATED via MCP" suffix dropped via name normalizer; C name mismatch "Tiny matmul" vs "Tiny matmul sanity check" drove add+remove — exactly how name-align works when cell_ids don't overlap)
+- [x] `uv run python scripts/colab_mcp_sync.py _mcp-sandbox` (dry-run) → `same=0 modify=2 add=1 remove=1`. The 2 `modify` hits came from Pass 1 (cell_id alignment), not from any name normalization — the sync script does not have a suffix normalizer, so B's "UPDATED via MCP" rename was tolerated only because its cell_id was already in the manifest. The 3rd cell had no cell_id overlap, and its name differed ("Tiny matmul" vs "Tiny matmul sanity check"), so Pass 2 name-align missed and it surfaced as add + remove. This is the correct documented behaviour of the 4-pass aligner; no normalizer to add.
 - [x] Diff reviewed; intentionally NOT applied — manifest stays as the canonical sandbox spec.
 
 ## Post-mortem

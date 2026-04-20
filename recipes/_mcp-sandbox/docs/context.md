@@ -96,7 +96,7 @@ Full dynamic-tool sweep against a real Colab runtime (A100-SXM4-40GB allocated d
 | 5 | flip `allow_auto_execution: true` → `run_code_cell` × 3 | `torch 2.10.0+cu128`, matmul `(1024,1024) max=147.83`, `Device: NVIDIA A100-SXM4-40GB`, VRAM 41.82/42.41 GB, `Sandbox OK — Phase 2 handshake validated.` |
 | 6 | `update_cell(qNfaazRk3puh, ...)` + re-run | new line `[update_cell test] this line was added by /colab-mcp` showed up in stdout — update propagated correctly |
 | 7 | `delete_cell(lIYdn1woOS1n)` | empty cell removed |
-| 8 | `get_cells` → `latest-cells.json` → `colab_mcp_sync.py _mcp-sandbox` (dry-run) | diff produced cleanly: `same=0 modify=2 add=1 remove=1` (B's UPDATED suffix dropped via sync's name normalizer; C name mismatch "Tiny matmul" vs "Tiny matmul sanity check" drove add+remove — not a bug, just shows the sync uses name align) |
+| 8 | `get_cells` → `latest-cells.json` → `colab_mcp_sync.py _mcp-sandbox` (dry-run) | diff produced cleanly: `same=0 modify=2 add=1 remove=1`. Correction after 2026-04-21 code re-read: the 2 `modify` hits came from Pass 1 (cell_id alignment), NOT from any name normalizer — `scripts/colab_mcp_sync.py` has no "UPDATED via MCP" suffix stripping. The 3rd cell surfaced as add+remove because names differed ("Tiny matmul" vs "Tiny matmul sanity check") and cell_ids did not overlap, so Pass 2 name-align missed. Working as designed. |
 
 PreToolUse audit captured every call with `code` / `content` fields hashed (`<hash:ebe4b60dd719 len:…>`), `cell_id` left in clear (it's an opaque identifier, not a secret). PostToolUse session log captured every output (`output_len: 28..173` — all under the 5000-token budget so `output_over_budget: false` correctly throughout this run).
 

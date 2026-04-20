@@ -1,6 +1,7 @@
 {
   "mcpServers": {
     "colab-mcp": {
+      "type": "stdio",
       "command": "uvx",
       "args": [
         "--from",

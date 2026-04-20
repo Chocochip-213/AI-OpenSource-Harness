@@ -239,6 +239,11 @@ def main() -> int:
     ap.add_argument("--session", help="Specific session id (file: <session>.cells.json)")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="Print full source for added cells")
+    ap.add_argument("--no-regen", action="store_true",
+                    help="Skip the post-apply `generate_notebook.py <recipe>` call. "
+                         "Default: --apply automatically regenerates the .ipynb so "
+                         "manifest and notebook stay in lock-step (otherwise the "
+                         "sync only updates the YAML and the .ipynb drifts).")
     args = ap.parse_args()
 
     recipe_dir = REPO_ROOT / "recipes" / args.recipe
@@ -302,6 +307,31 @@ def main() -> int:
     new_manifest = rebuild_manifest(manifest, live)
     atomic_write_yaml(manifest_path, new_manifest)
     print(f"\nApplied. Backup: {backup.relative_to(REPO_ROOT)}")
+
+    # Post-apply: regenerate the .ipynb so manifest and notebook stay in
+    # lock-step. Without this, the next `generate_notebook.py` run (or the
+    # next Colab upload) would silently undo all the edits we just promoted.
+    # `--no-regen` exists for the rare case where the user wants to inspect
+    # the manifest diff first before regenerating.
+    if args.no_regen:
+        print("Skipped notebook regeneration (--no-regen). "
+              f"Run `uv run python tools/generate_notebook.py {args.recipe}` "
+              "manually to refresh outputs/notebooks/.")
+        return 0
+    import subprocess
+    print(f"\nRegenerating notebook (use --no-regen to skip)...")
+    proc = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "tools" / "generate_notebook.py"), args.recipe],
+        capture_output=True, text=True,
+    )
+    sys.stdout.write(proc.stdout)
+    sys.stderr.write(proc.stderr)
+    if proc.returncode != 0:
+        print(f"WARN: notebook regeneration failed (exit={proc.returncode}). "
+              f"Manifest WAS updated; .ipynb may be stale. "
+              f"Re-run `uv run python tools/generate_notebook.py {args.recipe}` "
+              "after fixing the cause.", file=sys.stderr)
+        return 0  # don't fail the sync — manifest is already on disk
     return 0
 
 

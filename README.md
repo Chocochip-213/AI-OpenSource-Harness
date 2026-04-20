@@ -17,10 +17,12 @@ GitHub에서 흥미로운 AI 오픈소스 모델을 발견했을 때, Colab에�
 - 환경 제약 (런타임 초기화, 디스크 제한, 세션 타임아웃)
 
 이 하네스는 그 과정을 구조화하고 자동화합니다:
-- **레시피 시스템** — 모델별 포팅 프로젝트를 체계적으로 관리
-- **노트북 생성기** — YAML 매니페스트 -> Colab `.ipynb` 자동 생성
-- **Claude Code 훅** — 자동 검증, 스킬 추천, 맥락 관리
+- **레시피 시스템** — 모델별 포팅 프로젝트를 체계적으로 관리 (SSOT 문서 3종)
+- **노트북 생성기** — YAML 매니페스트 → Colab `.ipynb` 자동 생성 (GPU preflight / Gradio serve 자동 주입)
+- **Claude Code 훅** — 자동 검증, 스킬 추천, 맥락 관리, `/clear` 후 자동 복구
 - **Colab 런타임 추적** — Colab 런타임별 패키지 버전 자동 수집 및 비교
+- **Live Colab 이터레이션** — `colab-mcp` 통합으로 노트북 재업로드 없이 브라우저 런타임을 직접 제어 (opt-in per recipe)
+- **Exports 계약** — Spring/Next.js 팀이 recipe의 `exports/`에서 바로 가져갈 수 있는 타입 안전한 통합 문서 + JSON Schema + 핸들러
 
 ## 빠른 시작
 
@@ -72,36 +74,56 @@ Colab에 업로드하고 테스트!
 
 ```
 AI-OpenSource-Harness/
-├── .claude/                      # Claude Code 인프라
-│   ├── hooks/                    # 라이프사이클 훅 (4개)
-│   ├── skills/                   # 슬래시 명령 정의 (6개)
-│   ├── agents/                   # 서브에이전트 정의 (3개)
-│   ├── settings.json             # 훅 설정
-│   └── skill-rules.json          # 스킬 매칭 규칙
+├── .claude/                       # Claude Code 인프라
+│   ├── hooks/                     # 라이프사이클 훅 (8개 이벤트 + 보조 스크립트)
+│   ├── skills/                    # 슬래시 명령 정의 (8개)
+│   ├── agents/                    # 서브에이전트 정의 (3개)
+│   ├── settings.json              # 훅 설정 (CODEOWNERS-보호)
+│   ├── settings.local.json        # 로컬 오버라이드 (gitignored)
+│   └── skill-rules.json           # 하네스 고유: 스킬 매칭 키워드 힌트
+├── .mcp.json                      # colab-mcp 서버 등록 (opt-in, CODEOWNERS-보호)
+├── .github/
+│   ├── CODEOWNERS                 # .mcp.json / settings.json / hooks 병합 리뷰 강제
+│   └── workflows/
+│       └── sync-colab-runtimes.yml # 일일 자동 동기화
+├── .gitattributes                 # 공유 파일 병합 전략 (union / ours)
 ├── recipes/
-│   └── _template/                # 새 레시피의 기본 템플릿
-│       ├── docs/                 # SSOT 문서 3종
-│       │   ├── plan.md           # 목표, 범위, 접근법
-│       │   ├── context.md        # 아키텍처, 의사결정, Colab 호환성
-│       │   └── tasks.md          # 체크리스트
-│       ├── recipe.yaml           # 메타데이터 + 런타임 요구사항
+│   └── _template/                 # 새 레시피의 기본 템플릿
+│       ├── docs/                  # SSOT 문서 3종
+│       │   ├── plan.md            # 목표, 범위, 접근법
+│       │   ├── context.md         # 아키텍처, 의사결정, Colab 호환성
+│       │   └── tasks.md           # 체크리스트
+│       ├── exports/               # BE/FE 통합 계약 (Spring + Next.js)
+│       │   ├── model_card.md      # 모델 설명 + 실측 성능 + 실패 모드
+│       │   ├── gradio_api.schema.json # Gradio 5.x 엔드포인트 계약
+│       │   ├── inference_handler.py   # infer() 단일 진입점
+│       │   ├── INTEGRATION_BACKEND.md # Spring (RestClient) 1-page 가이드
+│       │   ├── INTEGRATION_FRONTEND.md # Next.js (TypeScript) 1-page 가이드
+│       │   └── assets/            # 샘플 I/O (테스트용)
+│       ├── recipe.yaml            # 메타데이터 + 런타임 + MCP 플래그 + integration 계약
 │       ├── notebook_manifest.yaml # 노트북 셀 정의
 │       ├── install.sh / run.sh
 │       └── requirements_*.txt
-├── colab-runtimes/                  # Colab 런타임 패키지 데이터 (자동 생성)
+├── colab-runtimes/                # Colab 런타임 패키지 데이터 (자동 생성)
 │   ├── runtimes.json              # 런타임별 주요 패키지 버전
 │   ├── SUMMARY.md                 # 비교표
-│   └── <version>/packages.json   # 전체 패키지 목록
+│   └── <version>/packages.json    # 전체 패키지 목록
 ├── scripts/
-│   ├── make_context_pack.py      # 컨텍스트 팩 생성기
-│   ├── smoke_test.py             # 문법 + 임포트 검증
-│   └── sync_colab_runtimes.py    # Colab 런타임 데이터 동기화
+│   ├── make_context_pack.py       # 컨텍스트 팩 생성기
+│   ├── set_active_recipe.sh       # 활성 레시피 스위칭 + .claude/.env 생성
+│   ├── colab_mcp_sync.py          # 라이브 Colab ↔ 매니페스트 4-pass 정렬
+│   ├── smoke_test.py              # 문법 + 임포트 검증
+│   └── sync_colab_runtimes.py     # Colab 런타임 데이터 동기화
 ├── tools/
-│   └── generate_notebook.py      # YAML -> .ipynb 변환기
-├── .github/workflows/
-│   └── sync-colab-runtimes.yml   # 일일 자동 동기화
-├── docs/RUNBOOK.md               # 훅 검증 가이드
-└── CLAUDE.md                     # Claude Code 지시사항
+│   ├── generate_notebook.py       # YAML → .ipynb (GPU preflight / Gradio serve 자동 주입)
+│   └── generate_export.py         # recipe.yaml → recipes/<name>/exports/ (BE/FE 계약 렌더)
+├── docs/
+│   ├── RUNBOOK.md                 # 훅 검증 가이드
+│   ├── MCP_INTEGRATION.md         # colab-mcp 2-gate enforcement + sync 계약 (SSOT)
+│   ├── SSAFY_CONVENTIONS.md       # 하네스가 <repo>/ai/에 드롭될 때의 규칙
+│   ├── PORTING_PATTERNS.md        # 전략 5단계 (direct pip → conda isolation)
+│   └── COMMON_ERRORS.md           # 에러 → 검증된 수정 데이터베이스
+└── CLAUDE.md                      # Claude Code 지시사항 (SSOT 운용 규칙)
 ```
 
 ## 핵심 개념
@@ -143,12 +165,18 @@ run: "python inference.py"
 
 ### 훅 (Hooks)
 
+`.claude/settings.json`에 등록된 **8개 이벤트**. 재귀 방지 가드(stdin JSON `stop_hook_active`) 적용됨.
+
 | 훅 | 시점 | 동작 |
 |----|------|------|
 | SessionStart | 세션 시작 | 컨텍스트 팩 재생성 |
-| UserPromptSubmit | 메시지 전송 | 관련 스킬 자동 추천 |
-| PostToolUse | 파일 편집 | 편집 이력 추적 |
-| Stop | 세션 종료 | 코드 검증, 컨텍스트 갱신 |
+| UserPromptSubmit | 메시지 전송 | 관련 스킬 자동 추천 + resume-state 주입 |
+| PreToolUse | 도구 호출 전 | MCP 2-gate 강제 (`mcp.enabled`, `allow_auto_execution`) + 민감값 레닥션 |
+| PostToolUse | 도구 호출 후 | 편집 이력 추적 + MCP 세션 로그 + budget 초과 경고 |
+| Stop | 세션 종료 | NoMessLeftBehind 검증 (compileall + smoke + context pack) |
+| PreCompact | compact 직전 | SSOT + `_resume_state.md` 자동 저장 (lossy summary 안전망) |
+| PostCompact | compact 후 | 컨텍스트 팩 재로드 지원 |
+| SessionEnd | `/clear`/종료 | 세션 정리 훅 |
 
 ### 스킬 (슬래시 명령)
 
@@ -157,9 +185,109 @@ run: "python inference.py"
 | `/recipe-authoring` | 레시피 생성/수정 |
 | `/colab-debugging` | Colab 설치/런타임 에러 디버깅 |
 | `/notebook-builder` | 매니페스트에서 노트북 생성 |
+| `/colab-mcp` | 라이브 Colab 런타임에서 현재 레시피 실행 (opt-in per recipe) |
+| `/colab-mcp-sync` | 라이브 노트북 편집을 매니페스트로 역-반영 (드리프트 방지) |
 | `/fresh-start` | 맥락 오염 시 — SSOT 저장 + `/clear` 후 자동 복구 |
 | `/session-end` | 세션 마무리 — 문서 저장, 커밋, 핸드오프 프롬프트 생성 |
 | `/pre-compact` | 컨텍스트 부족 시 — 중요 맥락 영속화 + compact 요약 제안 |
+
+### 서브에이전트 (Sub-Agents)
+
+`.claude/agents/` 아래에 정의된 3개. Claude가 `description` 매칭으로 자동 위임.
+
+| 에이전트 | 역할 | 자동 위임 시점 |
+|---------|------|---------------|
+| `code-reviewer` | 코드 리뷰 + NoMessLeftBehind 검사 | 여러 파일 편집 후, 커밋 전, "review" 요청 시 |
+| `compat-debugger` | 의존성/ABI 충돌 진단 | pip 실패, ImportError, CUDA 미스매치, C-ext 빌드 실패 |
+| `plan-architect` | SSOT 스캐폴딩 + 아키텍처 결정 | 새 레시피, "how should we approach X?" |
+
+## Live Colab 이터레이션 (MCP — opt-in)
+
+`recipe.yaml:mcp.enabled: true`로 설정하면 Claude가 브라우저 탭의
+Colab 런타임을 **직접 제어**합니다. "manifest 편집 → notebook 재생성 →
+Colab 업로드 → 에러 → 처음부터" 루프 대신 셀을 그대로 iterate.
+
+### 2-gate 강제 (PreToolUse 훅)
+
+| Gate | 대상 | 차단 조건 |
+|------|------|----------|
+| Gate 1 — `mcp.enabled` | 모든 `mcp__*` 도구 | `false`일 때 exit 2 + stderr 안내 |
+| Gate 2 — `allow_auto_execution` | `run_*`/`execute_*`/`exec_*`/`eval_*` | `false`일 때 exit 2 — 사용자 확인 필요 |
+
+모든 호출은 redacted되어 `.claude/_mcp_tool_calls.log`로 감사 기록.
+세션 전체는 `outputs/mcp-sessions/<recipe>/<session>.jsonl`에 영속화.
+
+### 워크플로우
+
+```bash
+scripts/set_active_recipe.sh <recipe>     # .claude/.env에 MCP_TIMEOUT/MAX_MCP_OUTPUT_TOKENS 기록
+source .claude/.env && claude              # env를 Claude 프로세스에 전파
+claude mcp list                            # colab-mcp 등록 확인
+# Claude에게: "Colab 연결 열고 현재 레시피 셀들 실행해줘"
+```
+
+편집이 끝나면 **반드시** `/colab-mcp-sync <recipe>` — 라이브 편집을
+매니페스트로 역-반영. 건너뛰면 다음 `generate_notebook.py` 실행 시
+라이브 편집이 무음으로 덮어써집니다 (Ever trellis2 시절의 "Cell X
+fix 20 commits" 드리프트 원인).
+
+자세한 내용: `docs/MCP_INTEGRATION.md` (SSOT)
+
+## BE/FE 통합 계약 (exports/)
+
+recipe를 Spring 백엔드 + Next.js 프론트엔드에서 소비할 때, 그들이
+recipe 소스 코드를 읽어야 한다면 계약이 잘못 설계된 것. 모든 팀은
+`recipes/<name>/exports/`에서 **6개 파일**만 가져갑니다.
+
+| 파일 | 소비자 |
+|------|--------|
+| `model_card.md` | 양쪽 — 모델이 무엇을 하는지, I/O, 실측 성능, 실패 모드, 호환성 중단 정책 |
+| `gradio_api.schema.json` | BE — Gradio 5.x `POST /call/predict` 두-단계 플로우 (event_id + SSE 폴링) 계약 |
+| `inference_handler.py` | AI 팀 자체 — `infer()` 단일 진입점 (Gradio + 향후 FastAPI/Modal이 이걸 래핑) |
+| `INTEGRATION_BACKEND.md` | BE (Spring Boot 3.2+) — `RestClient` 예제 + `application.yml` + `@MockitoBean` 테스트 |
+| `INTEGRATION_FRONTEND.md` | FE (Next.js) — TypeScript 타입 + fetch 래퍼 + 에셋 렌더링 분기 |
+| `assets/` | 양쪽 — 샘플 I/O (offline 개발 + 백엔드 테스트 stub) |
+
+### 재생성
+
+```bash
+uv run python tools/generate_export.py <recipe>
+```
+
+`recipe.yaml`의 `integration:` 섹션 + 파생 식별자를 템플릿에 치환해서
+`recipes/<recipe>/exports/` 전체를 재생성합니다. 식별자 안전:
+- `{RECIPE_CLASS_NAME}` — PascalCase (Java 클래스명, TS 타입명용)
+- `{RECIPE_SNAKE_NAME}` — lowercase_underscore (TS 파일명용)
+- `{BACKEND_ENV_VAR}` — `[A-Z0-9_]`로 정규화 (Spring `@Value` 호환)
+
+> 템플릿 편집은 `recipes/_template/exports/`에서 — 특정 recipe의
+> `exports/`를 직접 고치지 말 것 (다음 재생성 시 덮어써짐).
+
+## SSAFY 모노레포 통합
+
+이 하네스가 SSAFY-스타일 모노레포의 `<repo>/ai/` 아래에 드롭될 때,
+**OSS 영문 기본값 대신** `docs/SSAFY_CONVENTIONS.md`의 규칙이 적용됩니다:
+
+- 커밋 메시지: 한국어 + 14-prefix (`feat:`/`fix:`/`docs:`/...), 50자, 마침표 금지
+- 브랜치: `feature/ai/S14P11A607-N-<desc>` (BE/FE는 `be`/`fe` slot)
+- PR 대상: GitLab MR로 `AI/develop` 브랜치 (`master`가 아니라)
+- 항상 `cd ai/ && claude` — 이 폴더의 `.claude/` + `.mcp.json` 로드
+- 형제 폴더 `front/` / `back/` 수정은 **사용자 명시 승인** 없이는 금지
+
+감지는 수동 (사용자가 맥락 신호를 주거나 프롬프트에 `S14P11A607`
+등장). `.claude/last_recipe.txt`와 `.env`는 양쪽 모드에서 동일하게 작동.
+
+## 보안 노트
+
+- **`.claude/settings.json`과 `.mcp.json`은 세션 시작 시 자식 프로세스를 spawn**합니다.
+  두 파일을 수정하는 PR은 CI 실행 권한 변경과 동등한 수준으로 리뷰.
+  `.github/CODEOWNERS`에 등록되어 있어 병합 시 소유자 승인 필요.
+- **개인 오버라이드는 `.claude/settings.local.json`과 `.mcp.json.local`** (둘 다
+  gitignored). 공유 파일에 개인 훅/서버 커맨드 커밋 금지.
+- **`/session-end`는 `git add -A` 금지** — 명시 경로만 스테이징.
+  `.env` / 자격증명 / 민감 파일 실수 커밋 차단.
+- **Windows Git Bash 주의**: `where bash`가 WSL stub(`C:\Windows\System32\bash.exe`)이
+  아닌 Git Bash를 먼저 반환해야 훅이 정상 작동. 자세한 내용은 `CLAUDE.md` §Security.
 
 ## `/fresh-start` — 맥락 오염 없는 세션 리셋
 
@@ -378,13 +506,16 @@ python scripts/sync_colab_runtimes.py
 
 ```
 1. GitHub에서 흥미로운 AI 모델 발견
-2. 레시피 생성:  cp -r recipes/_template recipes/my-model
-3. Claude에게 포팅 목표 전달
-4. Claude가 plan 작성, 의존성 해결, 노트북 매니페스트 생성
-5. 노트북 생성:  uv run python tools/generate_notebook.py my-model
-6. Colab에서 테스트, 에러 발생 시 Claude에게 전달
-7. 반복하여 완성
-8. /session-end 로 세션 마무리
+2. 레시피 생성:       cp -r recipes/_template recipes/my-model
+3. 활성화:            scripts/set_active_recipe.sh my-model
+4. Claude에게 포팅 목표 전달 (recipes/my-model/docs/plan.md 작성)
+5. Claude가 의존성 해결, notebook_manifest.yaml 작성
+6. 노트북 생성:       uv run python tools/generate_notebook.py my-model
+7. (선택) Live iteration: mcp.enabled: true → source .claude/.env && claude → /colab-mcp
+8. Colab에서 테스트, 에러 발생 시 Claude에게 전달 → 반복
+9. (MCP 사용 시) /colab-mcp-sync my-model 으로 라이브 편집 → 매니페스트 역-반영
+10. BE/FE 계약 생성: uv run python tools/generate_export.py my-model
+11. /session-end 로 세션 마무리 (SSOT 커밋 + 핸드오프)
 ```
 
 ---
@@ -402,10 +533,12 @@ When you find an interesting open-source AI model on GitHub and want to run it o
 - Environment constraints (runtime resets, disk limits, session timeouts)
 
 This harness structures and automates that entire process:
-- **Recipe system** — manage each model's porting project in a structured, reproducible way
-- **Notebook generator** — auto-generate Colab `.ipynb` notebooks from YAML manifests
-- **Claude Code hooks** — auto-validation, skill suggestions, and context management
+- **Recipe system** — manage each model's porting project in a structured, reproducible way (SSOT triad)
+- **Notebook generator** — auto-generate Colab `.ipynb` notebooks from YAML manifests (GPU preflight + Gradio serve auto-injected)
+- **Claude Code hooks** — auto-validation, skill suggestions, context management, auto-recovery after `/clear`
 - **Colab runtime tracking** — auto-collect and compare package versions across Colab runtimes
+- **Live Colab iteration** — drive a browser-side Colab runtime directly via `colab-mcp` integration; no notebook re-upload loop (opt-in per recipe)
+- **Exports contract** — type-safe integration docs + JSON Schema + handler that Spring/Next.js teammates pull from the recipe's `exports/`
 
 ## Quick Start
 
@@ -457,36 +590,56 @@ Upload to Colab and test!
 
 ```
 AI-OpenSource-Harness/
-├── .claude/                      # Claude Code infrastructure
-│   ├── hooks/                    # Lifecycle hooks (4)
-│   ├── skills/                   # Slash command definitions (6)
-│   ├── agents/                   # Sub-agent definitions (3)
-│   ├── settings.json             # Hook configuration
-│   └── skill-rules.json          # Skill matching rules
+├── .claude/                       # Claude Code infrastructure
+│   ├── hooks/                     # Lifecycle hooks (8 events + helper scripts)
+│   ├── skills/                    # Slash command definitions (8)
+│   ├── agents/                    # Sub-agent definitions (3)
+│   ├── settings.json              # Hook configuration (CODEOWNERS-protected)
+│   ├── settings.local.json        # Local overrides (gitignored)
+│   └── skill-rules.json           # Harness-local: extra skill match keywords
+├── .mcp.json                      # colab-mcp server registration (opt-in, CODEOWNERS-protected)
+├── .github/
+│   ├── CODEOWNERS                 # Enforces review on .mcp.json / settings.json / hooks
+│   └── workflows/
+│       └── sync-colab-runtimes.yml # Daily auto-sync
+├── .gitattributes                 # Shared-file merge strategy (union / ours)
 ├── recipes/
-│   └── _template/                # Base template for new recipes
-│       ├── docs/                 # SSOT documentation triad
-│       │   ├── plan.md           # Goal, scope, approach
-│       │   ├── context.md        # Architecture, decisions, Colab compatibility
-│       │   └── tasks.md          # Ordered checklist
-│       ├── recipe.yaml           # Metadata + runtime requirements
+│   └── _template/                 # Base template for new recipes
+│       ├── docs/                  # SSOT documentation triad
+│       │   ├── plan.md            # Goal, scope, approach
+│       │   ├── context.md         # Architecture, decisions, Colab compatibility
+│       │   └── tasks.md           # Ordered checklist
+│       ├── exports/               # BE/FE integration contract (Spring + Next.js)
+│       │   ├── model_card.md      # Model description + measured perf + failure modes
+│       │   ├── gradio_api.schema.json # Gradio 5.x endpoint contract
+│       │   ├── inference_handler.py   # infer() single entrypoint
+│       │   ├── INTEGRATION_BACKEND.md # Spring (RestClient) 1-page guide
+│       │   ├── INTEGRATION_FRONTEND.md # Next.js (TypeScript) 1-page guide
+│       │   └── assets/            # Sample I/O (offline dev stubs)
+│       ├── recipe.yaml            # Metadata + runtime + MCP flags + integration contract
 │       ├── notebook_manifest.yaml # Notebook cell definitions
 │       ├── install.sh / run.sh
 │       └── requirements_*.txt
-├── colab-runtimes/               # Colab runtime package data (auto-generated)
-│   ├── runtimes.json             # Key package versions per runtime
-│   ├── SUMMARY.md                # Side-by-side comparison table
-│   └── <version>/packages.json   # Full package list per runtime
+├── colab-runtimes/                # Colab runtime package data (auto-generated)
+│   ├── runtimes.json              # Key package versions per runtime
+│   ├── SUMMARY.md                 # Side-by-side comparison table
+│   └── <version>/packages.json    # Full package list per runtime
 ├── scripts/
-│   ├── make_context_pack.py      # Context pack generator
-│   ├── smoke_test.py             # Syntax + import validation
-│   └── sync_colab_runtimes.py    # Colab runtime data sync
+│   ├── make_context_pack.py       # Context pack generator
+│   ├── set_active_recipe.sh       # Recipe switch + .claude/.env write
+│   ├── colab_mcp_sync.py          # Live Colab ↔ manifest 4-pass aligner
+│   ├── smoke_test.py              # Syntax + import validation
+│   └── sync_colab_runtimes.py     # Colab runtime data sync
 ├── tools/
-│   └── generate_notebook.py      # YAML -> .ipynb converter
-├── .github/workflows/
-│   └── sync-colab-runtimes.yml   # Daily auto-sync
-├── docs/RUNBOOK.md               # Hook verification guide
-└── CLAUDE.md                     # Claude Code instructions
+│   ├── generate_notebook.py       # YAML → .ipynb (GPU preflight / Gradio serve auto-injected)
+│   └── generate_export.py         # recipe.yaml → recipes/<name>/exports/ (BE/FE contract render)
+├── docs/
+│   ├── RUNBOOK.md                 # Hook verification guide
+│   ├── MCP_INTEGRATION.md         # colab-mcp 2-gate enforcement + sync contract (SSOT)
+│   ├── SSAFY_CONVENTIONS.md       # Rules that apply when harness sits at <repo>/ai/
+│   ├── PORTING_PATTERNS.md        # Strategy ladder (direct pip → conda isolation)
+│   └── COMMON_ERRORS.md           # Error → verified fix database
+└── CLAUDE.md                      # Claude Code instructions (SSOT operating rules)
 ```
 
 ## Key Concepts
@@ -528,12 +681,18 @@ run: "python inference.py"
 
 ### Hooks
 
+`.claude/settings.json` registers **8 events**. Recursion guard via stdin-JSON `stop_hook_active` field.
+
 | Hook | Trigger | Action |
 |------|---------|--------|
 | SessionStart | Session begins | Rebuild context pack |
-| UserPromptSubmit | Message sent | Auto-suggest relevant skills |
-| PostToolUse | File edited | Track edit history |
-| Stop | Session ends | Code validation, context refresh |
+| UserPromptSubmit | Message sent | Auto-suggest relevant skills + resume-state injection |
+| PreToolUse | Before tool call | Enforce MCP 2-gate (`mcp.enabled`, `allow_auto_execution`) + sensitive-value redaction |
+| PostToolUse | After tool call | Track edit history + MCP session log + output-budget warnings |
+| Stop | Session ends | NoMessLeftBehind validation (compileall + smoke + context pack) |
+| PreCompact | Before compact | Auto-save SSOT + `_resume_state.md` (lossy-summary safety net) |
+| PostCompact | After compact | Support re-loading context pack |
+| SessionEnd | `/clear` or termination | Session cleanup hook |
 
 ### Skills (Slash Commands)
 
@@ -542,9 +701,118 @@ run: "python inference.py"
 | `/recipe-authoring` | Create or modify recipes |
 | `/colab-debugging` | Debug Colab install/runtime errors |
 | `/notebook-builder` | Generate notebooks from manifests |
+| `/colab-mcp` | Run the current recipe on a live Colab runtime (opt-in per recipe) |
+| `/colab-mcp-sync` | Promote live-notebook edits back into the manifest (drift prevention) |
 | `/fresh-start` | Context pollution — save to SSOT + `/clear` for clean restart |
 | `/session-end` | Wrap up session — save docs, commit, generate handoff prompt |
 | `/pre-compact` | Context running low — persist critical context + suggest compact summary |
+
+### Sub-Agents
+
+3 agents under `.claude/agents/`. Claude auto-delegates based on `description` matching.
+
+| Agent | Role | Auto-delegate when |
+|-------|------|--------------------|
+| `code-reviewer` | Code review + NoMessLeftBehind checks | Multiple files edited, before commit, user asks "review" |
+| `compat-debugger` | Dependency / ABI conflict diagnosis | pip fails, ImportError, CUDA mismatch, C-ext build fail |
+| `plan-architect` | SSOT scaffolding + architecture decisions | New recipe, user asks "how should we approach X?" |
+
+## Live Colab Iteration (MCP — opt-in)
+
+Set `recipe.yaml:mcp.enabled: true` and Claude can **directly drive** a
+browser-attached Colab runtime. No more "edit manifest → regenerate
+notebook → upload to Colab → hit error → restart" loop — iterate cells
+in place.
+
+### 2-gate enforcement (PreToolUse hook)
+
+| Gate | Target | Blocks when |
+|------|--------|-------------|
+| Gate 1 — `mcp.enabled` | All `mcp__*` tools | `false` → exit 2 with stderr guidance |
+| Gate 2 — `allow_auto_execution` | `run_*`/`execute_*`/`exec_*`/`eval_*` tools | `false` → exit 2, requires user confirmation |
+
+Every call is redacted and audited to `.claude/_mcp_tool_calls.log`.
+Full sessions are persisted to `outputs/mcp-sessions/<recipe>/<session>.jsonl`.
+
+### Workflow
+
+```bash
+scripts/set_active_recipe.sh <recipe>     # writes .claude/.env with MCP_TIMEOUT / MAX_MCP_OUTPUT_TOKENS
+source .claude/.env && claude              # propagate env to the Claude process
+claude mcp list                            # verify colab-mcp is registered
+# Ask Claude: "Open the Colab connection and run the current recipe's cells"
+```
+
+When finished, **always** run `/colab-mcp-sync <recipe>` — promotes
+live edits back into the manifest. Skipping it causes the next
+`generate_notebook.py` run to silently overwrite your live work
+(this is the "Cell X fix 20 commits" drift that plagued the
+Ever-era trellis2 iteration).
+
+Full details: `docs/MCP_INTEGRATION.md` (SSOT)
+
+## BE/FE Integration Contract (exports/)
+
+If a Spring backend or Next.js frontend needs to read the recipe's
+source code to integrate, the contract is broken. Every team pulls
+**6 files** from `recipes/<name>/exports/` and nothing else:
+
+| File | Consumer |
+|------|----------|
+| `model_card.md` | Both — what the model does, I/O, measured perf, failure modes, breaking-change policy |
+| `gradio_api.schema.json` | BE — Gradio 5.x `POST /call/predict` two-step contract (event_id + SSE polling) |
+| `inference_handler.py` | AI team itself — `infer()` single entrypoint (Gradio + future FastAPI/Modal wrap this) |
+| `INTEGRATION_BACKEND.md` | BE (Spring Boot 3.2+) — `RestClient` example + `application.yml` + `@MockitoBean` testing |
+| `INTEGRATION_FRONTEND.md` | FE (Next.js) — TypeScript types + fetch wrapper + asset rendering branches |
+| `assets/` | Both — sample I/O (offline dev stubs + backend test fixtures) |
+
+### Regenerating
+
+```bash
+uv run python tools/generate_export.py <recipe>
+```
+
+Substitutes `recipe.yaml:integration:` fields + derived identifiers
+into the templates and rewrites `recipes/<recipe>/exports/` entirely.
+Identifier safety:
+- `{RECIPE_CLASS_NAME}` — PascalCase (Java class / TS type names)
+- `{RECIPE_SNAKE_NAME}` — lowercase_underscore (TS file names)
+- `{BACKEND_ENV_VAR}` — normalized to `[A-Z0-9_]` (Spring `@Value` safe)
+
+> Edit templates under `recipes/_template/exports/` — do NOT edit a
+> specific recipe's `exports/` by hand, next regeneration will overwrite.
+
+## SSAFY Monorepo Integration
+
+When this harness lives under `<repo>/ai/` in a SSAFY-style monorepo,
+the rules in `docs/SSAFY_CONVENTIONS.md` apply **instead of the OSS
+English defaults**:
+
+- Commit messages: Korean + 14-prefix (`feat:`/`fix:`/`docs:`/...), 50 chars, no trailing dot
+- Branch: `feature/ai/S14P11A607-N-<desc>` (BE/FE use `be`/`fe` slot)
+- PR target: `AI/develop` via GitLab MR (not `master`)
+- Always `cd ai/ && claude` — picks up this folder's `.claude/` + `.mcp.json`
+- Modifying sibling `front/` / `back/` requires **explicit user-confirmed** cross-domain branch
+
+Detection is manual (user signals context, or prompt mentions
+`S14P11A607`). `.claude/last_recipe.txt` and `.env` behave identically
+in both modes.
+
+## Security Notes
+
+- **`.claude/settings.json` and `.mcp.json` both spawn child processes on
+  session start.** Treat any PR modifying either file with the same
+  scrutiny as CI-exec permission changes. `.github/CODEOWNERS` enforces
+  review on merge.
+- **Personal overrides live in `.claude/settings.local.json` and
+  `.mcp.json.local`** (both gitignored). Never commit personal
+  hook/server commands to the shared files.
+- **`/session-end` never uses `git add -A`** — explicit paths only.
+  Prevents accidental commits of `.env` / credentials / other
+  sensitive untracked files.
+- **Windows Git Bash gotcha**: `where bash` must return Git Bash's
+  `bash` first, NOT the WSL stub at `C:\Windows\System32\bash.exe`,
+  or hooks hang/fail silently. See `CLAUDE.md` §Security for fallback.
 
 ## `/fresh-start` — Context-Clean Session Reset
 
@@ -764,14 +1032,17 @@ Things to verify when porting an open-source AI model to Colab:
 ## Workflow
 
 ```
-1. Find an interesting AI model on GitHub
-2. Create a recipe:  cp -r recipes/_template recipes/my-model
-3. Tell Claude your porting goal
-4. Claude writes the plan, resolves dependencies, generates the notebook manifest
-5. Generate notebook:  uv run python tools/generate_notebook.py my-model
-6. Test on Colab — when errors occur, paste them back to Claude
-7. Iterate until it works
-8. Wrap up with /session-end
+1.  Find an interesting AI model on GitHub
+2.  Create a recipe:       cp -r recipes/_template recipes/my-model
+3.  Activate:               scripts/set_active_recipe.sh my-model
+4.  Tell Claude your porting goal (author recipes/my-model/docs/plan.md)
+5.  Claude resolves dependencies, writes notebook_manifest.yaml
+6.  Generate notebook:      uv run python tools/generate_notebook.py my-model
+7.  (Optional) Live iter:   mcp.enabled: true → source .claude/.env && claude → /colab-mcp
+8.  Test on Colab — paste errors back to Claude → iterate
+9.  (If MCP) Promote drift: /colab-mcp-sync my-model  (live edits → manifest)
+10. Render BE/FE contract:  uv run python tools/generate_export.py my-model
+11. Wrap up with /session-end (SSOT commit + handoff prompt)
 ```
 
 ## License

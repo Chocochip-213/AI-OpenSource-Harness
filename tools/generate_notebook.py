@@ -10,6 +10,7 @@ Usage:
     python tools/generate_notebook.py --recipe <name> --out <path>
 """
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -39,13 +40,36 @@ def source_to_lines(source: str) -> list[str]:
     return result
 
 
-def make_cell(cell_type: str, source: list[str], metadata: dict | None = None) -> dict:
-    """Create a single notebook cell."""
+def _stable_cell_id(recipe: str, name: str, index: int) -> str:
+    """Deterministic cell id derived from (recipe, name, index).
+
+    JEP 62 (nbformat 4.5+) requires `id` matching `[A-Za-z0-9_-]{1,64}`.
+    A short hex digest stays within that range and means: same manifest →
+    byte-identical notebook → 6-person team merge stays clean. Without
+    this, JupyterLab/Colab assign a random UUID on every save and the
+    `colab_mcp_sync.py` align falls back to name-only matching, which
+    turns every rename into add+remove.
+    """
+    seed = f"{recipe}|{name or ''}|{index}"
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+
+
+def make_cell(
+    cell_type: str,
+    source: list[str],
+    metadata: dict | None = None,
+    cell_id: str | None = None,
+) -> dict:
+    """Create a single notebook cell. `cell_id` is the JEP 62 id; pass it
+    in deterministically (see `_stable_cell_id`) so notebooks are
+    reproducible across team members."""
     cell = {
         "cell_type": cell_type,
         "metadata": metadata or {},
         "source": source,
     }
+    if cell_id:
+        cell["id"] = cell_id
     if cell_type == "code":
         cell["execution_count"] = None
         cell["outputs"] = []
@@ -61,8 +85,9 @@ def generate_extended(manifest: dict, recipe_dir: Path) -> list[dict]:
             f"generated notebook would be blank.\n"
             f"Add at least one cell, or remove the 'cells' key to use legacy format."
         )
+    recipe_name = recipe_dir.name
     cells = []
-    for cell_def in cell_defs:
+    for index, cell_def in enumerate(cell_defs):
         cell_type = cell_def.get("type", "code")
         source = cell_def.get("source", "")
         metadata = cell_def.get("metadata", {})
@@ -70,8 +95,14 @@ def generate_extended(manifest: dict, recipe_dir: Path) -> list[dict]:
         if cell_type not in ("code", "markdown"):
             cell_type = "code"
 
+        # cell_id from manifest if explicit, else deterministic from
+        # (recipe, name, index). Stable across regenerations → diff-friendly.
+        cell_id = cell_def.get("cell_id") or _stable_cell_id(
+            recipe_name, cell_def.get("name", ""), index
+        )
+
         lines = source_to_lines(source)
-        cells.append(make_cell(cell_type, lines, metadata))
+        cells.append(make_cell(cell_type, lines, metadata, cell_id=cell_id))
     return cells
 
 
@@ -82,14 +113,24 @@ def generate_legacy(manifest: dict, recipe_dir: Path) -> list[dict]:
             "notebook_manifest.yaml (legacy format) has no 'install', 'files', or 'run' section — "
             "nothing to generate. Add at least one section or switch to extended format (cells list)."
         )
+    recipe_name = recipe_dir.name
     cells = []
+    idx = 0  # deterministic cell-id index across legacy sections
+
+    def _add(cell_type: str, source: list[str], name: str) -> None:
+        nonlocal idx
+        cells.append(make_cell(
+            cell_type, source,
+            cell_id=_stable_cell_id(recipe_name, name, idx),
+        ))
+        idx += 1
 
     # Title
     title = manifest.get("title", recipe_dir.name)
-    cells.append(make_cell("markdown", [
+    _add("markdown", [
         f"# {title}\n", "\n",
         f"Auto-generated notebook for recipe: **{recipe_dir.name}**\n",
-    ]))
+    ], "title")
 
     # Install
     install_deps = manifest.get("install", [])
@@ -97,7 +138,7 @@ def generate_legacy(manifest: dict, recipe_dir: Path) -> list[dict]:
         install_lines = ["# Install dependencies\n"]
         for dep in install_deps:
             install_lines.append(f"!pip install -q {dep}\n")
-        cells.append(make_cell("code", install_lines))
+        _add("code", install_lines, "install")
 
     # Files (%%writefile)
     for file_entry in manifest.get("files", []):
@@ -106,7 +147,7 @@ def generate_legacy(manifest: dict, recipe_dir: Path) -> list[dict]:
         desc = file_entry.get("description", "")
 
         if desc:
-            cells.append(make_cell("markdown", [f"## {desc}\n"]))
+            _add("markdown", [f"## {desc}\n"], f"file-desc:{dst}")
 
         src_path = recipe_dir / src
         if src_path.exists():
@@ -114,13 +155,13 @@ def generate_legacy(manifest: dict, recipe_dir: Path) -> list[dict]:
         else:
             content = f"# TODO: create {src}\n"
 
-        cells.append(make_cell("code", [f"%%writefile {dst}\n", content]))
+        _add("code", [f"%%writefile {dst}\n", content], f"file:{dst}")
 
     # Run
     run_cmd = manifest.get("run", "")
     if run_cmd:
-        cells.append(make_cell("markdown", ["## Run\n"]))
-        cells.append(make_cell("code", [f"!{run_cmd}\n"]))
+        _add("markdown", ["## Run\n"], "run-header")
+        _add("code", [f"!{run_cmd}\n"], "run")
 
     return cells
 
@@ -166,7 +207,10 @@ def _keepalive_cell(interval_seconds: int = 300) -> dict:
         "else:\n"
         "    print('[keepalive] already running in this kernel')\n"
     )
-    return make_cell("code", source_to_lines(source))
+    # Use a fixed cell_id so this auto-injected cell stays at the same id
+    # across regenerations (sync diff stability).
+    return make_cell("code", source_to_lines(source),
+                     cell_id="auto-keepalive")
 
 
 def _preferred_gpu_assert_cell(preferred_gpu: str, vram_min_gb: float | None) -> dict:
@@ -201,7 +245,60 @@ def _preferred_gpu_assert_cell(preferred_gpu: str, vram_min_gb: float | None) ->
         "    )\n"
         + vram_assert
     )
-    return make_cell("code", source_to_lines(source))
+    # Fixed cell_id so this auto-injected preflight stays at the same id
+    # across regenerations.
+    return make_cell("code", source_to_lines(source),
+                     cell_id="auto-gpu-preflight")
+
+
+def _gradio_serve_cell(recipe_name: str) -> dict:
+    """Inject a final cell that wraps `exports/inference_handler.infer()` in
+    a Gradio Interface and launches with `share=True`. Output: a public
+    `https://xxxx.gradio.live` URL that the Spring backend reads from the
+    `AI_GRADIO_URL` env var (see exports/INTEGRATION_BACKEND.md).
+
+    Free Gradio shares last 72h or until the Colab kernel dies, whichever
+    is first. Whenever the user re-runs Colab, a new URL is printed —
+    they update the backend env. We DON'T auto-publish the URL here
+    because that would require a Slack/webhook secret in the notebook,
+    which would commit to the repo.
+    """
+    source = (
+        "#@title Z) Gradio serve (auto-injected — mcp.serve_via_gradio: true)\n"
+        "# Wraps exports/inference_handler.infer() in a Gradio Interface and\n"
+        "# prints a public share URL that the Spring backend reads from\n"
+        "# AI_GRADIO_URL. See exports/INTEGRATION_BACKEND.md for the contract.\n"
+        "import sys, os, importlib, subprocess\n"
+        "# Install gradio if missing — Colab usually has it preinstalled.\n"
+        "try:\n"
+        "    import gradio as gr\n"
+        "except ImportError:\n"
+        "    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'gradio'], check=True)\n"
+        "    import gradio as gr\n"
+        "\n"
+        "# Load the recipe's inference handler. We expect exports/ to be in\n"
+        "# the same directory as this notebook when uploaded to Colab; for\n"
+        "# the in-Colab case we sys.path.insert the recipe directory.\n"
+        f"_RECIPE_DIR = os.path.join(os.getcwd(), 'recipes', {recipe_name!r}, 'exports')\n"
+        "if os.path.isdir(_RECIPE_DIR) and _RECIPE_DIR not in sys.path:\n"
+        "    sys.path.insert(0, _RECIPE_DIR)\n"
+        "\n"
+        "try:\n"
+        "    from inference_handler import infer\n"
+        "except Exception as e:\n"
+        "    print(f'[gradio_serve] could not import exports/inference_handler.py: {e}')\n"
+        "    print('[gradio_serve] Stub: replace exports/inference_handler.py with your real handler.')\n"
+        "    def infer(*args, **kwargs):\n"
+        "        return {'echo': args, 'kwargs': kwargs}\n"
+        "\n"
+        "# Single-input fallback signature; recipe authors should customize.\n"
+        f"_iface = gr.Interface(fn=infer, inputs='text', outputs='json', title={recipe_name!r})\n"
+        "_app, _local_url, _share_url = _iface.launch(share=True, prevent_thread_lock=True, quiet=True)\n"
+        "print(f'AI_GRADIO_URL = {_share_url}')\n"
+        "print('Copy that URL into the backend\\'s AI_GRADIO_URL env var.')\n"
+    )
+    return make_cell("code", source_to_lines(source),
+                     cell_id="auto-gradio-serve")
 
 
 def generate_notebook(recipe_name: str, out_path: Path | None = None) -> Path:
@@ -240,6 +337,12 @@ def generate_notebook(recipe_name: str, out_path: Path | None = None) -> Path:
     if mcp_cfg.get("enabled") and mcp_cfg.get("keepalive"):
         insert_at = 1 if preferred_gpu else 0
         cells.insert(insert_at, _keepalive_cell())
+        print("[generate_notebook] Injected keepalive cell (mcp.keepalive: true).")
+    # Gradio serving cell — appended at the end so all the recipe's setup
+    # cells run first, then the handler is wrapped and the share URL printed.
+    if mcp_cfg.get("enabled") and mcp_cfg.get("serve_via_gradio"):
+        cells.append(_gradio_serve_cell(recipe_name))
+        print("[generate_notebook] Injected Gradio serve cell (mcp.serve_via_gradio: true).")
         print("[generate_notebook] Injected keepalive cell (mcp.keepalive: true).")
 
     # GPU type resolution order (SSOT-first):

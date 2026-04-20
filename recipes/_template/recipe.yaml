@@ -57,6 +57,28 @@ artifacts:
   e2e_results: "outputs/e2e/{name}/"           # Cell-level outputs (gitignored)
   mcp_sessions: "outputs/mcp-sessions/{name}/" # MCP execution logs (gitignored)
 
+# Backend / frontend integration — what this recipe produces for other teams.
+# `tools/generate_export.py` reads this and writes recipes/<name>/exports/.
+# When this harness lives at <SSAFY-monorepo>/ai/, the exports/ folder is
+# what the back/ and front/ teams import (NOT this recipe's source code).
+integration:
+  # Where the backend reads the AI endpoint URL from. Spring team sets this
+  # env var to the Gradio share URL (printed by the auto-injected cell when
+  # mcp.serve_via_gradio: true).
+  backend_env_var: "AI_GRADIO_URL"
+  # Output asset shape the frontend expects. Free-form string; common values:
+  #   "image/png", "image/jpeg", "model/gltf-binary" (GLB), "application/json"
+  #   "video/mp4", "audio/wav"
+  asset_mime: "application/json"
+  # Spring/Next.js teams pull these files from exports/ as the contract.
+  # Listed here so a `tasks.md` checklist can verify they exist.
+  contract_files:
+    - exports/model_card.md
+    - exports/gradio_api.schema.json
+    - exports/inference_handler.py
+    - exports/INTEGRATION_BACKEND.md
+    - exports/INTEGRATION_FRONTEND.md
+
 # Colab MCP integration — OPT-IN per recipe.
 # Every field below is live-enforced. See docs/MCP_INTEGRATION.md for details.
 #
@@ -90,6 +112,11 @@ mcp:
   # Enforced by tools/generate_notebook.py — injects a daemon-thread heartbeat
   # cell that resets Colab's 90-min idle timer.
   keepalive: false
+  # Enforced by tools/generate_notebook.py — when true, appends a final cell
+  # that wraps `inference_handler.infer()` in `gradio.Interface(...).launch(share=True)`.
+  # The resulting public URL goes into the backend's `AI_GRADIO_URL` env var.
+  # See docs/INTEGRATION_BACKEND.md for the Spring-side hookup.
+  serve_via_gradio: false
   # Enforced by scripts/set_active_recipe.sh — written as MCP_TIMEOUT (ms) to
   # .claude/.env. `source .claude/.env && claude` applies it.
   timeout_seconds: 300

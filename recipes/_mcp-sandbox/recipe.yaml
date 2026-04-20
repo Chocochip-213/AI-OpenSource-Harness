@@ -1,58 +1,42 @@
 name: _mcp-sandbox
-version: "0.1.0"
-description: "Phase 2 sandbox recipe — the smallest thing that proves Claude → colab-mcp → live Colab works end-to-end. Not a real model port."
-
+version: 0.1.0
+description: Phase 2 sandbox recipe — the smallest thing that proves Claude → colab-mcp
+  → live Colab works end-to-end. Not a real model port.
 recipe_type: colab-notebook
-
 upstream:
   repo: https://github.com/pytorch/pytorch.git
-  ref: main   # only used for documentation; sandbox imports torch from Colab stock
-
+  ref: main
 requirements: requirements_opt1.txt
 main: run.sh
 notebook_manifest: notebook_manifest.yaml
-
 docs:
   plan: docs/plan.md
   context: docs/context.md
   tasks: docs/tasks.md
-
 runtime:
-  # Sandbox minimum — the user picks the real GPU in Colab's Runtime
-  # menu. Preflight warns on name mismatch, only FAILS if VRAM < vram_min_gb.
-  gpu: T4                 # any Colab-offered GPU works; T4 is just the safe floor
-  python: "3.11"
+  gpu: T4
+  python: '3.11'
   disk_gb: 10
-  vram_min_gb: 8          # hard check — most current Colab GPUs exceed this
-  colab_version: "2025.07"   # any current runtime is fine for the matmul
-
+  vram_min_gb: 8
+  colab_version: '2025.07'
 secrets:
   required: []
   optional: []
-
 strategy_history:
-  - version: v1
-    name: Direct pip (sandbox)
-    status: untested
-    reason: "minimum surface — imports torch from Colab stock, no extras"
-    date: 2026-04-20
-
+- version: v1
+  name: Direct pip (sandbox)
+  status: untested
+  reason: minimum surface — imports torch from Colab stock, no extras
+  date: 2026-04-20
 artifacts:
-  notebook: "outputs/notebooks/{name}.ipynb"
-  e2e_results: "outputs/e2e/{name}/"
-  mcp_sessions: "outputs/mcp-sessions/{name}/"
-
-# Phase 2 target: validate the full enforcement stack lights up for real.
-#   - enabled: true     → PreToolUse lets mcp__* through
-#   - auto-exec: false  → Claude must re-confirm each run_cell (by design)
-#   - preferred_gpu: T4 → generate_notebook.py injects a Cell A GPU assert
-#   - keepalive: false  → short session, skip the heartbeat cell
-#   - max output: 5000  → small sandbox, catch any over-budget early
-#   - timeout: 120s     → quick failure surfacing
+  notebook: outputs/notebooks/{name}.ipynb
+  e2e_results: outputs/e2e/{name}/
+  mcp_sessions: outputs/mcp-sessions/{name}/
 mcp:
-  enabled: true
+  enabled: false
   allow_auto_execution: false
   max_tool_output_tokens: 5000
   preferred_gpu: T4
   keepalive: false
   timeout_seconds: 120
+  serve_via_gradio: false

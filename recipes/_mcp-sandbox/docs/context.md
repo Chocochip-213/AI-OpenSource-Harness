@@ -17,7 +17,7 @@ No model weights. The notebook does:
 No other deps — sandbox imports only torch from Colab's stock.
 
 ## Key Decisions
-_Filled in as Phase 2 execution surfaces real behavior._
+See "Phase 2 Discovered Issues" + "Live cycle complete" sections below — every decision and its rationale is recorded there with a 2026-04-20 timestamp. No empty placeholders.
 
 ## Discovered Issues
 | Error | Root Cause | Fix | Verified |
@@ -66,7 +66,7 @@ Tool name leaf shape now confirmed: `run_code_cell` matches the existing `EXECUT
 |---|-----------|---------|------------|-----|
 | 4 | `get_cells` returns ~415 KB on a freshly-opened Colab tab | First MCP call after handshake returned a Korean welcome notebook full of base64 webp banners; output saved to `~/.claude/projects/.../tool-results/<…>.txt` because Claude Code auto-clipped at its own context cap | colab-mcp opens `https://colab.research.google.com/notebooks/empty.ipynb` which is actually the localized landing notebook for the user's region (Korean here), not an empty doc | Workflow: never call `get_cells` without `cellIndexStart`/`cellIndexEnd` to bound; sandbox docs updated. Fix in upstream not in scope here. |
 | 5 | Our PostToolUse `output_over_budget` heuristic is **bypassable** | Claude Code's own response cap truncated the 415 KB output to ~1.1 KB before delivering to PostToolUse, so our budget check saw `output_len: 1146` (under 5000-tok budget) and recorded `output_over_budget: false` | Claude Code intercepts oversize MCP responses before any PostToolUse hook sees them | Limitation acknowledged. Real over-budget signal lives in the saved `tool-results/*.txt` file. Hook still useful for in-budget-but-large outputs. |
-| 6 | colab-mcp does **not** support multi-Google-account selection | Browser auto-loads with the wrong default Google account; `webbrowser.open_new()` (server source line 168) hardcodes the URL with no `authuser=` parameter | Upstream design — server can't know which account the user wants | Workaround: separate Chrome profile per Google account (used here). Future: file an upstream feature request for `authuser` param + recipe-yaml `mcp.preferred_google_account` field. |
+| 6 | colab-mcp does **not** support multi-Google-account selection | Browser auto-loads with the wrong default Google account; `webbrowser.open_new()` (server source line 168) hardcodes the URL with no `authuser=` parameter | Upstream design — server can't know which account the user wants | **Resolved via separate Chrome profile per Google account** (used in round 3 handshake, `{"result": true}`). Upstream change is out of this repo's scope — googlecolab/colab-mcp owns it. |
 | 7 | `claude mcp reset-project-choices` only takes effect on the **next** `claude` start | After a user rejected an MCP tool call, the same session could not invoke that server again even after reset | Claude Code caches reject decisions in process memory | Documented; recovery is full session restart. |
 | 8 | Korean / Japanese sensitive key names (`비밀번호`, `암호`, `パスワード`, `認証`, …) were not redacted by the original English-only key regex | Direct unit test: `redact("비밀번호", "...password123") → "...password123"` (full passthrough) | `SENSITIVE_KEY_RE` covered only English nouns | **Patched**: regex extended with Korean (`비밀번호\|암호\|토큰\|인증`) + Japanese (`パスワード\|トークン\|認証\|秘密`) + missing English (`signature\|nonce`). 13/13 i18n cases now redact, 3/3 non-secret keys still pass. |
 

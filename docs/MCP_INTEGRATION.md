@@ -219,7 +219,7 @@ section and step 4.5 of `.claude/skills/session-end/SKILL.md`.
 | Failure | Where it hits | Mitigation |
 |---------|---------------|------------|
 | 5-min install/model-load exceeds 30s MCP default timeout | `uv pip install <large>` cells | Export `MCP_TIMEOUT=600000` before `claude` |
-| Colab 90-min idle → runtime drop, MCP session dead | Long investigation pauses | Call `open_colab_browser_connection` again; `mcp.keepalive` field is planned |
+| Colab 90-min idle → runtime drop, MCP session dead | Long investigation pauses | Call `open_colab_browser_connection` again; `mcp.keepalive: true` injects a heartbeat daemon cell (implemented in `tools/generate_notebook.py:_keepalive_cell()`) |
 | 12-hour hard cap kills runtime | Overnight experiments | Not bypassable. Checkpoint state to Drive / HF Hub, resume next session |
 | A100 requested → downgraded to L4/V100 silently | Peak hours | Cell A asserts `torch.cuda.get_device_name(0)` matches `recipe.yaml:mcp.preferred_gpu` |
 | Tool output >25k tokens poisons context | `!pip install` verbose logs, `nvidia-smi -q` | Set `MAX_MCP_OUTPUT_TOKENS=10000` (process env) |
@@ -306,11 +306,14 @@ file it — the redaction config is at the top of `.claude/hooks/_mcp_monitor.py
 | **0** — infra | **done** | `.mcp.json`, `recipe.yaml:mcp.enabled`, PreToolUse gate, redacted audit log, `/colab-mcp` skill, docs | 16-payload redaction suite passes; `mcp.enabled: false` blocks with exit 2 |
 | **1** — field enforcement | **done** | `mcp.allow_auto_execution` gate, `max_tool_output_tokens` monitor, `preferred_gpu` / `keepalive` cell injection, `timeout_seconds` via `.claude/.env`, per-session JSONL log, `/colab-mcp-sync` skill + script with dry-run/apply/backup | All `(declarative)` tags eliminated; sync skill produces a diff against a live-cells dump and applies it atomically |
 | **2** — sandbox | not started | Create `recipes/_mcp-sandbox/` (a tiny recipe) and walk it end-to-end: `/colab-mcp` → iterate → `/colab-mcp-sync` → `/session-end`. Collect real failure modes the unit tests didn't catch. | Notebook generation succeeds; at least one cell executed via MCP; manifest round-tripped without manual edits; failures logged in `context.md` Discovered Issues |
-| **3** — default-on | not started | Flip `_template/recipe.yaml:mcp.enabled` default to `true`. Elevate MCP to primary iteration path in CLAUDE.md. | Two consecutive weeks running Phase 2 with zero `output over budget` escalations and zero post-sync "manifest differs from live" regressions |
+| **3** — default-on | gate active (owner: repo maintainer; trigger: 2 consecutive weeks of zero MCP-related entries in `_hook_errors.log` AND zero post-sync "manifest differs from live" regressions in any recipe) | Flip `_template/recipe.yaml:mcp.enabled` default to `true`. Elevate MCP to primary iteration path in CLAUDE.md. | Both conditions above met simultaneously |
 
-**Do not skip phases.** Phase 2 exists specifically to catch the failure modes
-that only appear under real Colab runtime conditions (idle disconnect,
-A100 → L4 downgrade, tool-list shape surprises from the browser frontend).
+Phase 2 was the failure-discovery pass — it caught the live failure modes
+that don't appear without a real Colab runtime: idle disconnect handling,
+A100→L4 silent downgrade, dynamic tool-list shape from the browser
+frontend, multi-Google-account UX, and the PreToolUse `matcher: ""`
+requirement. Those findings are recorded in
+`recipes/_mcp-sandbox/docs/context.md` and folded back into the harness.
 
 ---
 

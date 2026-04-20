@@ -28,6 +28,7 @@ Every recipe lives under `recipes/<recipe>/` and its **docs triad** is the SSOT:
 3. **No stale context** — the context pack (`.claude/CLAUDE.md`) is regenerated on session start and after every stop hook. This file is auto-loaded by Claude Code.
 4. **No untracked recipes** — running `recipes/<name>/run.sh` must work standalone after `install.sh`.
 5. **Commit early, commit often** — each completed task in `tasks.md` should correspond to a commit.
+6. **No deferral language** — never write `(planned)`, `(future)`, `(future skill)`, `TBD`, `Phase X — not started`, `coming soon`, `할 예정`, or `미구현` as a way to ship a half-finished thought. Every finding must be one of: (a) implemented now, (b) explicitly out of scope with a one-line reason, or (c) assigned to a named owner with a trigger condition (date or measurable event). "Future porters" / "future work" in passive prose is fine; the ban is on **deferring an actual TODO without an owner**.
 
 ## Active Recipe Tracking
 
@@ -70,6 +71,8 @@ scripts/set_active_recipe.sh --current       # show active recipe
 | `/recipe-authoring` | recipe, template, SSOT | Create/modify recipes and docs |
 | `/colab-debugging` | pip error, CUDA, ImportError | Debug Colab compatibility issues |
 | `/notebook-builder` | notebook, generate, manifest | Generate notebooks from manifests |
+| `/colab-mcp` | live colab, mcp run, 코랩 실행 | Drive a live Colab runtime via colab-mcp (opt-in per recipe) |
+| `/colab-mcp-sync` | mcp sync, manifest 반영 | Promote MCP-side cell edits back into notebook_manifest.yaml |
 | `/session-end` | session end, handoff | Wrap up: docs + memory + commit + push + handoff prompt |
 | `/pre-compact` | compact, context full | Persist critical context before auto-compact |
 | `/fresh-start` | clear, fresh start, context poisoning | Save to SSOT + /clear for clean restart |
@@ -159,6 +162,23 @@ workflow entry points — do not copy content back from there.
 uvx --from git+https://github.com/googlecolab/colab-mcp@v1.0.2 colab-mcp --help  # first run ~60s
 claude mcp list                                                                    # expect: colab-mcp registered
 ```
+
+## SSAFY monorepo integration (when this harness lives at `<repo>/ai/`)
+
+If `cwd` is inside a SSAFY-style monorepo (sibling `front/` and `back/`
+folders + GitLab origin), apply the conventions in
+**`docs/SSAFY_CONVENTIONS.md`** instead of the OSS English defaults:
+
+- Commit messages: Korean + 14-prefix (`feat:`/`fix:`/`docs:`/...), 50 chars, no trailing `.`
+- Branch: `feature/ai/S14P11A607-N-<desc>` (BE/FE branches use `be`/`fe` slot)
+- PR target: `AI/develop` via GitLab MR; push only after explicit user approval
+- Always `cd ai/ && claude` so this folder's `.claude/` and `.mcp.json` are picked up
+- Never modify sibling `front/` or `back/` without an explicit user-confirmed cross-domain branch
+
+This is the only switch — no separate "SSAFY branch" of the harness, no
+duplicated configs. Detection is manual (the user signals the context
+or the prompt mentions S14P11A607); `last_recipe.txt` and `.env` work
+identically in both modes.
 
 ## Security & Platform Notes
 

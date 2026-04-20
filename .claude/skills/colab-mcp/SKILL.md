@@ -2,6 +2,10 @@
 name: colab-mcp
 description: Use when the user wants to run/iterate the current recipe's notebook on a live Colab runtime via the colab-mcp server. Triggers on "Colab에서 실행", "live colab", "run on colab", "mcp run", "iterate cells", "interactive colab". Requires recipe.yaml mcp.enabled=true AND .mcp.json registration (already present in repo root). Enforces manifest-first discipline — every MCP edit is logged and must be promoted back via /colab-mcp-sync. Single-connection and Python 3.13 isolation constraints are documented in docs/MCP_INTEGRATION.md.
 allowed-tools: Read Edit Write Bash
+paths:
+  - .mcp.json
+  - recipes/**/recipe.yaml
+  - .claude/hooks/_mcp_monitor.py
 ---
 
 # Skill: colab-mcp
@@ -64,7 +68,7 @@ Do NOT wait synchronously. Use the async-job pattern documented in
 ### 5. Manifest-first discipline
 Every cell edit made via MCP is an **un-promoted change**. Before session end:
 - Append a note to `recipes/<name>/docs/context.md` "Discovered Issues" describing the fix
-- Run `/colab-mcp-sync` (future skill) OR manually update `notebook_manifest.yaml` to reflect the working cell content
+- Run `/colab-mcp-sync <recipe>` (skill: `.claude/skills/colab-mcp-sync/SKILL.md`, script: `scripts/colab_mcp_sync.py`) — diffs live cells against `notebook_manifest.yaml`, applies on `--apply` with timestamped `.bak`, AND auto-regenerates `outputs/notebooks/<recipe>.ipynb` so manifest + .ipynb stay in lock-step. The `latest-cells.json` input is auto-written by the PostToolUse hook whenever you call `mcp__colab-mcp__get_cells`, so the manual flow is just: `get_cells` → `/colab-mcp-sync <recipe> --apply`
 - If you leave edits un-promoted, the next `generate_notebook.py` invocation will silently overwrite them
 
 ### 6. Graceful disconnect handling

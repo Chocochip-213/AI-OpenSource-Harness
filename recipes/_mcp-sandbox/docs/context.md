@@ -82,3 +82,38 @@ Tool name leaf shape now confirmed: `run_code_cell` matches the existing `EXECUT
 | **Total** | **67** | **67** | **0** | Zero leaks, zero silent failures across the harness's hook layer |
 
 Live-runtime success criteria still pending (require browser-in-the-loop): handshake `result: true` (1 of 3 attempts so far), MCP-driven cell execution, manifest sync round-trip with real cell deltas.
+
+### Live cycle complete (2026-04-20 round 3 — fresh Chrome profile)
+
+Full dynamic-tool sweep against a real Colab runtime (A100-SXM4-40GB allocated despite `preferred_gpu: T4`, which is fine — preflight is a soft warn):
+
+| Step | Tool | Result |
+|------|------|--------|
+| 1 | `open_colab_browser_connection` | `{"result": true}` — handshake succeeded |
+| 2 | `get_cells(cellIndexEnd=2)` | bounded fetch returned 1 empty cell (no Korean welcome page this time — fresh profile = fresh empty notebook) |
+| 3 | `add_code_cell(cellIndex=0..2)` × 3 | new cell IDs `qNfaazRk3puh`, `AXH824OF3qS6`, `LrEkJFFM3quz` |
+| 4 | `run_code_cell(qNfaazRk3puh)` with `auto_exec=false` | **PreToolUse blocked with exit 2** — stderr `MCP exec blocked: …allow_auto_execution: false. Confirm with the user…` reached Claude verbatim. **The matcher fix from commit 705e7a1 is live-validated.** |
+| 5 | flip `allow_auto_execution: true` → `run_code_cell` × 3 | `torch 2.10.0+cu128`, matmul `(1024,1024) max=147.83`, `Device: NVIDIA A100-SXM4-40GB`, VRAM 41.82/42.41 GB, `Sandbox OK — Phase 2 handshake validated.` |
+| 6 | `update_cell(qNfaazRk3puh, ...)` + re-run | new line `[update_cell test] this line was added by /colab-mcp` showed up in stdout — update propagated correctly |
+| 7 | `delete_cell(lIYdn1woOS1n)` | empty cell removed |
+| 8 | `get_cells` → `latest-cells.json` → `colab_mcp_sync.py _mcp-sandbox` (dry-run) | diff produced cleanly: `same=0 modify=2 add=1 remove=1` (B's UPDATED suffix dropped via sync's name normalizer; C name mismatch "Tiny matmul" vs "Tiny matmul sanity check" drove add+remove — not a bug, just shows the sync uses name align) |
+
+PreToolUse audit captured every call with `code` / `content` fields hashed (`<hash:ebe4b60dd719 len:…>`), `cell_id` left in clear (it's an opaque identifier, not a secret). PostToolUse session log captured every output (`output_len: 28..173` — all under the 5000-token budget so `output_over_budget: false` correctly throughout this run).
+
+### Live findings
+
+| # | Finding |
+|---|---------|
+| 9 | **A100 was allocated even with `preferred_gpu: T4`** — Colab gave the user a *bigger* card. Our preflight emits a `[warn]` (mismatch) but does not fail (VRAM ≥ 8 GB). Behaving exactly as designed. |
+| 10 | **`run_code_cell` is a synchronous tool with `MCP_TIMEOUT` cap** (default 30 s, max realistic ~600 s). Long-running tasks (training, large downloads) MUST use the async-job pattern documented in `docs/MCP_INTEGRATION.md` § *Long-running cells* — fire-and-forget thread + status polling cell. **Anything over Colab's 12-h hard cap requires checkpointing to Drive/HF Hub and resuming in a new session.** This is a Colab + Claude-Code architectural limit, not a bug to fix. |
+| 11 | **Sync's `name` align is the matching primary key when no `cell_id` overlaps**. Manifest cells have no `cell_id`; live cells do. So renaming a cell ("Tiny matmul" vs "Tiny matmul sanity check") triggers add+remove rather than modify. For tighter alignment, manifest authors can pre-assign `cell_id` strings and pass them through `add_code_cell` is unsupported (the API doesn't take cellId as input — the server assigns it). Workaround: name cells exactly as they'll appear after `add_code_cell`. |
+
+### Phase 2 exit criteria — all met
+- [x] Notebook generated (non-blank)
+- [x] Handshake succeeded at least once
+- [x] At least one cell executed via MCP (3 cells executed, 1 updated + re-run)
+- [x] Session log has ≥ 3 records (current session has 8 entries)
+- [x] Redaction log has no verbatim secrets (auto-scan + 67 unit tests + this live run all clean)
+- [x] Sync round-trip completed (dry-run shown above; real `--apply` saved for post-Phase-2 commit if the user wants to update the manifest)
+
+**Phase 2 done.** Ready to consider Phase 3 (flip `_template/recipe.yaml:mcp.enabled` default to `true`) once two consecutive weeks pass without an MCP-related regression in `_hook_errors.log`.

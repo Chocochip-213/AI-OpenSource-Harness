@@ -349,7 +349,6 @@ def generate_notebook(recipe_name: str, out_path: Path | None = None) -> Path:
     if mcp_cfg.get("enabled") and mcp_cfg.get("serve_via_gradio"):
         cells.append(_gradio_serve_cell(recipe_name))
         print("[generate_notebook] Injected Gradio serve cell (mcp.serve_via_gradio: true).")
-        print("[generate_notebook] Injected keepalive cell (mcp.keepalive: true).")
 
     # GPU type resolution order (SSOT-first):
     #   1. notebook_manifest.yaml:gpu_type — explicit override wins

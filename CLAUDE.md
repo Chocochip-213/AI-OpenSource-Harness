@@ -66,6 +66,14 @@ scripts/set_active_recipe.sh --current       # show active recipe
 
 `UserPromptSubmit` hook matches prompts against `.claude/skill-rules.json` and auto-suggests relevant skills. `skill-rules.json` is a **harness-local convention** read by the hook — it is NOT a first-class Claude Code feature. Claude Code itself discovers skills via `.claude/skills/*/SKILL.md` frontmatter (`description`, `paths`). The harness adds `skill-rules.json` on top as extra keyword-to-skill hints surfaced at prompt-submit time.
 
+> Skills are reference, hooks are enforcement (per Anthropic docs: *"rules are guidance... for guaranteed behavior use hooks or permissions"*). Skill invocation is LLM-judged (~50-77% baseline); anything that MUST run → hook.
+
+### MCP live-Colab invariants (deterministic hooks, not prose)
+- **Per-cell backup**: after each `run_code_cell`, call `mcp__colab-mcp__get_cells(0, <count>)`. `_mcp_session_log.py` PostToolUse hook atomically writes `latest-cells.json` + unique `cells_<ts>_<ns>.json` snapshot — no explicit Write needed.
+- **Delete failed cells** before moving on (no ghost-iframes / noisy sync diffs).
+- **No inline secrets**: `login(token="hf_XXX", …)` leaks — live Colab keeps the bytes. Use Colab Secrets via `google.colab.userdata.get("HF_TOKEN")`.
+- **Harness-file commits**: `.claude/hooks/commit_gate.sh` (PreToolUse on Bash) blocks `git commit` when `CLAUDE.md` / `.claude/{hooks,skills,agents,settings.json}` / `.mcp.json` / `tools/` / `scripts/` are staged without a recent `.claude/_code_review_passed.json`. Run `Agent(subagent_type='code-reviewer')` + write the marker first.
+
 | Skill | Trigger | Description |
 |-------|---------|-------------|
 | `/recipe-authoring` | recipe, template, SSOT | Create/modify recipes and docs |
@@ -142,11 +150,8 @@ workflow entry points — do not copy content back from there.
 2. `source .claude/.env && claude` — starts Claude with those envs applied.
 3. `recipes/<recipe>/recipe.yaml` must have `mcp.enabled: true`. The PreToolUse
    hook `_mcp_monitor.py` blocks every `mcp__*` call with exit 2 otherwise.
-4. `/colab-mcp` — opens the Colab tab and iterates cells. Every call is
-   redacted and appended to `.claude/_mcp_tool_calls.log`; tool output is
-   captured to `outputs/mcp-sessions/<recipe>/<session>.jsonl`.
-5. `/colab-mcp-sync <recipe>` — before session end, diffs live notebook
-   against `notebook_manifest.yaml` and promotes the edits (with user review).
+4. `/colab-mcp` skill = the readable playbook; invoke when you want it. See §Skills above for the must-dos (backup / cleanup / token) — they're enforced deterministically by the PostToolUse `_mcp_session_log.py` hook, not by skill activation.
+5. `/colab-mcp-sync <recipe>` mid-session (optional) + `--apply` at end — rewrites manifest + auto-regenerates `.ipynb`.
 
 ### What is enforced automatically
 - `mcp.enabled` — PreToolUse gate

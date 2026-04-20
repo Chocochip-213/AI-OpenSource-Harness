@@ -156,13 +156,25 @@ def main():
         except Exception:
             pass
 
-    # Skill suggestions
+    # Skill suggestions — actionable but not mandatory. Seleznov's own
+    # 650-trial study shows stacking imperative "MUST call" hook text on
+    # top of passive SKILL.md descriptions can DROP activation to 37%
+    # (worse than no hook). Per Anthropic docs, "rules are guidance
+    # Claude reads, not configuration Claude Code enforces. For guaranteed
+    # behavior use hooks or permissions." So this hook's job is to
+    # surface the relevant skill with a clean, copy-paste invocation
+    # hint — not to coerce. True invariants live in actual hooks
+    # (PreToolUse / PostToolUse) or CLAUDE.md inline bullets.
     if matches:
-        lines.append("[Skill Suggestions]")
+        lines.append("[Related skills]")
         for m in matches:
-            lines.append(f"  -> /{m['name']} (matched: {m['reason']})")
+            lines.append(
+                f"  -> {m['name']} (matched on: {m['reason']}). "
+                f"Invoke with `Skill(skill='{m['name']}')` if the procedural "
+                "checklist applies to what you're about to do."
+            )
             if m["hint"]:
-                lines.append(f"     {m['hint']}")
+                lines.append(f"     hint: {m['hint']}")
 
             # Inject small reference files (e.g., colab runtime quick-reference)
             for rel_path in m.get("injectFiles", []):

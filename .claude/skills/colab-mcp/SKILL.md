@@ -1,14 +1,20 @@
 ---
 name: colab-mcp
-description: Use when the user wants to run/iterate the current recipe's notebook on a live Colab runtime via the colab-mcp server. Triggers on "Colab에서 실행", "live colab", "run on colab", "mcp run", "iterate cells", "interactive colab". Requires recipe.yaml mcp.enabled=true AND .mcp.json registration (already present in repo root). Enforces manifest-first discipline — every MCP edit is logged and must be promoted back via /colab-mcp-sync. Single-connection and Python 3.13 isolation constraints are documented in docs/MCP_INTEGRATION.md.
-allowed-tools: Read Edit Write Bash
-paths:
-  - .mcp.json
-  - recipes/**/recipe.yaml
-  - .claude/hooks/_mcp_monitor.py
+description: Live Colab MCP driver. ALWAYS invoke this skill BEFORE calling any mcp__colab-mcp__* tool — it owns the preflight checks, per-cell backup discipline, cleanup rules, token-redaction guarantees, and disconnect recovery. Do NOT call open_colab_browser_connection / add_code_cell / run_code_cell / update_cell / delete_cell / get_cells directly — invoke this skill first; skipping it caused ~90 min + 48 GB of lost work on flux2-klein-4b (2026-04-20) because the per-cell backup rule only activates via this skill. Triggers on any MCP Colab intent — "Colab에서 실행", "live colab", "run on colab", "mcp run", "iterate cells", "interactive colab", "콜랩 실행", or the user asking to run cells, add cells, debug cells in Colab.
+allowed-tools: Read, Edit, Write, Bash
 ---
 
 # Skill: colab-mcp
+
+> **Self-enforcement (read first, every session)** — this skill only has effect
+> if invoked via the `Skill` tool. Reading the SKILL.md file as passive
+> documentation while hand-running MCP tools is the failure mode that lost
+> ~90 min of flux2-klein-4b work on 2026-04-20 (the "매 셀 백업" rule lived
+> in this file but was never actually activated). **Invoke this skill AT THE
+> START of every MCP session**, before the first `open_colab_browser_connection`
+> call. Also invoke `/colab-mcp-sync` periodically MID-SESSION (not just at
+> the end) — its whole purpose is to write `latest-cells.json` and the
+> manifest before anything can get lost.
 
 ## When to Use
 User wants Claude to drive a live Colab runtime (cell CRUD + execution + state
@@ -65,19 +71,56 @@ Do NOT wait synchronously. Use the async-job pattern documented in
 `_job["status"]` from subsequent cells. MCP tool round-trips should each be
 <30s; the notebook's Python does the waiting.
 
-### 5. Manifest-first discipline
-Every cell edit made via MCP is an **un-promoted change**. Before session end:
-- Append a note to `recipes/<name>/docs/context.md` "Discovered Issues" describing the fix
-- Run `/colab-mcp-sync <recipe>` (skill: `.claude/skills/colab-mcp-sync/SKILL.md`, script: `scripts/colab_mcp_sync.py`) — diffs live cells against `notebook_manifest.yaml`, applies on `--apply` with timestamped `.bak`, AND auto-regenerates `outputs/notebooks/<recipe>.ipynb` so manifest + .ipynb stay in lock-step. The `latest-cells.json` input is auto-written by the PostToolUse hook whenever you call `mcp__colab-mcp__get_cells`, so the manual flow is just: `get_cells` → `/colab-mcp-sync <recipe> --apply`
+### 5. Manifest-first discipline — **back up after EVERY cell**
+Every cell edit made via MCP is an **un-promoted change**. Rules learned the
+hard way (flux2-klein-4b session lost 48 GB + 90 min of work when the Colab
+tab died with no local backup):
+
+**Per-cell backup**: after every `run_code_cell` that succeeds, call
+`get_cells(cellIndexStart=0, cellIndexEnd=<current_count>)`. The PostToolUse
+hook at `.claude/hooks/_mcp_session_log.py` then writes the response to
+both `outputs/mcp-sessions/<recipe>/latest-cells.json` AND a timestamped
+`cells_<ts>.json` snapshot automatically — deterministic, not depending
+on Claude remembering to Write. (That hook was widened post-2026-04-20
+flux2 session after the old narrow predicate silently dropped partial
+scans.) You still explicitly need to CALL `get_cells`; the hook handles
+the disk write. Why this matters: `colab-mcp` has no `save_to_drive`
+tool, and the notebook in the browser is pure memory until the user
+presses Ctrl+S. If the tab dies, those snapshots are the only recovery.
+
+**Cleanup failed cells**: when a cell fails and you replace it with a
+working version, `delete_cell` the failed one before moving on. Leftover
+broken cells cause visible ghost-iframes (e.g. two Gradio share URLs
+rendered, one dead), wrong state when the user re-runs from top, and
+noisy `/colab-mcp-sync` diffs.
+
+**Token handling**: do not inline `hf_…` / API tokens into a cell's
+source (`login(token="hf_XXX", …)`). The PreToolUse redaction hashes
+the source field in the *audit log* but the live Colab notebook still
+contains the token bytes in the cell — if the user later saves to
+Drive or exports, the token leaks. Ask the user to add the token to
+**Colab Secrets** (left sidebar key icon) and read via
+`google.colab.userdata.get("HF_TOKEN")`. If the user pastes a token
+into chat for speed, warn them to rotate after the session — it's in
+conversation history regardless.
+
+At session end, promote everything:
+- Append a note to `recipes/<name>/docs/context.md` "Discovered Issues" describing each fix
+- Run `/colab-mcp-sync <recipe>` (skill: `.claude/skills/colab-mcp-sync/SKILL.md`, script: `scripts/colab_mcp_sync.py`) — diffs live cells against `notebook_manifest.yaml`, applies on `--apply` with timestamped `.bak`, AND auto-regenerates `outputs/notebooks/<recipe>.ipynb`
 - If you leave edits un-promoted, the next `generate_notebook.py` invocation will silently overwrite them
 
 ### 6. Graceful disconnect handling
-Watch for these signals mid-session:
-- Any MCP tool returning a connection error → runtime probably dropped (90-min idle or 12-hour cap)
-- Tool list becomes empty (`notifications/tools/list_changed` with no tools)
+MCP can fail in three modes — each needs a different recovery:
 
-Recovery: call `open_colab_browser_connection` again. State in the Colab notebook
-is gone — you need to re-run setup cells. If `mcp.keepalive: true`, idle
+| Signal | Cause | Recovery |
+|--------|-------|----------|
+| `open_colab_browser_connection` returns `false` | Browser not signed into Colab, or default browser did not open the tab | Check `https://colab.research.google.com` in the user's default browser, then retry |
+| Dynamic tools disappear ("no longer available" notice) | MCP server subprocess crashed (rare — usually after an unresponsive tool call) | **Full Claude Code restart required** — `claude mcp list` alone will not respawn the server. Tell the user to exit + `source .claude/.env && claude`, then re-run this skill's Step 1 |
+| A `run_code_cell` hangs > 2 min for a cell that should be fast | Server sent the request, Colab ran it, but the WebSocket back is stuck | Do not wait silently. Surface the stall to the user, retry with a smaller cell, consider `delete_cell` + `add_code_cell` + re-run |
+
+If the **Colab runtime** (not the MCP server) dropped — any subsequent MCP tool
+will succeed at the MCP level but return stale/empty notebook state. In that
+case: re-run setup cells from scratch. If `mcp.keepalive: true`, idle
 disconnect is delayed but the 12h hard cap is unavoidable.
 
 ## Constraints (hard, from server source)

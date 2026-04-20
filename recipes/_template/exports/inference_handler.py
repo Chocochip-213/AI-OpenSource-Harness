@@ -13,6 +13,16 @@ prediction. This is the **canonical entry point** for both:
 DO NOT add a web framework here. Gradio (Colab) and any future runtime
 (FastAPI / Modal / TorchServe) wrap THIS function. Keep the surface
 single-function so all wrappers stay trivial.
+
+> **Note to recipe authors** — After your first successful live MCP run,
+> REPLACE this stub with your actual primitives-call implementation.
+> `tools/generate_export.py` will preserve the hand-authored version on
+> subsequent regens *as long as you remove the `<!-- FILL -->` markers
+> below* (the tool detects unfilled stubs by that marker). If you see
+> "[preserve] …inference_handler.py …NOT overwriting" in the regen
+> output, it worked. See `recipes/flux2-klein-4b/exports/inference_handler.py`
+> for a reference implementation that bypasses upstream `cli.main()` and
+> calls sampling primitives directly.
 """
 from __future__ import annotations
 

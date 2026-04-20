@@ -234,23 +234,46 @@ def main() -> int:
     # can run without an extra "Write the dump to disk" step from Claude.
     # This closes the manifest-first loop: Colab live → get_cells →
     # latest-cells.json (here) → colab_mcp_sync.py --apply → manifest +
-    # regenerated .ipynb. Only saves when the response actually has cells
-    # (skips cold/error responses).
-    if tool.endswith("get_cells") and isinstance(tool_result, dict):
-        cells = tool_result.get("cells")
-        if isinstance(cells, list) and cells:
-            latest = REPO_ROOT / "outputs" / "mcp-sessions" / recipe / "latest-cells.json"
+    # regenerated .ipynb. Deterministic enforcement layer per Anthropic
+    # docs ("use hooks to enforce behavior deterministically"); skills
+    # can tell Claude to call get_cells, this hook handles the write.
+    #
+    # Behaviour (post 2026-04-20 flux2 session fix): save on ANY get_cells
+    # return with a cells field — accepts:
+    #   - {"cells": [...]}              (current colab-mcp shape)
+    #   - [...]                         (bare list fallback)
+    #   - {"cells": []}                 (empty — save anyway, preserves "fresh notebook" state)
+    # Previous logic skipped partial/empty responses and caused silent loss
+    # on the 3-session flux2-klein-4b port. Also writes a timestamped
+    # sibling snapshot (cells_<session>_<timestamp>.json) so a later tab
+    # close / runtime drop can be recovered to any earlier checkpoint.
+    if tool.endswith("get_cells"):
+        cells = None
+        if isinstance(tool_result, dict):
+            cells = tool_result.get("cells")
+        elif isinstance(tool_result, list):
+            cells = tool_result
+            tool_result = {"cells": cells}
+        if isinstance(cells, list):
+            sessions_dir = REPO_ROOT / "outputs" / "mcp-sessions" / recipe
+            latest = sessions_dir / "latest-cells.json"
+            # Timestamped snapshot — second-resolution alone collides when
+            # two get_cells return in the same wall-clock second (code-reviewer
+            # finding, 2026-04-20). Append monotonic_ns to guarantee uniqueness.
+            snapshot_ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+            snapshot = sessions_dir / f"cells_{snapshot_ts}_{time.monotonic_ns()}.json"
             try:
-                latest.parent.mkdir(parents=True, exist_ok=True)
-                # Save the raw colab-mcp shape — colab_mcp_sync.cells_from_live
-                # already unwraps {"cells": [...]} via its dict-or-list check.
-                latest.write_text(
-                    json.dumps(tool_result, ensure_ascii=True, indent=2),
-                    encoding="utf-8",
-                )
+                sessions_dir.mkdir(parents=True, exist_ok=True)
+                payload = json.dumps(tool_result, ensure_ascii=True, indent=2)
+                # Atomic write for latest-cells.json (colab_mcp_sync.py reads it,
+                # and a concurrent sync could otherwise catch a half-written file).
+                tmp = latest.with_suffix(".json.tmp")
+                tmp.write_text(payload, encoding="utf-8")
+                tmp.replace(latest)
+                snapshot.write_text(payload, encoding="utf-8")
                 log_error(
-                    f"auto-saved latest-cells.json (cells={len(cells)}, "
-                    f"recipe={recipe}) — /colab-mcp-sync ready"
+                    f"auto-saved latest-cells.json + {snapshot.name} "
+                    f"(cells={len(cells)}, recipe={recipe}) — /colab-mcp-sync ready"
                 )
             except Exception as e:
                 log_error(f"latest-cells.json save failed: {e}")

@@ -1,7 +1,7 @@
 ---
 name: colab-mcp-sync
-description: Use after a live Colab MCP session to promote cell-level edits that were made in the browser back into the recipe's notebook_manifest.yaml. Triggers on "mcp sync", "manifest 반영", "promote mcp edits", "sync manifest", "콜랩 변경 반영", "노트북 매니페스트 업데이트", or when the user says the live notebook drifted from the manifest. Produces a diff first; applies only on confirmation. Prevents the "Cell X fix 20 commits" drift that killed Ever's trellis2 iteration.
-allowed-tools: Read Edit Write Bash
+description: Manifest sync back from live Colab. ALWAYS invoke this skill after ANY live MCP session that added / modified / reordered / deleted cells, AND periodically MID-SESSION (not only at the end) to checkpoint state to disk. Do NOT edit recipes/<name>/notebook_manifest.yaml by hand after an MCP session — this skill owns the diff-then-apply contract with the timestamped .bak + auto-regenerated .ipynb. Skipping this step is the exact failure mode that produced Ever's "Cell X fix 20 commits" pile; flux2-klein-4b (2026-04-20) lost 48 GB + 90 min of work for the same reason. Triggers on "mcp sync", "manifest 반영", "promote mcp edits", "sync manifest", "콜랩 변경 반영", "노트북 매니페스트 업데이트", the end of any /colab-mcp session, OR every 3-5 successful run_code_cell calls.
+allowed-tools: Read, Edit, Write, Bash
 paths:
   - outputs/mcp-sessions/**/latest-cells.json
   - outputs/mcp-sessions/**/*.cells.json
@@ -28,14 +28,23 @@ will silently overwrite them — the exact failure mode that produced Ever's
 
 ## Workflow
 
-### Step 1 — Dump live cells from Colab (auto-saved)
-Call the MCP `get_cells` tool. The PostToolUse hook
-(`.claude/hooks/_mcp_session_log.py`) **auto-saves** the response to
-`outputs/mcp-sessions/<recipe>/latest-cells.json` — you don't need a
-manual Write step.
+### Step 1 — Dump live cells from Colab (hook handles the write)
+Call the MCP `get_cells` tool with an explicit bound:
 
 ```
-mcp__colab-mcp__get_cells (cellIndexStart=0, cellIndexEnd=N, includeOutputs=false)
+mcp__colab-mcp__get_cells (cellIndexStart=0, cellIndexEnd=<N>, includeOutputs=false)
+```
+
+The PostToolUse hook `.claude/hooks/_mcp_session_log.py` auto-writes the
+response to `outputs/mcp-sessions/<recipe>/latest-cells.json` + a
+timestamped `cells_<ts>_<ns>.json` snapshot. The widened predicate
+(post-2026-04-20 fix) handles dict `{"cells":[...]}`, bare list, and
+empty list — no silent skip. Claude's responsibility is to CALL
+`get_cells`; the write is deterministic.
+
+Expected JSON shape (what the hook writes):
+```json
+{"cells": [{"cell_type":"code","id":"...","name":"...","source":"..."}]}
 ```
 
 If the live notebook is large (the Korean Colab welcome page is ~415 KB

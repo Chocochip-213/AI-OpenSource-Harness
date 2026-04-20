@@ -490,3 +490,128 @@ model = Model.from_pretrained(local_path)
 
 > **Contributing**: When you encounter a new Colab-specific error during porting, add it here with:
 > symptom, root cause, what doesn't work, and the verified fix.
+
+---
+
+### 28. Gradio 5.x Moved API Under `/gradio_api/` Prefix — Legacy Paths 404
+
+**Symptom**: `POST /call/predict` or `POST /run/predict` returns
+`{"detail":"Not Found"}` (HTTP 404) against a Gradio share URL launched
+from Colab's stock Gradio (5.x, verified 5.50.0).
+
+**Root Cause**: Gradio 5.x added a configurable API prefix (default
+`/gradio_api/`) to every endpoint. `GET /config` reveals it via the
+`"api_prefix"` field. Gradio 3.x `/run/predict` and Gradio 4.x
+`/call/predict` (no prefix) both 404 on 5.x.
+
+**Fix**:
+```python
+import urllib.request, json
+SHARE = _share_url.rstrip("/")
+# Step 1: submit
+req = urllib.request.Request(
+    SHARE + "/gradio_api/call/predict",  # <-- /gradio_api/ prefix
+    data=json.dumps({"data": [prompt]}).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+event_id = json.loads(urllib.request.urlopen(req).read())["event_id"]
+# Step 2: SSE stream until 'event: complete', parse 'data:' JSON array
+req2 = urllib.request.Request(SHARE + f"/gradio_api/call/predict/{event_id}", method="GET")
+raw = urllib.request.urlopen(req2).read().decode()
+```
+
+**Discovery**: Look at `GET {share_url}/config` to confirm the prefix for
+any specific Gradio server. For file/image outputs, `data[0]` is a dict
+`{path, url, size, orig_name, mime_type, is_stream, meta}` — backend must
+GET the `url` to retrieve actual bytes.
+
+---
+
+### 29. FP8 Model Dequantizes to bf16 on A100
+
+**Symptom**:
+```
+UserWarning: FP8 quantized models is only supported on GPUs with compute
+capability >= 8.9 (e.g 4090/H100), actual = `8.0`.
+```
+
+**Root Cause**: Modern checkpoints (FLUX.2 klein 4B, etc.) ship FP8
+weights. FP8 tensor ops require compute capability >= 8.9 — H100 (9.0)
+or RTX 4090 (8.9). A100 (8.0) and V100 (7.0) cannot do native FP8.
+
+**Fix**: No action needed — transformers auto-dequantizes FP8 → bf16 on
+load. Functionally correct, slightly slower (extra dequantize pass) and
+uses ~2× VRAM vs native FP8. Accept the warning. For equivalent memory
+on sub-8.9 GPUs, use `bitsandbytes` 8-bit / 4-bit or `torchao` INT8
+(not tested in this harness).
+
+---
+
+### 30. Guidance-Distilled Models Fix `num_steps` and `guidance`
+
+**Symptom**: Upstream accepts `num_steps=30, guidance=4.0` for a dev
+variant, fails validation or produces noise for the same args on klein /
+schnell / distilled variants.
+
+**Root Cause**: Distilled models (FLUX.2 klein, SD-Turbo, SDXL-Lightning,
+FLUX-schnell) collapse 30-50 steps into 1-4 via adversarial distillation.
+The model REQUIRES the specific step count + guidance it was trained
+against. FLUX.2 klein-4B's `FLUX2_MODEL_INFO`:
+```python
+"defaults": {"num_steps": 4, "guidance": 1.0},
+"fixed_params": {"num_steps", "guidance"},  # hard constraint
+```
+
+**Fix**: Honour the model's defaults; don't override.
+```python
+defaults = model_info.get("defaults", {}) or {}
+num_steps = defaults.get("num_steps", 30)  # 4 for klein, 50 for dev
+guidance  = defaults.get("guidance", 4.0)  # 1.0 for klein, 4.0 for dev
+```
+
+**Upside**: distilled models are **22-30× faster**. flux2 klein-4B on
+A100 generates 1024×576 in **0.8 seconds**. Marketing often buries this
+detail — check the model's `MODEL_INFO` / config before benchmarking.
+
+---
+
+### 31. `snapshot_download` on Multi-Variant HF Repos Fills Disk
+
+**Symptom**:
+```
+RuntimeError: Data processing error: File reconstruction error:
+IO Error: No space left on device (os error 28)
+```
+during `huggingface_hub.snapshot_download(repo_id=...)` on a large multi-
+variant repo. Seen on `black-forest-labs/FLUX.2-dev` (152 GB — 32B flow
+weights + 10-shard Mistral Small text encoder + full transformer + VAE +
+AE at multiple precisions). Colab `/content` has ~50 GB free.
+
+**Root Cause**: `snapshot_download` pulls **every file** in the repo
+unless filtered.
+
+**Fix**: Use `hf_hub_download` for SINGLE files, or `allow_patterns` /
+`ignore_patterns` for bulk filters:
+```python
+# Audit first
+from huggingface_hub import list_repo_files
+print(list_repo_files("org/big-repo"))
+
+# Single-file (safest)
+from huggingface_hub import hf_hub_download
+hf_hub_download(repo_id="org/big-repo", filename="ae.safetensors", cache_dir="/content/hf_cache")
+
+# Filtered bulk
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id="org/big-repo",
+    cache_dir="/content/hf_cache",
+    allow_patterns=["ae.safetensors", "tokenizer/*"],      # whitelist
+    # OR ignore_patterns=["transformer/*", "text_encoder/*"],  # blacklist
+)
+```
+
+**Discovery**: Always `list_repo_files(repo_id)` first. 5-line audit prevents
+a 30-minute partial-download + cleanup cycle. See
+`recipes/flux2-klein-4b/notebook_manifest.yaml:Cell 3` for a worked example.

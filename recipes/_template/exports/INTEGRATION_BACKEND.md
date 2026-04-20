@@ -5,16 +5,25 @@
 
 ## TL;DR
 1. Add env var `{BACKEND_ENV_VAR}=https://xxxx.gradio.live` to your config.
-2. POST `{ "data": [<input>] }` to `${ {BACKEND_ENV_VAR} }/call/predict` — returns an `event_id`.
-3. GET `${ {BACKEND_ENV_VAR} }/call/predict/<event_id>` (SSE) and read the final
-   `process_completed` event: `output.data[0]` is the AI result. Asset MIME: `{ASSET_MIME}`.
+2. POST `{ "data": [<input>] }` to `${ {BACKEND_ENV_VAR} }/gradio_api/call/predict` — returns an `event_id`.
+3. GET `${ {BACKEND_ENV_VAR} }/gradio_api/call/predict/<event_id>` (SSE) until `event: complete`;
+   parse `data:` JSON array. For image/file outputs, `data[0].url` is the downloadable asset URL.
+   Asset MIME: `{ASSET_MIME}`.
 4. When the URL changes (Colab restart), update the env var — team channel `{TEAM_CHANNEL}`.
 
-> **Protocol note** — Colab ships Gradio 5.x, which replaced the legacy
-> `POST /run/predict` one-shot endpoint with a **two-step queued call**:
-> `POST /call/predict` → `event_id` → `GET /call/predict/<event_id>` (SSE
-> stream). The Spring side has to follow the SSE stream until it sees
-> `event: complete` / `msg: process_completed`.
+> **Protocol note** — Colab ships Gradio 5.x, which moved every API
+> path under a `/gradio_api/` prefix (see `GET /config → api_prefix`).
+> The canonical queued call is:
+> `POST /gradio_api/call/predict` → `{"event_id": "..."}`
+> `GET  /gradio_api/call/predict/<event_id>` → SSE stream, terminate on `event: complete`.
+> The legacy Gradio 3.x `/run/predict` one-shot and Gradio 4.x `/call/predict` (no
+> prefix) both 404 on 5.x — re-use old code carefully.
+
+> **Response shape** — for image/file outputs, `data` is a list of objects
+> shaped `{path, url, size, orig_name, mime_type, is_stream, meta}`. The
+> backend fetches `url` (a second HTTP GET to the Gradio file server at
+> `{share}/gradio_api/file=...`) to obtain the actual bytes. For JSON /
+> text outputs, `data[i]` is the primitive / dict directly.
 
 ## Java client (Spring Boot 3.2+ `RestClient`)
 ```java
@@ -37,7 +46,7 @@ public class {RECIPE_CLASS_NAME}Controller {
             : gradioUrl;
         try {
             Map<?, ?> started = rest.post()
-                .uri(base + "/call/predict")
+                .uri(base + "/gradio_api/call/predict")
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(Map.of("data", List.of(input)))
                 .retrieve()
@@ -59,22 +68,29 @@ public class {RECIPE_CLASS_NAME}Controller {
 
     private Object pollEventStream(String base, String eventId) {
         String body = rest.get()
-            .uri(base + "/call/predict/" + eventId)
+            .uri(base + "/gradio_api/call/predict/" + eventId)
             .accept(MediaType.TEXT_EVENT_STREAM)
             .retrieve()
             .body(String.class);
-        // Gradio SSE payload ends with a line: data: {"msg":"process_completed","output":{"data":[...]}}
-        for (String line : body.split("\n")) {
-            if (!line.startsWith("data: ")) continue;
-            String json = line.substring(6).trim();
-            if (json.contains("\"process_completed\"")) {
-                Map<?, ?> evt = JsonMapper.builder().build().readValue(json, Map.class);
-                Map<?, ?> out = (Map<?, ?>) evt.get("output");
-                List<?> data = (List<?>) out.get("data");
+        // Gradio 5.x SSE terminates with:
+        //   event: complete
+        //   data: [<output_0>, <output_1>, ...]
+        // For image outputs, <output_i> is {path, url, size, orig_name, mime_type, ...};
+        // the caller usually does a second GET on .url to retrieve the bytes.
+        String[] lines = body.split("\n");
+        String pendingEvent = null;
+        for (String line : lines) {
+            if (line.startsWith("event: ")) {
+                pendingEvent = line.substring(7).trim();
+            } else if (line.startsWith("data: ") && "complete".equals(pendingEvent)) {
+                String json = line.substring(6).trim();
+                List<?> data = JsonMapper.builder().build().readValue(json, List.class);
                 return data.isEmpty() ? null : data.get(0);
+            } else if (line.isEmpty()) {
+                pendingEvent = null;
             }
         }
-        throw new IllegalStateException("Gradio SSE ended without process_completed");
+        throw new IllegalStateException("Gradio SSE ended without event: complete");
     }
 }
 ```
@@ -99,9 +115,9 @@ ai:
 
 ## Request / Response contract
 - **Schema**: `gradio_api.schema.json` (in this directory) — single source of truth.
-- **Request**: `POST /call/predict` with body `{"data": [arg1, arg2, ...]}`.
+- **Request**: `POST /gradio_api/call/predict` with body `{"data": [arg1, arg2, ...]}`.
 - **Intermediate**: server replies `{"event_id": "<uuid>"}` immediately.
-- **Final**: follow `GET /call/predict/<event_id>` SSE until `msg: process_completed`. Final output is `output.data[0..N]`.
+- **Final**: follow `GET /gradio_api/call/predict/<event_id>` SSE until `event: complete`; parse the `data:` line as JSON array. For file/image outputs each element is `{path, url, size, orig_name, mime_type, is_stream, meta}` — GET `url` to download the asset bytes.
 - **MIME of payload values** matches `recipe.yaml:integration.asset_mime` (`{ASSET_MIME}`).
 - **Errors**: see "Failure modes the backend must handle" in `model_card.md`.
 

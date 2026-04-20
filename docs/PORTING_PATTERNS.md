@@ -391,6 +391,36 @@ When starting a new porting project, evaluate in this order:
 | `str.replace()` without assert | Silent no-op on format change | Always assert after patch |
 | Bare `python` in subprocess | Wrong interpreter in conda | Explicit `_MODEL_PYTHON` path |
 | Test at end of pipeline | 30 min wasted on missing dep | Fail-fast after install cells |
+| `snapshot_download(repo_id)` on a multi-variant HF repo | Pulls every variant + every precision — disk fills (flux2 FLUX.2-dev is 152 GB total) | `hf_hub_download(repo_id, filename="ae.safetensors")` for single files, or `allow_patterns=["*.bf16.safetensors"]` to filter |
+| Trust upstream `scripts/cli.py` blindly | Often force-loads extras (moderation / upsampling / safety models) that bloat GPU/disk (flux2 klein-4b: cli force-loaded 15 GB Mistral Small for safety checks) | Audit `cli.py` imports + top-level dict registries (e.g. FLUX2_MODEL_INFO); if the CLI loads things you don't need, bypass it and call the library's sampling primitives directly. Save 20+ GB and 60+ s startup |
+| Test artifact by URL parsing alone | URL returned ≠ content ready. A Gradio submit + SSE `complete` can still yield a dead file URL | Do the full round-trip: `GET <url>` → verify `Content-Type` + magic bytes (e.g. `b"\x89PNG"`) + size > threshold |
+| Leave failed/debug cells in the live Colab notebook after replacing them | User sees two Gradio iframes / dead share URLs / noisy `/colab-mcp-sync` diffs, and state-from-top re-runs execute the broken version | `delete_cell` the failed one as soon as the replacement works. `colab-mcp` skill codifies this |
+| Skip per-cell local backup during live MCP work | Single Colab tab close / runtime disconnect = all work lost (colab-mcp has NO save-to-Drive tool) | After every successful `run_code_cell`: `get_cells(0,N)` + explicit `Write` to `outputs/mcp-sessions/<recipe>/latest-cells.json`. Do not rely on the PostToolUse auto-save (conditional) |
+
+---
+
+## CLI Audit Checklist (before relying on upstream `cli.py`)
+
+When porting a new model, treat the upstream CLI as a **reference**, not a
+sacred entrypoint. Before wiring `cli.main()` into your notebook:
+
+1. **Imports**: read the top of `scripts/cli.py`. Any `from <package>.<module> import X` that
+   references something you don't need? (Safety check models, prompt upsampling clients, API
+   dependencies.) If yes → bypass candidate.
+2. **Registries**: look for top-level dicts (`MODEL_INFO`, `CONFIGS`, etc.). Does entering your
+   model name trigger auto-loading of dependencies you don't want? (flux2 klein-4b loads dev
+   Mistral Small unconditionally — 15 GB.)
+3. **Interactive blocks**: `input()` loops will hang in Colab. Look for `while True:` with
+   `try: line = input(...)`. Use `single_eval=True` or similar non-interactive flags if
+   available; bypass entirely otherwise.
+4. **Side-effecting imports**: `cli.py`'s `from X import Y` may trigger downloads or GPU allocations
+   at import time. If `import cli` itself is slow, inspect why.
+5. **Download strategy**: if the CLI calls `snapshot_download("big-repo")`, it likely pulls
+   everything. Map out which specific files you actually need (via `huggingface_hub.list_repo_files`)
+   and `hf_hub_download` them individually.
+
+Rule of thumb: **if the CLI's "simplest usage" is > 50 lines of setup, you'll bypass it within
+the first 2 debug cycles anyway. Do it upfront.**
 
 ---
 

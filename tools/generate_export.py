@@ -125,6 +125,24 @@ def substitute(text: str, mapping: dict[str, str]) -> str:
 
 def export_one(template_path: Path, dest_path: Path, mapping: dict[str, str]) -> None:
     dest_path.parent.mkdir(parents=True, exist_ok=True)
+    # inference_handler.py is tricky: the template ships a stub that authors
+    # MUST replace with real model logic (lessons from the flux2-klein-4b
+    # porting: the hand-authored ~150-line primitives call got clobbered on
+    # every regen). If the destination already exists AND is clearly
+    # hand-authored (no "<!-- FILL -->" marker AND > 300 bytes beyond the
+    # template), preserve it. The template stub keeps "<!-- FILL -->" so
+    # detection is exact.
+    if template_path.name == "inference_handler.py" and dest_path.exists():
+        existing = dest_path.read_text(encoding="utf-8")
+        if "<!-- FILL -->" not in existing and len(existing) > len(
+            template_path.read_text(encoding="utf-8")
+        ) + 300:
+            print(
+                f"[preserve] {dest_path.relative_to(REPO_ROOT)} looks hand-authored "
+                "(no <!-- FILL --> marker, >300B past template size) — NOT overwriting.",
+                file=sys.stderr,
+            )
+            return
     if template_path.name in SUBSTITUTABLE:
         text = template_path.read_text(encoding="utf-8")
         dest_path.write_text(substitute(text, mapping), encoding="utf-8")

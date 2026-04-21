@@ -122,9 +122,22 @@ def build_context_pack(repo: Path) -> str:
                 f"switching back to `{saved_for}` if that was intentional.\n"
             )
         else:
+            # Inline the resume state inside a fenced block. The skill
+            # template uses `##` section headers (Current Work / Next Steps
+            # / Notes). Without a fence, those headers become peers of
+            # the `## Resume State (from /fresh-start)` wrapper AND of
+            # this script's own `## Uncommitted Changes (IN PROGRESS)`
+            # section — breaking the hierarchy and inviting the reader
+            # to reconcile two "Uncommitted Changes" sections that say
+            # different things.
+            # Use a 4-backtick fence so nested 3-backtick blocks inside
+            # (from /fresh-start's `## Uncommitted Changes` git-status
+            # dump, or pre-compact.sh's auto-save) don't terminate it
+            # early.
             sections.append("## Resume State (from /fresh-start)\n")
+            sections.append("````markdown")
             sections.append(read_file_safe(resume_path, max_lines=40))
-            sections.append("")
+            sections.append("````\n")
 
     if not has_changes:
         sections.append("## Git Status\n")

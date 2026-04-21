@@ -43,10 +43,29 @@ def git_command(args: list[str], cwd: Path) -> str:
 def build_context_pack(repo: Path) -> str:
     recipe = get_active_recipe(repo)
     docs_dir = repo / "recipes" / recipe / "docs"
+    recipe_yaml = repo / "recipes" / recipe / "recipe.yaml"
 
     sections = []
     sections.append(f"# Context Pack\n\n**Active Recipe**: `{recipe}`")
     sections.append(f"**Generated**: auto\n")
+
+    # Orphan-recipe warning — `set_active_recipe.sh` validates the triad
+    # but --force bypass (and historical recipe-switch states) can still
+    # produce sessions where docs are missing. Surface loudly so Claude
+    # doesn't quietly plan against a phantom SSOT.
+    missing = []
+    for fname in ("plan.md", "context.md", "tasks.md"):
+        if not (docs_dir / fname).exists():
+            missing.append(f"docs/{fname}")
+    if not recipe_yaml.exists():
+        missing.append("recipe.yaml")
+    if missing:
+        sections.append(
+            "> **WARNING: ORPHAN RECIPE** — `" + recipe + "` is active but "
+            "missing: " + ", ".join(missing) + ". "
+            "Either `scripts/set_active_recipe.sh <valid-recipe>` to switch, "
+            "or scaffold with `cp -r recipes/_template recipes/" + recipe + "`.\n"
+        )
 
     # --- Recipe docs ---
     sections.append("## Recipe Docs\n")

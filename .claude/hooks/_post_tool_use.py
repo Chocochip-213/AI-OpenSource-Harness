@@ -112,11 +112,13 @@ def main() -> int:
         )
         if is_recipe_code:
             # Check: has Claude touched context.md or tasks.md of this recipe
-            # in the last ~200 log entries (covers one session)?
+            # anywhere in the current log? (Log rotates at MAX_LINES, so
+            # scanning everything is bounded; tail-200 produced false
+            # positives when a doc edit fell earlier in a long session.)
             touched_docs = False
             if LOG_FILE.exists():
                 try:
-                    tail = LOG_FILE.read_text(encoding="utf-8").splitlines()[-200:]
+                    tail = LOG_FILE.read_text(encoding="utf-8").splitlines()
                     for line in tail:
                         try:
                             rec = json.loads(line)

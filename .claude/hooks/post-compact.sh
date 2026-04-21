@@ -1,24 +1,21 @@
 #!/usr/bin/env bash
 # Hook: PostCompact — fires right after /compact (manual or auto).
-# Pre-compact already snapshotted state into `_resume_state.md`; once the
-# compaction itself is done, that snapshot is no longer authoritative
-# (the new compacted history is). Drop it so next /fresh-start writes
-# a fresh one rather than serving stale context.
+#
+# Audit-only. Does NOT delete `.claude/_resume_state.md`. Rationale:
+# /compact often fails or is cancelled mid-run (Claude Code contract
+# still fires PostCompact), and the resume snapshot is the user's only
+# safety net. The stale-check in scripts/make_context_pack.py
+# (Recipe-header mismatch across recipe switches → section ignored)
+# and /fresh-start's overwrite-on-next-call are sufficient cleanup.
 set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && (pwd -W 2>/dev/null || pwd))"
 ERROR_LOG="$REPO_ROOT/.claude/_hook_errors.log"
-RESUME="$REPO_ROOT/.claude/_resume_state.md"
 
-# Drain stdin (we don't need the payload but mustn't leave it hanging).
 _=$(cat 2>/dev/null || true)
 
 mkdir -p "$REPO_ROOT/.claude"
 TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-printf '%s [post-compact] removed stale resume_state\n' "$TS" >> "$ERROR_LOG" 2>/dev/null || true
-
-if [ -f "$RESUME" ]; then
-  rm -f "$RESUME" 2>/dev/null || true
-fi
+printf '%s [post-compact] audit\n' "$TS" >> "$ERROR_LOG" 2>/dev/null || true
 
 exit 0

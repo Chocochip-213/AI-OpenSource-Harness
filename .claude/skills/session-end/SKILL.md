@@ -36,7 +36,7 @@ If `recipe.yaml:mcp.enabled: true` and a live Colab tab is connected:
 1. Run `/colab-mcp-sync <recipe>` — diff live vs manifest, apply with confirmation.
 2. Regenerate: `uv run python tools/generate_notebook.py <recipe>`.
 3. Close the Colab tab (clean WebSocket shutdown).
-4. `rm -f .claude/_mcp_session.txt .claude/_mcp_session_*.txt` so next session starts with a clean session id.
+4. `rm -f .claude/_mcp_session_*.txt` so next session starts with a clean session id. (The bare `.claude/_mcp_session.txt` orphan was retired 2026-04-21 — only per-recipe files are written now.)
 5. Review `.claude/_hook_errors.log` for `output over budget` warnings → decide whether to bump `mcp.max_tool_output_tokens`.
 
 Skipping this is the #1 cause of Ever-era "Cell X fix 20 commits" drift.
@@ -63,7 +63,7 @@ After verdict, write `.claude/_code_review_passed.json`:
 {"timestamp": "<iso>", "agent_id": "<id>", "verdict": "ready", "files_reviewed": [...]}
 ```
 
-Then `touch .claude/_code_review_passed.json` to refresh mtime > staged files.
+**Do NOT `touch` the marker to refresh mtime without re-running the reviewer** — that bypasses the gate's whole purpose. If the marker is stale (older than staged files), re-invoke `Agent(subagent_type="code-reviewer")` and overwrite the marker. Bumping mtime alone turns the gate into ceremony.
 
 ### 7. Git commit + push (SECURITY: explicit paths only)
 
@@ -122,7 +122,7 @@ git push origin HEAD   # 새 브랜치면 -u origin <branch>
 `git push --force` 금지. 사용자가 Yes 안 했으면 push 안 함.
 
 ### 8. Generate handoff prompt
-채팅에 출력 + `.claude/handoffs/YYYY-MM-DD-HHMM.md`에도 저장 (로 컴파일 후에도 유지):
+채팅에 출력 + `.claude/handoffs/YYYY-MM-DD-HHMM.md`에도 저장 (로 컴파일 후에도 유지). 파일 쓰기 전 `mkdir -p .claude/handoffs/` 필수 — 디렉토리는 gitignored이므로 저장소에 없음:
 
 ```
 프로젝트: [프로젝트명]  |  브랜치: [브랜치명]  |  레시피: [레시피명]

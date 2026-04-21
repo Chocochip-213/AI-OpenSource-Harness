@@ -35,6 +35,27 @@ fi
 RESUME=".claude/_resume_state.md"
 TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
+# Preserve an in-flight /fresh-start snapshot. If $RESUME already exists,
+# has a `Recipe:` header (= written by /fresh-start skill, not a previous
+# PreCompact), and was modified within the last 30 minutes, skip the
+# overwrite. Otherwise the curated Current Work / Notes / MCP URL sections
+# get replaced by a bare git-diff snapshot (bug class: blind overwrite).
+if [ -f "$RESUME" ]; then
+  if head -10 "$RESUME" 2>/dev/null | grep -qE '^Recipe:[[:space:]]'; then
+    MTIME=$(python -c "import os,sys;print(int(os.path.getmtime(r'$RESUME')))" 2>/dev/null \
+            || python3 -c "import os,sys;print(int(os.path.getmtime(r'$RESUME')))" 2>/dev/null \
+            || echo 0)
+    NOW=$(date -u +%s)
+    AGE=$((NOW - MTIME))
+    if [ "$MTIME" -gt 0 ] && [ "$AGE" -lt 1800 ]; then
+      printf '%s [pre-compact] preserved user-authored resume_state (age=%ss)\n' \
+        "$TS" "$AGE" >> "$ERROR_LOG" 2>/dev/null || true
+      echo "[hook:pre-compact] Preserved existing /fresh-start resume_state (age=${AGE}s)." >&2
+      exit 0
+    fi
+  fi
+fi
+
 {
   echo "## Auto-saved Pre-Compact State"
   echo ""

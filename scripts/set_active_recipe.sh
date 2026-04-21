@@ -104,8 +104,28 @@ if [ ! -d "recipes/$NAME" ]; then
   exit 1
 fi
 
+# Validate SSOT triad — without docs/, every session starts with a broken
+# context pack (make_context_pack.py emits "(file not found)" for each
+# doc, which Claude auto-loads and misinterprets as legit). Fail closed
+# unless --force is passed.
+FORCE="${2:-}"
+MISSING=""
+for f in docs/plan.md docs/context.md docs/tasks.md recipe.yaml; do
+  [ -e "recipes/$NAME/$f" ] || MISSING="$MISSING  - recipes/$NAME/$f\n"
+done
+if [ -n "$MISSING" ] && [ "$FORCE" != "--force" ]; then
+  echo "ERROR: recipes/$NAME is missing SSOT files:" >&2
+  printf "$MISSING" >&2
+  echo "Create them (cp -r recipes/_template recipes/$NAME, then edit)" >&2
+  echo "or re-run with --force to skip this check (context pack will be partial)." >&2
+  exit 1
+fi
+
 echo "$NAME" > .claude/last_recipe.txt
 echo "[set_active_recipe] Active recipe: $NAME"
+if [ -n "$MISSING" ]; then
+  echo "[set_active_recipe] WARN --force: orphaned recipe, docs triad incomplete" >&2
+fi
 
 # Rebuild context pack + regenerate env file.
 if command -v uv >/dev/null 2>&1; then

@@ -60,8 +60,10 @@ if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
 
   echo "[hook:stop] Tip: consider running 'ruff format .' or 'black .' on edited files." >&2
 
-  # Clear the edit log for next session
-  : > "$LOG_FILE"
+  # DO NOT truncate $LOG_FILE here — Stop fires every turn end (not once
+  # per session). Truncating every turn made the 100KB/1000-line rotator
+  # in _post_tool_use.py dead code, and emptied the buffer that PreCompact
+  # and docs-discipline depend on. The rotator handles growth.
 else
   echo "[hook:stop] No file edits tracked — skipping heavy checks." >&2
   uv run python scripts/make_context_pack.py 2>&1 \

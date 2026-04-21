@@ -5,12 +5,13 @@
 ### Quick Check: Are hooks configured correctly?
 
 ```bash
-# 1. Verify settings.json has all 4 hooks
+# 1. Verify settings.json has all 8 hooks
 uv run python -c "
 import json
 with open('.claude/settings.json') as f:
     hooks = json.load(f).get('hooks', {})
-expected = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop']
+expected = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse',
+            'Stop', 'PreCompact', 'PostCompact', 'SessionEnd']
 for h in expected:
     status = 'OK' if h in hooks else 'MISSING'
     print(f'  {h}: {status}')

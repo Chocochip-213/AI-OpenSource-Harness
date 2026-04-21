@@ -6,7 +6,7 @@ If `.claude/_resume_state.md` exists, it contains critical context from a previo
 **Read it FIRST before responding to any user message.** Resume state describes the actual in-progress work
 and takes priority over recipe SSOT docs for understanding "current work."
 
-After successfully resuming (user confirms context is correct), delete `_resume_state.md` to prevent stale state.
+The file is NOT auto-deleted on `/clear` or `/compact` (was until 2026-04-21 — seed bug that wiped user state before SessionStart could re-inline it). It persists until either (a) the next `/fresh-start` overwrites it, (b) a recipe switch makes the `Recipe:` header stale (`make_context_pack.py` ignores it with a `## Resume State — IGNORED` banner), or (c) you delete it manually once the user confirms resume succeeded.
 
 ## Single Source of Truth (SSOT)
 
@@ -57,10 +57,13 @@ scripts/set_active_recipe.sh --current       # show active recipe
 ## Hooks (auto-configured in `.claude/settings.json`)
 
 - **SessionStart** → `session-start.sh` → rebuilds context pack
-- **UserPromptSubmit** → `userprompt-submit.sh` → skill auto-suggestion (skill-rules.json matching) + resume-state injection
-- **PostToolUse** → `post-tool-use.sh` → tracks edited files to `_edited_files.log` (auto-rotates at 1000 entries)
-- **PreCompact** → `pre-compact.sh` → auto-saves SSOT + `_resume_state.md` BEFORE compaction (lossy summary safety net)
-- **Stop** → `stop.sh` → NoMessLeftBehind validation (compileall + smoke_test + context_pack); `stop_hook_active` guard prevents recursion (GH #10205)
+- **UserPromptSubmit** → `userprompt-submit.sh` → skill auto-suggestion (skill-rules.json matching). Resume state is inlined via `make_context_pack.py` at session/stop/compact boundaries — not re-injected here (double injection was removed 2026-04-20).
+- **PreToolUse** → `mcp-tool-monitor.sh` (MCP 2-gate: `mcp.enabled` + `allow_auto_execution` + redaction) + `commit_gate.sh` (blocks `git commit` on harness files without a fresh `_code_review_passed.json`)
+- **PostToolUse** → `post-tool-use.sh` → tracks edited files to `_edited_files.log` (auto-rotates at ~100 KB / 1000 entries, keeps last 500); MCP session logging + `get_cells` auto-snapshot (keeps last 20 per session-dir); output-budget warnings
+- **PreCompact** → `pre-compact.sh` → auto-saves SSOT + `_resume_state.md` BEFORE compaction. Preserves a `/fresh-start` snapshot < 30 min old instead of overwriting.
+- **PostCompact** → `post-compact.sh` → audit-only (does not delete resume state; `/compact` can fail and snapshot is still useful)
+- **Stop** → `stop.sh` → NoMessLeftBehind validation (compileall + smoke_test + context_pack); `stop_hook_active` guard prevents recursion (GH #10205). Does NOT truncate `_edited_files.log` — rotator handles growth.
+- **SessionEnd** → `session-end.sh` → audit-only (does not delete resume state)
 
 ## Skills
 

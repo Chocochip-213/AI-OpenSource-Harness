@@ -170,7 +170,7 @@ run: "python inference.py"
 | 훅 | 시점 | 동작 |
 |----|------|------|
 | SessionStart | 세션 시작 | 컨텍스트 팩 재생성 |
-| UserPromptSubmit | 메시지 전송 | 관련 스킬 자동 추천 + resume-state 주입 |
+| UserPromptSubmit | 메시지 전송 | 관련 스킬 자동 추천 (resume-state 주입은 2026-04-20 제거 — `make_context_pack.py`의 CLAUDE.md inlining로 일원화) |
 | PreToolUse | 도구 호출 전 | MCP 2-gate 강제 (`mcp.enabled`, `allow_auto_execution`) + 민감값 레닥션 |
 | PostToolUse | 도구 호출 후 | 편집 이력 추적 + MCP 세션 로그 + budget 초과 경고 |
 | Stop | 세션 종료 | NoMessLeftBehind 검증 (compileall + smoke + context pack) |
@@ -187,9 +187,8 @@ run: "python inference.py"
 | `/notebook-builder` | 매니페스트에서 노트북 생성 |
 | `/colab-mcp` | 라이브 Colab 런타임에서 현재 레시피 실행 (opt-in per recipe) |
 | `/colab-mcp-sync` | 라이브 노트북 편집을 매니페스트로 역-반영 (드리프트 방지) |
-| `/fresh-start` | 맥락 오염 시 — SSOT 저장 + `/clear` 후 자동 복구 |
+| `/fresh-start` | 맥락 오염 / compact 임박 시 — SSOT 저장 + `/clear` 후 자동 복구 (`/pre-compact` 스킬은 2026-04-20 폐지, PreCompact 훅으로 대체) |
 | `/session-end` | 세션 마무리 — 문서 저장, 커밋, 핸드오프 프롬프트 생성 |
-| `/pre-compact` | 컨텍스트 부족 시 — 중요 맥락 영속화 + compact 요약 제안 |
 
 ### 서브에이전트 (Sub-Agents)
 
@@ -458,7 +457,7 @@ SSOT docs(`plan.md`, `context.md`, `tasks.md`)만으로도 작업 재개가 가�
 ```
 컨텍스트가 커졌다 → /fresh-start
 오늘 작업 끝     → /session-end
-compact가 필요   → /pre-compact (하지만 /fresh-start 권장)
+compact 임박     → /fresh-start (/pre-compact 스킬은 2026-04-20 폐지, PreCompact 훅이 대체)
 ```
 
 ## Colab 런타임 패키지 추적
@@ -686,7 +685,7 @@ run: "python inference.py"
 | Hook | Trigger | Action |
 |------|---------|--------|
 | SessionStart | Session begins | Rebuild context pack |
-| UserPromptSubmit | Message sent | Auto-suggest relevant skills + resume-state injection |
+| UserPromptSubmit | Message sent | Auto-suggest relevant skills (resume-state injection removed 2026-04-20 — consolidated into `make_context_pack.py` CLAUDE.md inlining) |
 | PreToolUse | Before tool call | Enforce MCP 2-gate (`mcp.enabled`, `allow_auto_execution`) + sensitive-value redaction |
 | PostToolUse | After tool call | Track edit history + MCP session log + output-budget warnings |
 | Stop | Session ends | NoMessLeftBehind validation (compileall + smoke + context pack) |
@@ -703,9 +702,8 @@ run: "python inference.py"
 | `/notebook-builder` | Generate notebooks from manifests |
 | `/colab-mcp` | Run the current recipe on a live Colab runtime (opt-in per recipe) |
 | `/colab-mcp-sync` | Promote live-notebook edits back into the manifest (drift prevention) |
-| `/fresh-start` | Context pollution — save to SSOT + `/clear` for clean restart |
+| `/fresh-start` | Context pollution / compact imminent — save to SSOT + `/clear` for clean restart (also covers the retired `/pre-compact` intent; that skill was removed 2026-04-20 — the PreCompact hook handles the same job deterministically) |
 | `/session-end` | Wrap up session — save docs, commit, generate handoff prompt |
-| `/pre-compact` | Context running low — persist critical context + suggest compact summary |
 
 ### Sub-Agents
 
@@ -983,7 +981,7 @@ Claude reads `tasks.md` to find the last completed item and determines the next 
 ```
 Context getting large → /fresh-start
 Done for the day     → /session-end
-Need to compact      → /pre-compact (but prefer /fresh-start)
+Compact imminent     → /fresh-start (/pre-compact skill retired 2026-04-20; PreCompact hook handles the write)
 ```
 
 ## Colab Runtime Tracking

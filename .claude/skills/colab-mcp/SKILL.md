@@ -80,11 +80,15 @@ tab died with no local backup):
 `get_cells(cellIndexStart=0, cellIndexEnd=<current_count>)`. The PostToolUse
 hook at `.claude/hooks/_mcp_session_log.py` then writes the response to
 both `outputs/mcp-sessions/<recipe>/latest-cells.json` AND a timestamped
-`cells_<ts>.json` snapshot automatically — deterministic, not depending
-on Claude remembering to Write. (That hook was widened post-2026-04-20
-flux2 session after the old narrow predicate silently dropped partial
-scans.) You still explicitly need to CALL `get_cells`; the hook handles
-the disk write. Why this matters: `colab-mcp` has no `save_to_drive`
+`cells_<ts>_<ns>.json` snapshot. The **write is deterministic** (hook enforces
+it); the **`get_cells` call itself is LLM-judged** — only this SKILL.md
+instructs you to make the call after every `run_code_cell`. Nothing
+automatic forces the call. That's the actual failure mode (skipping the
+call), and why this skill must be invoked before any MCP session. (The
+hook's predicate was widened post-2026-04-20 flux2 session after the old
+narrow predicate silently dropped partial scans. The hook also prunes to
+the last 20 snapshots per session-dir as of 2026-04-21 — unbounded growth
+was a separate P0.) Why this matters: `colab-mcp` has no `save_to_drive`
 tool, and the notebook in the browser is pure memory until the user
 presses Ctrl+S. If the tab dies, those snapshots are the only recovery.
 

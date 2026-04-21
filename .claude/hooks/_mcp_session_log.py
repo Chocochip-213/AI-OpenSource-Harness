@@ -265,15 +265,35 @@ def main() -> int:
             try:
                 sessions_dir.mkdir(parents=True, exist_ok=True)
                 payload = json.dumps(tool_result, ensure_ascii=True, indent=2)
-                # Atomic write for latest-cells.json (colab_mcp_sync.py reads it,
-                # and a concurrent sync could otherwise catch a half-written file).
-                tmp = latest.with_suffix(".json.tmp")
-                tmp.write_text(payload, encoding="utf-8")
-                tmp.replace(latest)
-                snapshot.write_text(payload, encoding="utf-8")
+                # Atomic writes for both latest-cells.json (read by
+                # colab_mcp_sync.py) and the timestamped snapshot. A crash
+                # between the two previously left `latest-cells.json`
+                # updated with no audit trail.
+                latest_tmp = latest.with_suffix(".json.tmp")
+                latest_tmp.write_text(payload, encoding="utf-8")
+                latest_tmp.replace(latest)
+                snap_tmp = snapshot.with_suffix(".json.tmp")
+                snap_tmp.write_text(payload, encoding="utf-8")
+                snap_tmp.replace(snapshot)
+                # Prune old snapshots — /colab-mcp guidance is to call
+                # `get_cells` after every cell, so a long session produces
+                # dozens of snapshots. Keep the most recent 20 (enough for
+                # post-mortem recovery) and delete the rest. latest-cells.json
+                # + the session JSONL are the authoritative sources.
+                snaps = sorted(
+                    sessions_dir.glob("cells_*.json"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                for stale in snaps[20:]:
+                    try:
+                        stale.unlink()
+                    except Exception:
+                        pass
                 log_error(
                     f"auto-saved latest-cells.json + {snapshot.name} "
-                    f"(cells={len(cells)}, recipe={recipe}) — /colab-mcp-sync ready"
+                    f"(cells={len(cells)}, recipe={recipe}, kept={min(len(snaps), 20)}) "
+                    f"— /colab-mcp-sync ready"
                 )
             except Exception as e:
                 log_error(f"latest-cells.json save failed: {e}")

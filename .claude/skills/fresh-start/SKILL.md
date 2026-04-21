@@ -93,14 +93,14 @@ SSOT 문서 + resume state가 .claude/CLAUDE.md 통해 자동 로드됩니다.
 ```
 
 ## After /clear — what actually survives
-1. User runs `/clear`
-2. `SessionEnd` hook fires → `.claude/_resume_state.md` **is deleted** (by design — `session-end.sh`).
-3. But its content has **already been inlined into `.claude/CLAUDE.md`** by Step 4's `make_context_pack.py`, so nothing is lost.
-4. `SessionStart` hook rebuilds `.claude/CLAUDE.md` again (this time without `_resume_state.md` since it's gone) — Recipe Docs + Uncommitted Changes section still present.
-5. Claude Code auto-loads `.claude/CLAUDE.md` every session.
+1. User runs `/clear`.
+2. `SessionEnd` hook fires → audit-only (no deletion; the 2026-04-21 fix stopped `session-end.sh`/`post-compact.sh` from nuking `_resume_state.md` before it could be re-read).
+3. `SessionStart` hook runs `make_context_pack.py` which re-inlines `_resume_state.md` into `.claude/CLAUDE.md` via the same codepath as Step 4. Survives indefinitely across `/clear`.
+4. Staleness guard (`make_context_pack.py:74-88`): if the file's `Recipe:` header doesn't match the current active recipe, the section is replaced with an `IGNORED` banner — no hallucinated reconciliation between two recipes.
+5. `_resume_state.md` is cleared by exactly three events: (a) next `/fresh-start` overwrites it, (b) recipe switch marks it stale (banner, not delete — file stays on disk for audit), (c) user manually `rm`s it after confirming resume succeeded.
 6. User says "이어서 해줘" → Claude reads the pack.
 
-Single-channel survival. No `UserPromptSubmit` second-injection any more (removed 2026-04-20 — was burning tokens on the duplicate and creating "two sources" reconciliation risk).
+Single-channel survival. No `UserPromptSubmit` second-injection (removed 2026-04-20 — was burning tokens on the duplicate and creating "two sources" reconciliation risk).
 
 ## Constraints (honest)
 - Only what you wrote to files survives. Mid-session reasoning, rejected approaches, and debug narratives that never hit `context.md` ARE lost. This is an improvement on `/compact` (which hallucinates per GH #46602) but NOT a silver bullet. Write decisions to `context.md` during the session, not only at `/fresh-start` time.

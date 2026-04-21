@@ -35,22 +35,46 @@ fi
 RESUME=".claude/_resume_state.md"
 TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-# Preserve an in-flight /fresh-start snapshot. If $RESUME already exists,
-# has a `Recipe:` header (= written by /fresh-start skill, not a previous
-# PreCompact), and was modified within the last 30 minutes, skip the
-# overwrite. Otherwise the curated Current Work / Notes / MCP URL sections
-# get replaced by a bare git-diff snapshot (bug class: blind overwrite).
+# Preserve an in-flight /fresh-start snapshot. If $RESUME already exists
+# AND has a `Recipe:` header (emitted by /fresh-start skill and by this
+# script's own auto-save block), and was modified within the last 30
+# minutes, skip the overwrite. Otherwise the curated Current Work /
+# Notes / MCP URL sections get replaced by a bare git-diff snapshot
+# (bug class: blind overwrite).
 if [ -f "$RESUME" ]; then
-  if head -10 "$RESUME" 2>/dev/null | grep -qE '^Recipe:[[:space:]]'; then
-    MTIME=$(python -c "import os,sys;print(int(os.path.getmtime(r'$RESUME')))" 2>/dev/null \
-            || python3 -c "import os,sys;print(int(os.path.getmtime(r'$RESUME')))" 2>/dev/null \
+  # Widen header window to 40 lines to tolerate user preambles.
+  if head -40 "$RESUME" 2>/dev/null | grep -qE '^Recipe:[[:space:]]'; then
+    # Prefer `stat` (shell-native, no python exec overhead, immune to
+    # the Windows MS Store `python3.exe` shim that exits 49). GNU and
+    # BSD flag variants are both attempted; if ALL fail, fall back to
+    # the python route; if THAT fails too, default to PRESERVE (safer
+    # than blindly overwriting a potentially fresh user snapshot).
+    MTIME=$(stat -c %Y "$RESUME" 2>/dev/null \
+            || stat -f %m "$RESUME" 2>/dev/null \
             || echo 0)
+    if [ "$MTIME" = "0" ]; then
+      for py in "uv run python" python3 python; do
+        head_cmd="${py%% *}"
+        if command -v "$head_cmd" >/dev/null 2>&1 && $py -c "" 2>/dev/null; then
+          MTIME=$($py -c "import os,sys;print(int(os.path.getmtime(r'$RESUME')))" 2>/dev/null || echo 0)
+          [ "$MTIME" != "0" ] && break
+        fi
+      done
+    fi
+    if [ "$MTIME" = "0" ]; then
+      # All mtime detection failed — PRESERVE (safer default than blind
+      # overwrite of user content). Log so this doesn't go unnoticed.
+      printf '%s [pre-compact] preserved (mtime detection failed — safer default)\n' \
+        "$TS" >> "$ERROR_LOG" 2>/dev/null || true
+      echo "[hook:pre-compact] Preserved existing resume_state (could not read mtime)." >&2
+      exit 0
+    fi
     NOW=$(date -u +%s)
     AGE=$((NOW - MTIME))
-    if [ "$MTIME" -gt 0 ] && [ "$AGE" -lt 1800 ]; then
+    if [ "$AGE" -lt 1800 ]; then
       printf '%s [pre-compact] preserved user-authored resume_state (age=%ss)\n' \
         "$TS" "$AGE" >> "$ERROR_LOG" 2>/dev/null || true
-      echo "[hook:pre-compact] Preserved existing /fresh-start resume_state (age=${AGE}s)." >&2
+      echo "[hook:pre-compact] Preserved existing resume_state (age=${AGE}s)." >&2
       exit 0
     fi
   fi

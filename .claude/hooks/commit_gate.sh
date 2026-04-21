@@ -15,17 +15,24 @@
 # Log an entry to .claude/_hook_errors.log on bypass so the skip is audited.
 set -u
 
-# Discover a Python runtime — match mcp-tool-monitor.sh. Systems without
-# the `python` alias (python3-only Linux distros) previously fell through
-# to `CMD=""` and silently passed every git commit through the gate.
+# Discover a Python runtime. Each candidate is exec-smoke-tested because
+# Windows Microsoft Store installs a `python3.exe` shim at
+# %LOCALAPPDATA%\Microsoft\WindowsApps\python3.exe that satisfies
+# `command -v python3` but exits 49 with a "Python was not found" stderr —
+# without the smoke test, CMD becomes "" and the gate fail-opens on every
+# git commit. Discovered 2026-04-21 by the pre-push edge-case hunt.
 PY=""
-if   command -v uv       >/dev/null 2>&1; then PY="uv run python"
-elif command -v python3  >/dev/null 2>&1; then PY="python3"
-elif command -v python   >/dev/null 2>&1; then PY="python"
-else
+for cand in "uv run python" python3 python; do
+    head_cmd="${cand%% *}"  # first word: uv / python3 / python
+    if command -v "$head_cmd" >/dev/null 2>&1 && $cand -c "" 2>/dev/null; then
+        PY="$cand"
+        break
+    fi
+done
+if [ -z "$PY" ]; then
     REPO_ROOT_FOR_LOG="$(cd "$(dirname "$0")/../.." 2>/dev/null && (pwd -W 2>/dev/null || pwd))"
     mkdir -p "$REPO_ROOT_FOR_LOG/.claude"
-    printf '%s [commit_gate] no python runtime — hook fail-open skipped\n' \
+    printf '%s [commit_gate] no working python runtime — hook skipped (fail-open)\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_ROOT_FOR_LOG/.claude/_hook_errors.log" 2>/dev/null || true
     exit 0
 fi

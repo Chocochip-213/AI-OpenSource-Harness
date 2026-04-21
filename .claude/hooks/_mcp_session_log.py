@@ -280,8 +280,13 @@ def main() -> int:
                 # dozens of snapshots. Keep the most recent 20 (enough for
                 # post-mortem recovery) and delete the rest. latest-cells.json
                 # + the session JSONL are the authoritative sources.
+                #
+                # Glob restricted to `cells_[0-9]*.json` so auto-generated
+                # timestamp-named files are pruned but legacy named
+                # checkpoints (e.g. `cells_post_cell4.json`,
+                # `cells_final_round_trip_verified.json`) stay put.
                 snaps = sorted(
-                    sessions_dir.glob("cells_*.json"),
+                    sessions_dir.glob("cells_[0-9]*.json"),
                     key=lambda p: p.stat().st_mtime,
                     reverse=True,
                 )

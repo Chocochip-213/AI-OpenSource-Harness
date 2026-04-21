@@ -93,11 +93,27 @@ def build_context_pack(repo: Path) -> str:
     if resume_path.exists():
         raw = resume_path.read_text(encoding="utf-8", errors="replace")
         saved_for = None
-        for line in raw.splitlines()[:10]:
+        # Widened from 10 to 40 lines to tolerate user preambles before
+        # the header (matches `read_file_safe(..., max_lines=40)` truncation).
+        for line in raw.splitlines()[:40]:
             if line.lower().startswith("recipe:"):
                 saved_for = line.split(":", 1)[1].strip()
                 break
-        if saved_for and saved_for != recipe:
+        # Corruption detection: `errors="replace"` substitutes U+FFFD
+        # for any byte it can't decode. That would make saved_for
+        # something like "flux2\ufffd-klein" and the stale-check would
+        # always fire (silently dropping a valid fresh-start snapshot
+        # from the pack). Detect and surface explicitly.
+        if saved_for and "\ufffd" in saved_for:
+            sections.append(
+                f"## Resume State — CORRUPT (encoding error in `Recipe:` header)\n"
+                f"`.claude/_resume_state.md` contains undecodable bytes in its "
+                f"`Recipe:` line. This usually means a Windows CJK path leaked a "
+                f"lone surrogate into the file. NOT loading it. Inspect the file "
+                f"and either fix the header manually or re-run `/fresh-start` to "
+                f"regenerate.\n"
+            )
+        elif saved_for and saved_for != recipe:
             sections.append(
                 f"## Resume State — IGNORED (stale: saved for `{saved_for}`, active `{recipe}`)\n"
                 f"A `_resume_state.md` exists but its `Recipe:` header does not match "

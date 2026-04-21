@@ -22,5 +22,6 @@ Thumbs.db
 .claude/last_recipe.txt
 .claude/.env
 .claude/_code_review_passed.json
+.claude/handoffs/
 .mcp.json.local
 outputs/

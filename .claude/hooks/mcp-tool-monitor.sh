@@ -24,14 +24,21 @@ case "$INPUT" in
   *) exit 0 ;;
 esac
 
-# Discover a Python runtime. Graceful skip if none is available.
+# Discover a Python runtime. Each candidate is exec-smoke-tested because
+# Windows MS Store's `python3.exe` shim satisfies `command -v python3`
+# but exits 49 with a "Python was not found" stderr — leading to silent
+# hook skip with no audit record. Graceful skip if none is available.
 PY=""
-if   command -v uv       >/dev/null 2>&1; then PY="uv run python"
-elif command -v python3  >/dev/null 2>&1; then PY="python3"
-elif command -v python   >/dev/null 2>&1; then PY="python"
-else
+for cand in "uv run python" python3 python; do
+  head_cmd="${cand%% *}"
+  if command -v "$head_cmd" >/dev/null 2>&1 && $cand -c "" 2>/dev/null; then
+    PY="$cand"
+    break
+  fi
+done
+if [ -z "$PY" ]; then
   mkdir -p "$REPO_ROOT/.claude"
-  printf '%s [mcp-tool-monitor] WARN no python runtime (uv/python3/python) — hook skipped\n' \
+  printf '%s [mcp-tool-monitor] WARN no working python runtime (uv/python3/python) — hook skipped\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$ERROR_LOG"
   exit 0
 fi

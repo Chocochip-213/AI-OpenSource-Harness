@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate .claude/_context_pack.md from active recipe docs + git status."""
+"""Generate .claude/CLAUDE.md from active recipe docs + git status + resume state."""
 
 import os
 import subprocess
@@ -153,14 +153,16 @@ def main():
 
     content = build_context_pack(repo)
 
-    # Primary: .claude/CLAUDE.md — auto-loaded by Claude Code on every session
+    # .claude/CLAUDE.md — auto-loaded by Claude Code on every session.
+    # The legacy `.claude/_context_pack.md` dual-write was removed 2026-04-21:
+    # nothing consumed it (the bootstrap prompt was updated to read CLAUDE.md),
+    # it was accidentally tracked in the initial commit so every regeneration
+    # dirtied a file users then might have `git add`-ed — leaking personal
+    # session state (recipe name, uncommitted file list, resume content) to
+    # the shared master branch.
     auto_load_path = claude_dir / "CLAUDE.md"
     auto_load_path.write_text(content, encoding="utf-8")
     print(f"[make_context_pack] Written to {auto_load_path.relative_to(repo)}")
-
-    # Legacy: _context_pack.md — keep for backward compat (gitignored)
-    legacy_path = claude_dir / "_context_pack.md"
-    legacy_path.write_text(content, encoding="utf-8")
 
 
 if __name__ == "__main__":

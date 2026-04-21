@@ -4,9 +4,9 @@ You are resuming work on the **AI OSS Colab Test Template**.
 
 ## Steps
 
-1. **Read the context pack** to understand current state:
+1. **Read the context pack** to understand current state (auto-loaded by Claude Code, but re-read explicitly for clarity):
    ```
-   Read .claude/_context_pack.md
+   Read .claude/CLAUDE.md
    ```
 
 2. **Check active recipe**:

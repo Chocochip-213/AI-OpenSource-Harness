@@ -1,3 +1,4 @@
+# Python / IDE / OS
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -9,19 +10,31 @@ build/
 *.swo
 .DS_Store
 Thumbs.db
-.claude/_edited_files.log
-.claude/_skill_suggest.log
-.claude/_mcp_tool_calls.log
-.claude/_hook_errors.log
-.claude/_mcp_session.txt
-.claude/_mcp_session_*.txt
-.claude/_context_pack.md
-.claude/_resume_state.md
+
+# Claude Code personal + machine-local state.
+# `.claude/_*` wildcard catches EVERY underscore-prefixed state file —
+# current (logs, markers, session IDs, audit snapshots) and future
+# ones new hooks might introduce. Prevents silent leaks if an author
+# forgets to add a specific rule.
+.claude/_*
 .claude/CLAUDE.md
-.claude/settings.local.json
-.claude/last_recipe.txt
 .claude/.env
-.claude/_code_review_passed.json
+.claude/last_recipe.txt
+.claude/settings.local.json
 .claude/handoffs/
+
+# Secrets — defense in depth (session-end skill also regex-scans staged files).
+.env
+.env.local
+.env.production
+.env.development
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*
+secrets*
+
+# Local overrides + generated artifact dirs
 .mcp.json.local
 outputs/

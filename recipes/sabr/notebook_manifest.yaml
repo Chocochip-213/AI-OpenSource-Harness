@@ -1,0 +1,1482 @@
+title: SABR — Virtual Avatar Generation (Colab A100 40GB)
+cells:
+- name: cell-0
+  type: code
+  source: "#@title A) GPU + Disk Preflight { run: \"auto\" }\n# Fail-fast: stop here if we can't finish\
+    \ the run.\nimport subprocess, re, shutil, sys\n\nout = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total',\n\
+    \                      '--format=csv,noheader'], capture_output=True, text=True)\nif out.returncode\
+    \ != 0:\n    sys.exit(\"FATAL: no GPU detected. Runtime > Change runtime type > A100 GPU.\")\n\ngpu_line\
+    \ = out.stdout.strip().splitlines()[0]\nname, mem = [p.strip() for p in gpu_line.split(',')]\nmem_mb\
+    \ = int(re.search(r'(\\d+)', mem).group(1))\nmem_gb = mem_mb / 1024\nprint(f\"  GPU: {name}\")\nprint(f\"\
+    \  VRAM: {mem_gb:.1f} GB ({mem_mb} MB)\")\n\nif mem_gb < 38:\n    sys.exit(f\"FATAL: need >= 40 GB\
+    \ VRAM (have {mem_gb:.1f} GB). \"\n             f\"README FAQ: full pipeline needs 80GB; context-skip\
+    \ needs 40GB.\")\n\nif 'A100' not in name and 'H100' not in name:\n    print(f\"  WARN: GPU is {name}.\
+    \ Plan targets A100; may work on H100. \"\n          f\"Other GPUs (T4, L4, V100) WILL fail - stop\
+    \ now.\")\n\n# Disk check /root (where $HOME points + where weights land)\ntotal, used, free = shutil.disk_usage('/root')\n\
+    free_gb = free / (1024**3)\nprint(f\"  Disk free (/root): {free_gb:.1f} GB\")\nif free_gb < 45:\n\
+    \    sys.exit(f\"FATAL: need >= 45 GB free on /root (have {free_gb:.1f} GB).\")\n\nprint(f\"  Python:\
+    \ {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\")\nif sys.version_info\
+    \ >= (3, 12):\n    print(f\"  WARN: Python 3.12+ detected. chumpy build may fail.\")\n\nimport torch\n\
+    print(f\"  torch: {torch.__version__}\")\nprint(\"\\n[A] PASS - preflight OK, proceeding.\")"
+  cell_id: lIYdn1woOS1n
+- name: cell-1
+  type: code
+  source: "#@title B) Clone + HOME setup { run: \"auto\" }\n# inference.py:23-24 hardcodes $HOME/virtual-avatar-generation/.\n\
+    import os, subprocess, sys\n\nos.environ['HOME'] = '/root'\nREPO = '/root/virtual-avatar-generation'\n\
+    UPSTREAM = 'https://github.com/agent-mitra/virtual-avatar-generation.git'\n\nif os.path.isdir(os.path.join(REPO,\
+    \ '.git')):\n    print(f\"  Already cloned at {REPO}. Skipping.\")\nelse:\n    r = subprocess.run(['git',\
+    \ 'clone', '--depth', '1', UPSTREAM, REPO],\n                       capture_output=True, text=True)\n\
+    \    if r.returncode != 0:\n        sys.exit(f\"FATAL: git clone failed:\\n{r.stderr}\")\n    print(f\"\
+    \  Cloned -> {REPO}\")\n\nos.chdir(REPO)\nprint(f\"  cwd: {os.getcwd()}\")\nr = subprocess.run(['git',\
+    \ 'rev-parse', '--short', 'HEAD'],\n                   capture_output=True, text=True)\nprint(f\"\
+    \  HEAD: {r.stdout.strip()}  (pin this in recipe.yaml after first success)\")\n\n# List top-level\
+    \ files so we know the clone is complete\nr = subprocess.run(['ls', '-la'], capture_output=True, text=True)\n\
+    print(\"\\n  Top-level files:\")\nprint('\\n'.join('    ' + line for line in r.stdout.splitlines()[:15]))\n\
+    \nprint(\"\\n[B] PASS - repo ready at\", REPO)"
+  cell_id: iEemGRB4IX1C
+- name: cell-2
+  type: code
+  source: "#@title C1) Direct HTTP weight downloads (15 GB, 17 files) { run: \"auto\" }\n# Bulk: 0070000.pt\
+    \ (8.94 GB) + DINOv2 + SAM + YOLO + SMPL + DWPose + GroundingDINO\n# + PHALP (UT Austin) + FGT/LAFC.\
+    \ Idempotent: skips files with matching size.\nimport os, subprocess, sys, time\nfrom pathlib import\
+    \ Path\n\nREPO = Path('/root/virtual-avatar-generation')\nos.chdir(REPO)\n\nfor d in [\n    'pipeline/track/data',\n\
+    \    'pipeline/track/phalp/trackers',\n    'pipeline/context/dwpose',\n    'pipeline/context/ckpt',\n\
+    \    'pipeline/context/aot/pretrain_models',\n    'pipeline/context/phalp_weights/3D',\n    'pipeline/environment/FGT/checkpoint',\n\
+    \    'pipeline/environment/FGT/flowCheckPoint',\n    'pipeline/environment/LAFC/checkpoint',\n   \
+    \ 'pipeline/environment/weight',\n    'pipeline/environment/tool/tool',\n    'model/backbones',\n\
+    ]:\n    (REPO / d).mkdir(parents=True, exist_ok=True)\n\nWEIGHTS = [\n    ('0070000.pt',\n     'https://pub-29afd72dc81d490fa2746896005a9d8b.r2.dev/0070000.pt',\
+    \ 8938024765),\n    ('model/backbones/dinov2_vit_large.pth',\n     'https://dl.fbaipublicfiles.com/dinov2/dinov2_vitl14/dinov2_vitl14_reg4_pretrain.pth',\
+    \ 1217607321),\n    ('model/backbones/dinov2_vit_base.pth',\n     'https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/dinov2_vitb14_reg4_pretrain.pth',\
+    \ 346393545),\n    ('pipeline/track/phalp/trackers/sam_vit_h_4b8939.pth',\n     'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth',\
+    \ 2564550879),\n    ('pipeline/track/phalp/trackers/yolov8l-seg.pt',\n     'https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8l-seg.pt',\
+    \ 92391859),\n    ('pipeline/track/data/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl',\n     'https://huggingface.co/spaces/brjathu/HMR2.0/resolve/e5201da358ccbc04f4a5c4450a302fcb9de571dd/data/smpl/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl',\
+    \ 39001280),\n    ('pipeline/context/dwpose/dw-ll_ucoco_384.onnx',\n     'https://huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.onnx',\
+    \ 134399116),\n    ('pipeline/context/ckpt/groundingdino_swint_ogc.pth',\n     'https://huggingface.co/ShilongLiu/GroundingDINO/resolve/main/groundingdino_swint_ogc.pth',\
+    \ 693997677),\n    ('pipeline/context/phalp_weights/hmar_v2_weights.pth',\n     'https://www.cs.utexas.edu/~pavlakos/phalp/weights/hmar_v2_weights.pth',\
+    \ 174619425),\n    ('pipeline/context/phalp_weights/pose_predictor_40006.ckpt',\n     'https://www.cs.utexas.edu/~pavlakos/phalp/weights/pose_predictor_40006.ckpt',\
+    \ 146596833),\n    ('pipeline/context/phalp_weights/config_40006.yaml',\n     'https://www.cs.utexas.edu/~pavlakos/phalp/weights/config_40006.yaml',\
+    \ 5820),\n    ('pipeline/environment/FGT/checkpoint/fgt.pth.tar',\n     'https://huggingface.co/hitachinsk/FGT/resolve/main/fgt.pth.tar',\
+    \ 157341393),\n    ('pipeline/environment/FGT/checkpoint/FGT_config.yaml',\n     'https://huggingface.co/hitachinsk/FGT/resolve/main/FGT_config.yaml',\
+    \ 413),\n    ('pipeline/environment/LAFC/checkpoint/lafc.pth.tar',\n     'https://huggingface.co/hitachinsk/FGT/resolve/main/lafc.pth.tar',\
+    \ 12360405),\n    ('pipeline/environment/LAFC/checkpoint/LAFC_config.yaml',\n     'https://huggingface.co/hitachinsk/FGT/resolve/main/LAFC_config.yaml',\
+    \ 152),\n    ('pipeline/environment/FGT/flowCheckPoint/lafc_single.pth.tar',\n     'https://huggingface.co/hitachinsk/FGT/resolve/main/lafc_single.pth.tar',\
+    \ 11547053),\n    ('pipeline/environment/FGT/flowCheckPoint/LAFC_single_config.yaml',\n     'https://huggingface.co/hitachinsk/FGT/resolve/main/LAFC_single_config.yaml',\
+    \ 160),\n]\n\ndef download(url, dst, expected_bytes, retries=3):\n    dst = Path(dst)\n    if dst.exists()\
+    \ and dst.stat().st_size == expected_bytes:\n        print(f\"  skip: {dst.name}\", flush=True)\n\
+    \        return\n    if dst.exists():\n        print(f\"  re-download (size {dst.stat().st_size} vs\
+    \ {expected_bytes}): {dst.name}\", flush=True)\n    dst.parent.mkdir(parents=True, exist_ok=True)\n\
+    \    for attempt in range(1, retries + 1):\n        t0 = time.time()\n        r = subprocess.run(\n\
+    \            ['curl', '-L', '-C', '-', '-fSL', '-o', str(dst), url],\n            capture_output=True,\
+    \ text=True)\n        dt = time.time() - t0\n        if r.returncode == 0 and dst.exists() and dst.stat().st_size\
+    \ == expected_bytes:\n            mb = dst.stat().st_size / (1024**2)\n            print(f\"  OK:\
+    \   {dst.name} ({mb:.1f} MB in {dt:.1f}s = {mb/dt:.1f} MB/s)\", flush=True)\n            return\n\
+    \        print(f\"  retry {attempt}/{retries}: {dst.name} \"\n              f\"({dst.stat().st_size\
+    \ if dst.exists() else 0} / {expected_bytes})\", flush=True)\n    sys.exit(f\"FATAL: download failed\
+    \ after {retries} retries: {url}\")\n\nprint(f\"=== Downloading {len(WEIGHTS)} files (~15 GB total)\
+    \ ===\", flush=True)\nt_start = time.time()\nfor dst, url, size in WEIGHTS:\n    download(url, REPO\
+    \ / dst, size)\ntotal_min = (time.time() - t_start) / 60\nprint(f\"\\n[C1] PASS - all {len(WEIGHTS)}\
+    \ files. Total wall time: {total_min:.1f} min\")"
+  cell_id: Av8sthexIrbB
+- name: cell-3
+  type: code
+  source: "#@title C2) GDrive + PHALP 3D + RAFT + duplicates { run: \"auto\" }\n# Smaller files: 3 AOT/DeAOT\
+    \ (gdown with retry) + 5 PHALP 3D aux + 1 RAFT zip (2 copies)\n# + 1 YOLO duplicate + 1 generated\
+    \ zero_vector.\nimport os, subprocess, sys, time, pickle, numpy as np\nfrom pathlib import Path\n\n\
+    REPO = Path('/root/virtual-avatar-generation')\nos.chdir(REPO)\n\n# Install gdown 4.6+ (handles virus-scan\
+    \ warning auto)\nsubprocess.run(['pip', '-q', 'install', 'gdown>=4.6'], check=True)\n\n# GDrive AOT\
+    \ / DeAOT with retry + direct-URL fallback\nGDOWN_FILES = [\n    ('pipeline/context/ckpt/R50_DeAOTL_PRE_YTB_DAV.pth',\n\
+    \     '1QoChMkTVxdYZ_eBlZhK2acq9KMQZccPJ', 236513959),\n    ('pipeline/context/ckpt/DeAOTB_PRE_YTB_DAV.pth',\n\
+    \     '1BHxsonnvJXylqHlZ1zJHHc-ymKyq-CFf', 158464770),\n    ('pipeline/context/aot/pretrain_models/R50_AOTL_PRE_YTB_DAV.pth',\n\
+    \     '1qJDYn3Ibpquu4ffYoQmVjg1YCbr2JQep', 60012304),\n]\n\nprint(\"=== GDrive (AOT/DeAOT) ===\",\
+    \ flush=True)\nfor dst_rel, gid, size in GDOWN_FILES:\n    dst = REPO / dst_rel\n    if dst.exists()\
+    \ and dst.stat().st_size == size:\n        print(f\"  skip: {dst.name}\", flush=True); continue\n\
+    \    dst.parent.mkdir(parents=True, exist_ok=True)\n    ok = False\n    for attempt in range(1, 4):\n\
+    \        if attempt <= 2:\n            r = subprocess.run(['gdown', gid, '-O', str(dst), '--fuzzy'],\n\
+    \                               capture_output=True, text=True)\n        else:\n            url =\
+    \ f'https://drive.usercontent.google.com/download?id={gid}&confirm=t'\n            r = subprocess.run(['curl',\
+    \ '-L', '-fSL', '-o', str(dst), url],\n                               capture_output=True, text=True)\n\
+    \        if r.returncode == 0 and dst.exists() and dst.stat().st_size == size:\n            print(f\"\
+    \  OK:   {dst.name} ({dst.stat().st_size / (1024**2):.1f} MB) [attempt {attempt}]\", flush=True)\n\
+    \            ok = True; break\n        print(f\"  retry {attempt}/3 {gid}: got {dst.stat().st_size\
+    \ if dst.exists() else 0} / {size}\", flush=True)\n        time.sleep(5 * attempt)\n    if not ok:\n\
+    \        print(f\"  stderr tail: {r.stderr[-500:] if r.stderr else '(none)'}\")\n        sys.exit(f\"\
+    FATAL: GDrive failed for {gid}\")\n\n# PHALP 3D aux files (UT Austin, 5 small)\nprint(\"\\n=== PHALP\
+    \ 3D aux (UT Austin) ===\", flush=True)\nPHALP_3D = [\n    ('SMPL_to_J19.pkl', 1047441),\n    ('texture.npz',\
+    \ 617898),\n    ('head_faces.npy', 39680),\n    ('smpl_mean_params.npz', 1998),\n    ('mean_std.npy',\
+    \ 1936),\n]\nfor fname, size in PHALP_3D:\n    dst = REPO / 'pipeline/context/phalp_weights/3D' /\
+    \ fname\n    if dst.exists() and dst.stat().st_size == size:\n        print(f\"  skip: {fname}\",\
+    \ flush=True); continue\n    url = f'https://www.cs.utexas.edu/~pavlakos/phalp/3D/{fname}'\n    r\
+    \ = subprocess.run(['curl', '-L', '-fSL', '-o', str(dst), url], capture_output=True, text=True)\n\
+    \    if r.returncode != 0 or not dst.exists() or dst.stat().st_size != size:\n        sys.exit(f\"\
+    FATAL: PHALP 3D {fname} failed: {r.stderr}\")\n    print(f\"  OK:   {fname} ({dst.stat().st_size}\
+    \ bytes)\", flush=True)\n\n# RAFT (Dropbox zip) - 2 destinations\nprint(\"\\n=== RAFT (Dropbox) ===\"\
+    , flush=True)\nraft_a = REPO / 'pipeline/environment/weight/raft-things.pth'\nraft_b = REPO / 'pipeline/environment/LAFC/flowCheckPoint/raft-things.pth'\n\
+    if raft_a.exists() and raft_a.stat().st_size == 21108000 and raft_b.exists() and raft_b.stat().st_size\
+    \ == 21108000:\n    print(f\"  skip: raft-things.pth x2\", flush=True)\nelse:\n    r = subprocess.run(['curl',\
+    \ '-L', '-fSL', '-o', '/tmp/raft_models.zip',\n                        'https://dl.dropboxusercontent.com/s/4j4z58wuv8o0mfz/models.zip'],\n\
+    \                       capture_output=True, text=True)\n    if r.returncode != 0:\n        sys.exit(f\"\
+    FATAL: RAFT zip fetch failed: {r.stderr}\")\n    subprocess.run(['unzip', '-q', '-o', '/tmp/raft_models.zip',\
+    \ '-d', '/tmp/'], check=True)\n    raft_a.parent.mkdir(parents=True, exist_ok=True)\n    raft_b.parent.mkdir(parents=True,\
+    \ exist_ok=True)\n    subprocess.run(['cp', '/tmp/models/raft-things.pth', str(raft_a)], check=True)\n\
+    \    subprocess.run(['cp', '/tmp/models/raft-things.pth', str(raft_b)], check=True)\n    subprocess.run(['rm',\
+    \ '-rf', '/tmp/raft_models.zip', '/tmp/models'], check=False)\n    print(f\"  OK:   raft-things.pth\
+    \ -> 2 locations ({raft_a.stat().st_size} bytes each)\", flush=True)\n\n# YOLOv8 duplicate\nyolo_a\
+    \ = REPO / 'pipeline/track/phalp/trackers/yolov8l-seg.pt'\nyolo_b = REPO / 'pipeline/environment/tool/tool/yolov8l-seg.pt'\n\
+    yolo_b.parent.mkdir(parents=True, exist_ok=True)\nif not (yolo_b.exists() and yolo_b.stat().st_size\
+    \ == 92391859):\n    subprocess.run(['cp', str(yolo_a), str(yolo_b)], check=True)\n    print(f\"\\\
+    n  OK:   yolov8l-seg.pt duplicated to tool/tool/\", flush=True)\nelse:\n    print(f\"\\n  skip: yolov8l-seg.pt\
+    \ duplicate\", flush=True)\n\n# dinov2_zero_vector.pt - generated\nzv = REPO / 'model/backbones/dinov2_zero_vector.pt'\n\
+    if not (zv.exists() and zv.stat().st_size == 2867366):\n    z = np.zeros((1, 700, 1024), dtype=np.float32)\n\
+    \    with open(zv, 'wb') as f:\n        pickle.dump(z, f)\n    print(f\"  OK:   dinov2_zero_vector.pt\
+    \ generated ({zv.stat().st_size} bytes)\", flush=True)\nelse:\n    print(f\"  skip: dinov2_zero_vector.pt\"\
+    , flush=True)\n\n# Final total byte count\ntotal = 0\nfor root, _, files in os.walk(REPO):\n    for\
+    \ f in files:\n        p = Path(root) / f\n        if p.suffix in ('.pt', '.pth', '.tar', '.pkl',\
+    \ '.onnx', '.npz', '.npy'):\n            total += p.stat().st_size\nprint(f\"\\n  Total weight bytes:\
+    \ {total / (1024**3):.2f} GB\")\nprint(\"\\n[C2] PASS - all auxiliary files in place.\")"
+  cell_id: EsgKAiHZKB5q
+- name: cell-4
+  type: code
+  source: "#@title D1) condacolab install (KERNEL WILL RESTART) { run: \"auto\" }\n# condacolab.check()\
+    \ raises AssertionError when conda not found — use try/except.\n# condacolab.install() restarts the\
+    \ kernel on first run. After restart, re-running\n# this cell hits the except-less branch and exits\
+    \ clean.\nimport sys, subprocess\ntry:\n    import condacolab\nexcept ImportError:\n    subprocess.run(['pip',\
+    \ '-q', 'install', 'condacolab==0.1.10'], check=True)\n    import condacolab\n\ntry:\n    condacolab.check()\n\
+    \    print(\"  condacolab already installed - kernel ready.\")\nexcept AssertionError:\n    print(\"\
+    \  Installing condacolab (kernel will restart) ...\")\n    condacolab.install()   # restarts kernel\
+    \ here\n\nprint(\"\\n[D1] PASS - condacolab/mamba ready. Now run D2.\")"
+  cell_id: qaCubhwxKRpv
+- name: cell-5
+  type: code
+  source: "#@title D2) Launch install.sh (async — poll in next cells) { run: \"auto\" }\n# install.sh\
+    \ builds mmcv-full + detectron2 + flash-attn. 15-30 min. Background thread.\n# 2026-04-21 fix: `conda\
+    \ activate sabr` fails in non-interactive bash without conda.sh\n# hook sourced first. Patch install.sh\
+    \ to source it before the activate block.\nimport os, subprocess, threading, time\nfrom pathlib import\
+    \ Path\nos.chdir('/root/virtual-avatar-generation')\n\n# Pre-install osmesa for pyrender headless\
+    \ GL (COMMON_ERRORS §21)\nprint(\"  Pre-install: libosmesa6-dev + libglfw3-dev ...\")\nsubprocess.run(['apt-get',\
+    \ '-y', '-qq', 'install', 'libosmesa6-dev', 'libglfw3-dev'],\n               check=False, capture_output=True)\n\
+    \n# Patch install.sh\ninstall_src = Path('install.sh').read_text()\nassert 'mamba create -n sabr'\
+    \ in install_src, \"install.sh changed upstream\"\npatched = install_src.replace('bash ./prepare_data.sh',\n\
+    \                              'echo \"[SKIP prepare_data.sh - see Cell C]\"')\npatched = patched.replace('wget\
+    \ -qO- cli.runpod.net | sudo bash',\n                          'echo \"[SKIP runpod CLI - not needed\
+    \ for Colab]\"')\n# (new 2026-04-21) source conda hook so `conda activate sabr` works in non-interactive\
+    \ bash\npatched = patched.replace(\n    'conda activate sabr && {',\n    'source /usr/local/etc/profile.d/conda.sh\\\
+    nconda activate sabr && {'\n)\n# Idempotent mamba create — don't fail on re-run if env already exists\n\
+    patched = patched.replace(\n    'mamba create -n sabr python=3.10 -y',\n    'mamba env list | grep\
+    \ -qE \"^sabr\\\\s\" || mamba create -n sabr python=3.10 -y'\n)\nassert '[SKIP prepare_data.sh' in\
+    \ patched, \"patch failed\"\nassert 'source /usr/local/etc/profile.d/conda.sh' in patched, \"conda.sh\
+    \ source patch failed\"\nPath('install_colab.sh').write_text(patched)\nsubprocess.run(['chmod', '+x',\
+    \ 'install_colab.sh'], check=True)\n\n# Background launch\n_job = {'status': 'running', 'rc': None,\
+    \ 'started_at': time.time()}\ndef _run_install():\n    try:\n        _job['rc'] = subprocess.run(\n\
+    \            'bash -x install_colab.sh > /tmp/install_sabr.log 2>&1',\n            shell=True, cwd='/root/virtual-avatar-generation').returncode\n\
+    \        _job['status'] = 'done'\n    except Exception as e:\n        _job['status'] = 'error'; _job['err']\
+    \ = str(e)\n\n_t = threading.Thread(target=_run_install, daemon=True)\n_t.start()\nprint(f\"\\n  install.sh\
+    \ launched (thread={_t.ident}).\")\nprint(f\"  Log: /tmp/install_sabr.log.  Expected 15-30 min.  Poll\
+    \ via D2p.\")"
+  cell_id: OyQ1TuqxKn0R
+- name: cell-6
+  type: code
+  source: "#@title D2p) Poll install.sh progress { run: \"auto\" }\n# Re-run this cell every few minutes.\
+    \ Shows elapsed + last 30 log lines.\nimport time, subprocess\nfrom pathlib import Path\n\nlog = Path('/tmp/install_sabr.log')\n\
+    elapsed = (time.time() - _job['started_at']) / 60 if 'started_at' in _job else 0\n\nprint(f\"Status:\
+    \ {_job.get('status')}\")\nprint(f\"rc:     {_job.get('rc')}\")\nprint(f\"Elapsed: {elapsed:.1f} min\"\
+    )\nif log.exists():\n    size_kb = log.stat().st_size / 1024\n    n_lines = sum(1 for _ in open(log))\n\
+    \    print(f\"Log:    {size_kb:.1f} KB, {n_lines} lines\")\n    print(\"\\n--- last 30 lines ---\"\
+    )\n    r = subprocess.run(['tail', '-n', '30', str(log)], capture_output=True, text=True)\n    print(r.stdout)\n\
+    else:\n    print(f\"Log not yet created.\")\n\nif _job.get('status') == 'done':\n    rc = _job.get('rc')\n\
+    \    print(f\"\\n=== install.sh COMPLETE (rc={rc}) in {elapsed:.1f} min ===\")\n    if rc == 0:\n\
+    \        # Verify sabr env exists\n        r = subprocess.run(['mamba', 'env', 'list'], capture_output=True,\
+    \ text=True)\n        print(r.stdout)\n        if 'sabr' in r.stdout:\n            print(\"[D2] PASS\
+    \ - sabr mamba env ready.\")\n        else:\n            print(\"[D2] FAIL - install.sh exit 0 but\
+    \ sabr env missing!\")\n    else:\n        print(f\"[D2] FAIL - install.sh rc={rc}. Full log: {log}\"\
+    )\n        print(\"\\n--- last 100 lines (context) ---\")\n        r = subprocess.run(['tail', '-n',\
+    \ '100', str(log)], capture_output=True, text=True)\n        print(r.stdout)\nelif _job.get('status')\
+    \ == 'error':\n    print(f\"\\n[D2] THREAD ERROR: {_job.get('err')}\")\nelse:\n    print(f\"\\n  (Still\
+    \ running. Re-run this cell in 2-3 min.)\")"
+  cell_id: aUwS5TNzKzFC
+- name: cell-7
+  type: code
+  source: "#@title D2v) Verify critical packages in sabr env { run: \"auto\" }\nimport subprocess, textwrap\n\
+    \ncheck_code = textwrap.dedent(\"\"\"\n    import importlib\n    targets = [\n        'torch', 'torchvision',\
+    \ 'mmcv', 'mmdet', 'mmpose',\n        'timm', 'segment_anything', 'ultralytics', 'pyrender',\n   \
+    \     'flash_attn', 'xformers', 'detectron2', 'hydra',\n        'cv2', 'onnxruntime', 'chumpy', 'PIL',\
+    \ 'pyrootutils',\n        'joblib', 'einops', 'gdown', 'boto3',\n    ]\n    for name in targets:\n\
+    \        try:\n            m = importlib.import_module(name)\n            v = getattr(m, '__version__',\
+    \ 'ok')\n            print(f'  [ok]    {name:20s} = {v}')\n        except Exception as e:\n      \
+    \      msg = f'{type(e).__name__}: {e}'[:90]\n            print(f'  [MISS]  {name:20s} - {msg}')\n\
+    \    import torch\n    print()\n    print('  torch.cuda.is_available:', torch.cuda.is_available())\n\
+    \    if torch.cuda.is_available():\n        print('  torch.cuda.get_device_name:', torch.cuda.get_device_name(0))\n\
+    \"\"\")\n\nr = subprocess.run(\n    ['mamba', 'run', '-n', 'sabr', '--no-capture-output', 'python',\
+    \ '-c', check_code],\n    capture_output=True, text=True)\nprint(r.stdout)\nif r.stderr:\n    print('---\
+    \ stderr (last 1000 chars) ---')\n    print(r.stderr[-1000:])"
+  cell_id: cCDMUpPSOHJS
+- name: cell-8
+  type: code
+  source: "#@title D3) Fix sabr env — CUDA torch + missing critical packages (async) { run: \"auto\" }\n\
+    # install.sh left sabr env in broken state: torch 2.10 CPU-only, mmcv/mmdet/mmpose/\n# chumpy/joblib\
+    \ missing, onnxruntime ABI crash on numpy 2.x, flash-attn/detectron2 failed.\n# Strategy: reinstall\
+    \ torch==2.1.0+cu121 (has mmcv 1.7.x pre-built wheels), numpy<2\n# (for 2022-era C-ext ABI), mmcv-full\
+    \ via mim, mmdet/mmpose pinned, chumpy/joblib,\n# onnxruntime-gpu compat. flash-attn: SKIP entirely\
+    \ (use SDPA shim in Cell F).\n# detectron2: try once; if fails keep going (PHALP subprocess may or\
+    \ may not need it).\nimport subprocess, threading, time, textwrap\nfrom pathlib import Path\n\nfix_script\
+    \ = textwrap.dedent(\"\"\"\n    set +e  # best-effort — some installs may fail but keep going\n  \
+    \  source /usr/local/etc/profile.d/conda.sh\n    conda activate sabr\n\n    echo \"=== [0] uninstall\
+    \ broken torch nightly ===\"\n    pip uninstall -y torch torchvision torchaudio xformers flash-attn\
+    \ detectron2 2>&1 | tail -5\n\n    echo \"=== [1] torch 2.1.0 + cu121 (has mmcv-full 1.7.x pre-built\
+    \ wheels) ===\"\n    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121\
+    \ \\\\\n        torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 2>&1 | tail -3\n\n    echo \"===\
+    \ [2] numpy<2 (mmcv/mmdet/onnxruntime ABI) ===\"\n    pip install --no-cache-dir 'numpy<2' 2>&1 |\
+    \ tail -3\n\n    echo \"=== [3] mmcv-full 1.7.2 via pip (skip mim — slower) ===\"\n    pip install\
+    \ --no-cache-dir mmcv-full==1.7.2 \\\\\n        -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/index.html\
+    \ 2>&1 | tail -3\n\n    echo \"=== [4] mmdet 2.28.1 + mmpose 0.24.0 ===\"\n    pip install --no-cache-dir\
+    \ mmdet==2.28.1 mmpose==0.24.0 2>&1 | tail -3\n\n    echo \"=== [5] chumpy joblib packaging ===\"\n\
+    \    pip install --no-cache-dir chumpy joblib packaging 2>&1 | tail -3\n\n    echo \"=== [6] xformers\
+    \ 0.0.23.post1 (matches torch 2.1) ===\"\n    pip install --no-cache-dir xformers==0.0.23.post1 2>&1\
+    \ | tail -3\n\n    echo \"=== [7] onnxruntime-gpu rebuild (for numpy<2 + CUDA 12) ===\"\n    pip uninstall\
+    \ -y onnxruntime onnxruntime-gpu 2>&1 | tail -2\n    pip install --no-cache-dir onnxruntime-gpu==1.17.1\
+    \ 2>&1 | tail -3\n\n    echo \"=== [8] ultralytics reinstall (fix matplotlib inline backend) ===\"\
+    \n    pip install --no-cache-dir --force-reinstall --no-deps ultralytics==8.0.99 2>&1 | tail -3\n\n\
+    \    echo \"=== [9] detectron2 (best-effort; PHALP may or may not need) ===\"\n    pip install --no-cache-dir\
+    \ 'git+https://github.com/facebookresearch/detectron2.git' 2>&1 | tail -5 || echo \"[SKIP detectron2\
+    \ build failed]\"\n\n    echo \"=== [DONE] ===\"\n\"\"\").strip()\n\nPath('/tmp/fix_sabr.sh').write_text(fix_script)\n\
+    subprocess.run(['chmod', '+x', '/tmp/fix_sabr.sh'], check=True)\n\n_fix = {'status': 'running', 'rc':\
+    \ None, 'started_at': time.time()}\ndef _run_fix():\n    try:\n        _fix['rc'] = subprocess.run(\n\
+    \            'bash /tmp/fix_sabr.sh > /tmp/fix_sabr.log 2>&1',\n            shell=True).returncode\n\
+    \        _fix['status'] = 'done'\n    except Exception as e:\n        _fix['status'] = 'error'; _fix['err']\
+    \ = str(e)\nthreading.Thread(target=_run_fix, daemon=True).start()\n\nprint(\"Fix launched in background.\
+    \ Poll with D3p.\")\nprint(\"Expected 8-15 min (torch 2.1 + mmcv wheel + misc pips).\")"
+  cell_id: 9CHbzFH0OsA9
+- name: cell-9
+  type: code
+  source: "#@title D3p) Poll fix progress { run: \"auto\" }\nimport time, subprocess\nfrom pathlib import\
+    \ Path\nlog = Path('/tmp/fix_sabr.log')\nelapsed = (time.time() - _fix['started_at']) / 60\nprint(f\"\
+    Status: {_fix.get('status')}  rc: {_fix.get('rc')}  Elapsed: {elapsed:.1f} min\")\nif log.exists():\n\
+    \    n = sum(1 for _ in open(log))\n    print(f\"Log: {log.stat().st_size//1024} KB, {n} lines\\n\"\
+    )\n    print(\"--- last 40 lines ---\")\n    r = subprocess.run(['tail', '-n', '40', str(log)], capture_output=True,\
+    \ text=True)\n    print(r.stdout)\nif _fix.get('status') == 'done':\n    print(f\"\\n=== Fix COMPLETE\
+    \ rc={_fix['rc']} in {elapsed:.1f} min ===\")\nelse:\n    print(f\"\\n(still running, re-run this\
+    \ cell)\")"
+  cell_id: uhTjQm6oPbnS
+- name: cell-10
+  type: code
+  source: "#@title D4) Finish remaining packages (numpy pin first, async) { run: \"auto\" }\n# Round 2:\
+    \ D3 left mmpose/chumpy/onnxruntime/ultralytics/joblib broken, mostly due to\n# numpy 2.2.6 reinstalled\
+    \ by xformers. Force numpy<2 FIRST, then install/rebuild the\n# numpy-1.x-only packages in order.\n\
+    import subprocess, threading, time, textwrap\nfrom pathlib import Path\n\nscript = textwrap.dedent(\"\
+    \"\"\n    set +e\n    source /usr/local/etc/profile.d/conda.sh\n    conda activate sabr\n\n    echo\
+    \ \"=== [1] Pin numpy<2 BEFORE anything else ===\"\n    pip uninstall -y numpy 2>&1 | tail -2\n  \
+    \  pip install --no-cache-dir 'numpy==1.26.4' 2>&1 | tail -3\n\n    echo \"=== [2] joblib + mmpose\
+    \ ===\"\n    pip install --no-cache-dir joblib mmpose==0.24.0 2>&1 | tail -3\n\n    echo \"=== [3]\
+    \ chumpy (no-build-isolation so it uses our numpy==1.26.4) ===\"\n    pip install --no-cache-dir --no-build-isolation\
+    \ chumpy 2>&1 | tail -10\n\n    echo \"=== [4] onnxruntime-gpu rebuild for numpy<2 ===\"\n    pip\
+    \ uninstall -y onnxruntime onnxruntime-gpu 2>&1 | tail -2\n    pip install --no-cache-dir onnxruntime-gpu==1.17.1\
+    \ 2>&1 | tail -3\n\n    echo \"=== [5] Verify numpy didn't get bumped ===\"\n    python -c \"import\
+    \ numpy; print('numpy:', numpy.__version__)\"\n\n    echo \"=== [6] ultralytics matplotlib fix (uninstall\
+    \ matplotlib-inline) ===\"\n    pip uninstall -y matplotlib-inline 2>&1 | tail -2\n    pip install\
+    \ --no-cache-dir --force-reinstall --no-deps ultralytics==8.0.99 2>&1 | tail -3\n\n    echo \"===\
+    \ [7] detectron2 retry with torch 2.1 in place ===\"\n    pip install --no-cache-dir 'git+https://github.com/facebookresearch/detectron2.git'\
+    \ 2>&1 | tail -5 || echo \"[SKIP detectron2]\"\n\n    echo \"=== [DONE] ===\"\n\"\"\").strip()\n\n\
+    Path('/tmp/fix_sabr2.sh').write_text(script)\nsubprocess.run(['chmod', '+x', '/tmp/fix_sabr2.sh'],\
+    \ check=True)\n\n_fix2 = {'status': 'running', 'rc': None, 'started_at': time.time()}\ndef _run():\n\
+    \    try:\n        _fix2['rc'] = subprocess.run(\n            'bash /tmp/fix_sabr2.sh > /tmp/fix_sabr2.log\
+    \ 2>&1',\n            shell=True).returncode\n        _fix2['status'] = 'done'\n    except Exception\
+    \ as e:\n        _fix2['status'] = 'error'; _fix2['err'] = str(e)\nthreading.Thread(target=_run, daemon=True).start()\n\
+    \nprint(\"Fix2 launched. Poll /tmp/fix_sabr2.log. Expected 4-8 min.\")"
+  cell_id: eTyNJXXQQpAF
+- name: cell-11
+  type: code
+  source: "#@title D4p) Poll fix2 progress { run: \"auto\" }\nimport time, subprocess\nfrom pathlib import\
+    \ Path\nlog = Path('/tmp/fix_sabr2.log')\nelapsed = (time.time() - _fix2['started_at']) / 60 if '_fix2'\
+    \ in dir() else 0\nprint(f\"Status: {_fix2.get('status')}  rc: {_fix2.get('rc')}  Elapsed: {elapsed:.1f}\
+    \ min\")\nif log.exists():\n    n = sum(1 for _ in open(log))\n    print(f\"Log: {log.stat().st_size//1024}\
+    \ KB, {n} lines\\n\")\n    r = subprocess.run(['tail', '-n', '40', str(log)], capture_output=True,\
+    \ text=True)\n    print(r.stdout)\nif _fix2.get('status') == 'done':\n    print(f\"\\n=== fix2 COMPLETE\
+    \ rc={_fix2['rc']} ===\")\nelse:\n    print(\"(still running)\")"
+  cell_id: Eg3IMSakQ-eB
+- name: cell-12
+  type: code
+  source: "#@title D5) chumpy patch + ultralytics fix + flash_attn shim (sync, fast) { run: \"auto\" }\n\
+    # This one is fast (no heavy pips) so run sync.\nimport subprocess, os\nfrom pathlib import Path\n\
+    \nSABR_SP = '/usr/local/envs/sabr/lib/python3.10/site-packages'\n\n# [1] Patch chumpy __init__.py\
+    \ — line 11 imports np aliases removed in numpy 2.x\nchumpy_init = Path(SABR_SP) / 'chumpy' / '__init__.py'\n\
+    src = chumpy_init.read_text()\nbad_line = 'from numpy import bool, int, float, complex, object, unicode,\
+    \ str, nan, inf'\nif bad_line in src:\n    new_block = \"\"\"# [2026-04-21 patch] numpy 2.x removed\
+    \ these aliases. Replace with Python builtins + nan/inf.\nfrom numpy import nan, inf\nbool = bool\n\
+    int = int\nfloat = float\ncomplex = complex\nobject = object\nstr = str\nunicode = str\"\"\"\n   \
+    \ src = src.replace(bad_line, new_block)\n    chumpy_init.write_text(src)\n    print(\"  [1] chumpy\
+    \ __init__.py patched for numpy 2.x\")\nelse:\n    print(\"  [1] chumpy already patched (or different\
+    \ version)\")\n\n# Verify chumpy imports cleanly now\nr = subprocess.run(\n    ['mamba', 'run', '-n',\
+    \ 'sabr', '--no-capture-output',\n     'python', '-c', 'import chumpy; print(\"chumpy:\", chumpy.__version__\
+    \ if hasattr(chumpy,\"__version__\") else \"0.70\")'],\n    capture_output=True, text=True)\nprint(\"\
+    \  chumpy import:\", r.stdout.strip() or r.stderr.strip()[:200])\n\n# [2] Ultralytics matplotlib backend\
+    \ fix — set MPLBACKEND=Agg globally\n# The error comes from matplotlib trying to use Colab inline\
+    \ backend inside sabr env\n# where matplotlib_inline package isn't installed. Force Agg backend via\
+    \ matplotlibrc.\nmpl_cfg_dir = Path(SABR_SP) / 'matplotlib' / 'mpl-data'\nif mpl_cfg_dir.exists():\n\
+    \    matplotlibrc = mpl_cfg_dir / 'matplotlibrc'\n    mrc = matplotlibrc.read_text()\n    if 'backend:\
+    \ Agg' not in mrc:\n        # Replace or append backend line\n        import re as _re\n        mrc2\
+    \ = _re.sub(r'^(#\\s*)?backend\\s*:\\s*.*$', 'backend: Agg', mrc, count=1, flags=_re.MULTILINE)\n\
+    \        if 'backend: Agg' not in mrc2:\n            mrc2 = 'backend: Agg\\n' + mrc\n        matplotlibrc.write_text(mrc2)\n\
+    \        print(\"  [2] matplotlibrc backend -> Agg\")\n    else:\n        print(\"  [2] matplotlibrc\
+    \ backend already Agg\")\nelse:\n    print(f\"  [2] SKIP — matplotlib mpl-data not at {mpl_cfg_dir}\"\
+    )\n\n# Verify ultralytics imports cleanly\nr = subprocess.run(\n    ['mamba', 'run', '-n', 'sabr',\
+    \ '--no-capture-output',\n     'python', '-c', 'import os; os.environ[\"MPLBACKEND\"]=\"Agg\"; import\
+    \ ultralytics; print(\"ultralytics:\", ultralytics.__version__)'],\n    capture_output=True, text=True)\n\
+    print(\"  ultralytics import:\", r.stdout.strip() or r.stderr.strip()[-200:])\n\n# [3] flash_attn\
+    \ stub — install.sh requires it, DiT may import it.\n# Create a minimal stub that falls through to\
+    \ F.scaled_dot_product_attention (SDPA).\n# sm_80 A100 supports SDPA natively in torch 2.x with math\
+    \ kernel.\nflash_stub_dir = Path(SABR_SP) / 'flash_attn'\nflash_stub_dir.mkdir(exist_ok=True)\n(flash_stub_dir\
+    \ / '__init__.py').write_text('''# 2026-04-21 stub — flash_attn build failed, use torch SDPA.\n__version__\
+    \ = \"2.5.8-stub\"\nimport warnings, torch\nimport torch.nn.functional as F\n\ndef flash_attn_func(q,\
+    \ k, v, dropout_p=0.0, softmax_scale=None, causal=False, **kwargs):\n    \"\"\"Stub: route to torch\
+    \ SDPA. Layouts: (B, S, H, D) for q/k/v.\"\"\"\n    # flash-attn uses (B, S, H, D); SDPA expects (B,\
+    \ H, S, D)\n    q = q.transpose(1, 2); k = k.transpose(1, 2); v = v.transpose(1, 2)\n    out = F.scaled_dot_product_attention(q,\
+    \ k, v, dropout_p=dropout_p,\n                                          is_causal=causal, scale=softmax_scale)\n\
+    \    return out.transpose(1, 2)\n\ndef flash_attn_varlen_func(*args, **kwargs):\n    raise NotImplementedError(\"\
+    flash_attn_varlen_func not stubbed — check if DiT needs it\")\n''')\n# Also create .dist-info so importlib.metadata.version()\
+    \ works\ndist_info = Path(SABR_SP) / 'flash_attn-2.5.8.dist-info'\ndist_info.mkdir(exist_ok=True)\n\
+    (dist_info / 'METADATA').write_text('Metadata-Version: 2.1\\nName: flash-attn\\nVersion: 2.5.8\\n')\n\
+    (dist_info / 'RECORD').write_text('')\nprint(\"  [3] flash_attn stub installed at\", flash_stub_dir)\n\
+    \nr = subprocess.run(\n    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n     'python', '-c',\
+    \ 'import flash_attn; print(\"flash_attn:\", flash_attn.__version__)'],\n    capture_output=True,\
+    \ text=True)\nprint(\"  flash_attn import:\", r.stdout.strip() or r.stderr.strip()[-200:])\n\nprint(\"\
+    \\n[D5] PASS.\")"
+  cell_id: AvOuMf6qR-h8
+- name: cell-13
+  type: code
+  source: "#@title E) PHALP URL patch + SMPL convert + CACHE_DIR { run: \"auto\" }\nimport os, subprocess,\
+    \ sys, textwrap\nfrom pathlib import Path\nos.chdir('/root/virtual-avatar-generation')\n\n# P1: Berkeley\
+    \ -> UT Austin in pipeline/context/model.py\nmodel_py = Path('pipeline/context/model.py')\nbefore\
+    \ = model_py.read_text()\nafter = before.replace('people.eecs.berkeley.edu/~jathushan', 'www.cs.utexas.edu/~pavlakos')\n\
+    if before == after:\n    count = subprocess.run(['grep', '-c', 'pavlakos', str(model_py)],\n     \
+    \                      capture_output=True, text=True).stdout.strip()\n    print(f\"  P1 already patched\
+    \ ({count} pavlakos refs)\")\nelse:\n    model_py.write_text(after)\n    count = subprocess.run(['grep',\
+    \ '-c', 'pavlakos', str(model_py)],\n                           capture_output=True, text=True).stdout.strip()\n\
+    \    print(f\"  P1 PASS: Berkeley -> UT Austin ({count} refs)\")\n\n# P2: basicModel chumpy pkl ->\
+    \ SMPL_NEUTRAL.pkl (Py3 clean)\n# Must run INSIDE sabr env because unpickling needs chumpy module.\n\
+    convert_script = textwrap.dedent(\"\"\"\n    import pickle, os, numpy as np\n    src = os.path.expanduser('~/virtual-avatar-generation/pipeline/track/data/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl')\n\
+    \    dst = os.path.expanduser('~/.cache/phalp/3D/models/smpl/SMPL_NEUTRAL.pkl')\n    os.makedirs(os.path.dirname(dst),\
+    \ exist_ok=True)\n    if os.path.exists(dst) and os.path.getsize(dst) > 30_000_000:\n        print(f'\
+    \  P2 already converted: {dst}')\n    else:\n        with open(src, 'rb') as f:\n            d = pickle.load(f,\
+    \ encoding='latin1')\n        converted = 0\n        for k, v in list(d.items()):\n            if\
+    \ 'chumpy' in str(type(v)).lower():\n                d[k] = np.array(v)\n                converted\
+    \ += 1\n        with open(dst, 'wb') as f:\n            pickle.dump(d, f, protocol=2)\n        print(f'\
+    \  P2 PASS: {dst} ({os.path.getsize(dst)} bytes, {converted} chumpy -> ndarray)')\n\"\"\")\nr = subprocess.run(\n\
+    \    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n     'python', '-c', convert_script],\n\
+    \    capture_output=True, text=True)\nprint(r.stdout)\nif r.stderr and 'Error' in r.stderr:\n    print('\
+    \  stderr:', r.stderr[-600:])\n\n# P3: PHALP weight renames into CACHE_DIR\nsrc_dir = Path('pipeline/context/phalp_weights')\n\
+    cache_wts = Path('/root/.cache/phalp/weights')\ncache_wts.mkdir(parents=True, exist_ok=True)\nRENAMES\
+    \ = [\n    (src_dir / 'hmar_v2_weights.pth',        cache_wts / 'hmar_v2_weights.pth'),\n    (src_dir\
+    \ / 'pose_predictor_40006.ckpt',  cache_wts / 'pose_predictor.pth'),\n    (src_dir / 'config_40006.yaml',\
+    \          cache_wts / 'pose_predictor.yaml'),\n]\nfor s, d in RENAMES:\n    if d.exists() and d.stat().st_size\
+    \ == s.stat().st_size:\n        print(f\"  P3 skip: {d.name}\")\n        continue\n    subprocess.run(['cp',\
+    \ str(s), str(d)], check=True)\n    print(f\"  P3 PASS: {s.name} -> {d}\")\n\ncache_3d = Path('/root/.cache/phalp/3D')\n\
+    for f in ['SMPL_to_J19.pkl', 'texture.npz', 'head_faces.npy',\n          'smpl_mean_params.npz', 'mean_std.npy']:\n\
+    \    s = src_dir / '3D' / f\n    d = cache_3d / f\n    if d.exists() and d.stat().st_size == s.stat().st_size:\n\
+    \        continue\n    subprocess.run(['cp', str(s), str(d)], check=True)\nprint(f\"  P3 3D aux: 5\
+    \ files at {cache_3d}\")\n\n# Summary\nprint(\"\\n  CACHE_DIR final state:\")\nfor p in sorted(Path('/root/.cache/phalp').rglob('*')):\n\
+    \    if p.is_file():\n        sz = p.stat().st_size\n        print(f\"    {sz:>12}  {p.relative_to('/root/.cache/phalp')}\"\
+    )\nprint(\"\\n[E] PASS.\")"
+  cell_id: Ay8-TGMESJcv
+- name: cell-14
+  type: code
+  source: "#@title F) Context-skip patch for inference.py { run: \"auto\" }\n# Adds --skipContext CLI\
+    \ flag + skip_context branches in RunPipeline. 6 anchors +\n# weights_only=False. Idempotent via '--skipContext'\
+    \ presence check.\nfrom pathlib import Path\ninf_py = Path('/root/virtual-avatar-generation/inference.py')\n\
+    src = inf_py.read_text()\n\nif '--skipContext' in src:\n    print(\"  Already patched — skipping\"\
+    )\nelse:\n    # P4a: argparse flag\n    anchor_a = \"parser.add_argument('--videoDir'\"\n    assert\
+    \ anchor_a in src, f\"FAIL: anchor_a not found\"\n    src = src.replace(anchor_a,\n        \"parser.add_argument('--skipContext',\
+    \ action='store_true',\\n                        help='Skip context model (40GB path; README FAQ).')\\\
+    n    \" + anchor_a, 1)\n\n    # P4b: pass skip_context to RunPipeline\n    anchor_b = \"pipeline =\
+    \ RunPipeline(video_name, videoDir, ckpt, args.mode)\"\n    assert anchor_b in src, f\"FAIL: anchor_b\
+    \ not found\"\n    src = src.replace(anchor_b,\n        \"pipeline = RunPipeline(video_name, videoDir,\
+    \ ckpt, args.mode, skip_context=args.skipContext)\", 1)\n\n    # P4c: __init__ signature + attribute\n\
+    \    anchor_c = \"def __init__(self, video_name, video_dir, ckpt, mode):\"\n    assert anchor_c in\
+    \ src, f\"FAIL: anchor_c not found\"\n    src = src.replace(anchor_c,\n        \"def __init__(self,\
+    \ video_name, video_dir, ckpt, mode, skip_context=False):\", 1)\n    anchor_c2 = \"self.checkpoint\
+    \ = ckpt\"\n    assert anchor_c2 in src, f\"FAIL: anchor_c2 not found\"\n    src = src.replace(anchor_c2,\n\
+    \        \"self.checkpoint = ckpt\\n        self.skip_context = skip_context\", 1)\n\n    # P4d: guard\
+    \ context subprocess in inpaint_person()\n    anchor_d = \"subprocess.run(getContextFrames, cwd=self.context_tool_dir,\
+    \ check=True)\"\n    assert anchor_d in src, f\"FAIL: anchor_d not found\"\n    src = src.replace(anchor_d,\n\
+    \        \"if not self.skip_context:\\n            \" + anchor_d + \"\\n\"\n        \"        else:\\\
+    n\"\n        \"            print('[skipContext] skipping GroundingDINO+AOT context extraction')\"\
+    , 1)\n\n    # P4d2: guard L382-L386 block (single-arg getFrameTensors + initLength + rmtree)\n   \
+    \ anchor_d2 = 'context_tensor = self.getFrameTensors(contextFrames_path)\\n        self.initLength\
+    \ = context_tensor.shape[0]\\n        print(f\"Length of context is {self.initLength}\")\\n      \
+    \  shutil.rmtree(contextFrames_path)'\n    assert anchor_d2 in src, f\"FAIL: anchor_d2 block not found\"\
+    \n    src = src.replace(anchor_d2,\n        \"if self.skip_context:\\n\"\n        \"            self.initLength\
+    \ = 0\\n\"\n        \"            print('[skipContext] skipping early context frame read; initLength=0')\\\
+    n\"\n        \"        else:\\n\"\n        \"            context_tensor = self.getFrameTensors(contextFrames_path)\\\
+    n\"\n        \"            self.initLength = context_tensor.shape[0]\\n\"\n        \"            print(f\\\
+    \"Length of context is {self.initLength}\\\")\\n\"\n        \"            shutil.rmtree(contextFrames_path)\"\
+    , 1)\n\n    # P4e: fabricate zero context tensor\n    anchor_e = \"context_tensor = self.getFrameTensors(contextFrames_path,\
+    \ context_image_files, newH, newW, self.device)\"\n    assert anchor_e in src, f\"FAIL: anchor_e not\
+    \ found\"\n    src = src.replace(anchor_e,\n        \"if self.skip_context:\\n\"\n        \"     \
+    \       context_tensor = torch.zeros(1, 3, newH, newW, device=self.device)\\n\"\n        \"      \
+    \  else:\\n\"\n        \"            \" + anchor_e, 1)\n\n    # P4f: skip context_image_files listdir\n\
+    \    anchor_f = \"context_image_files = os.listdir(contextFrames_path)\"\n    assert anchor_f in src,\
+    \ f\"FAIL: anchor_f not found\"\n    src = src.replace(anchor_f,\n        \"if self.skip_context:\\\
+    n\"\n        \"            context_image_files = []\\n\"\n        \"        else:\\n\"\n        \"\
+    \            \" + anchor_f, 1)\n\n    # P5: weights_only=False on torch.load (PyTorch 2.6+ safety\
+    \ default blocks dict ckpt)\n    anchor_p5 = \"self.checkpoint = torch.load(self.checkpoint, map_location=self.device)\"\
+    \n    if anchor_p5 in src:\n        src = src.replace(anchor_p5,\n            \"self.checkpoint =\
+    \ torch.load(self.checkpoint, map_location=self.device, weights_only=False)\", 1)\n        print(\"\
+    \  P5 applied: weights_only=False\")\n\n    inf_py.write_text(src)\n    print(\"  Patches P4a-P4f\
+    \ + P5 applied.\")\n\n# Verify\nfinal = inf_py.read_text()\nfor tok in ['--skipContext', 'skip_context=False',\n\
+    \            'if self.skip_context:', 'initLength = 0']:\n    assert tok in final, f\"FAIL verification:\
+    \ '{tok}' missing\"\nprint(\"\\n[F] PASS — all F verification tokens present.\")\n\n# Quick py-syntax\
+    \ sanity via mamba run python -c compile\nimport subprocess\nr = subprocess.run(['mamba', 'run', '-n',\
+    \ 'sabr', '--no-capture-output',\n                    'python', '-c',\n                    'import\
+    \ py_compile; py_compile.compile(\"/root/virtual-avatar-generation/inference.py\", doraise=True);\
+    \ print(\"compile OK\")'],\n                   capture_output=True, text=True)\nprint(\"  syntax:\"\
+    , r.stdout.strip() or r.stderr.strip()[-400:])"
+  cell_id: GDRAa3YUSZ4g
+- name: cell-15
+  type: code
+  source: "#@title F.5) Dry-run import of SABR inference chain { run: \"auto\" }\n# Catches missing/broken\
+    \ deps BEFORE committing 10+ min to a full run.\nimport subprocess, textwrap\n\ndry_script = textwrap.dedent(\"\
+    \"\"\n    import os, sys, traceback\n    os.environ['HOME'] = '/root'\n    os.environ['MPLBACKEND']\
+    \ = 'Agg'\n    sys.path.insert(0, '/root/virtual-avatar-generation')\n\n    targets = [\n        'torch',\n\
+    \        'torch.cuda.is_available',\n        'pipeline.track.phalp.utils.smpl_utils',  # imports SMPL\n\
+    \        'model.backbones',                         # create_backbone\n        'model.architecture.diffusion_transformer',#\
+    \ DiT_action\n        'model.architecture.diffusion',            # create_diffusion\n        'pipeline.track.phalp.visualize.py_renderer',\
+    \  # Renderer (pyrender)\n    ]\n    for t in targets:\n        try:\n            if '.' in t and\
+    \ t.split('.')[-1] == 'is_available':\n                mod_name = '.'.join(t.split('.')[:-2])\n  \
+    \              m = __import__(mod_name, fromlist=['*'])\n                val = getattr(__import__(mod_name.split('.')[0]).cuda,\
+    \ 'is_available')()\n                print(f'  [ok]    {t:55s} -> {val}')\n            else:\n   \
+    \             m = __import__(t, fromlist=['*'])\n                print(f'  [ok]    {t:55s}')\n   \
+    \     except Exception as e:\n            tb = traceback.format_exc().splitlines()[-3:]\n        \
+    \    print(f'  [FAIL]  {t:55s} - {type(e).__name__}: {str(e)[:100]}')\n            for line in tb:\n\
+    \                print(f'          {line}')\n\n    # Try the critical import chain from inference.py\
+    \ top\n    print()\n    print('=== inference.py top-of-file imports ===')\n    try:\n        import\
+    \ subprocess as _sp, os as _os, time as _time, cv2\n        from typing import Optional\n        import\
+    \ logging\n        import shutil, re\n        import numpy as _np\n        import glob\n        from\
+    \ PIL import Image\n        from torchvision.utils import make_grid\n        from torch.utils.data._utils.collate\
+    \ import default_collate\n        import torch as _torch, argparse\n        from pipeline.track.phalp.utils.smpl_utils\
+    \ import SMPL\n        import torchvision.transforms as T\n        from model.backbones import create_backbone\n\
+    \        from model.architecture.diffusion_transformer import DiT_action\n        from model.architecture.diffusion\
+    \ import create_diffusion\n        from collections import defaultdict\n        import pyrootutils,\
+    \ joblib\n        from pipeline.track.phalp.visualize.py_renderer import Renderer\n        from torch.nn\
+    \ import functional as F\n        from torchvision.io import read_image\n        print('  [OK]  All\
+    \ inference.py top-level imports work')\n    except Exception as e:\n        tb = traceback.format_exc()\n\
+    \        print(f'  [FAIL] {type(e).__name__}: {e}')\n        print(tb[-1500:])\n\"\"\")\n\nr = subprocess.run(\n\
+    \    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n     'python', '-c', dry_script],\n  \
+    \  capture_output=True, text=True)\nprint(r.stdout)\nif r.stderr:\n    print('--- stderr ---')\n \
+    \   print(r.stderr[-2000:])"
+  cell_id: 6AHIg-e9SjGs
+- name: cell-16
+  type: code
+  source: "#@title D6) Final fixes — install phalp + expand flash_attn stub + numpy pin { run: \"auto\"\
+    \ }\nimport subprocess, os, textwrap\nfrom pathlib import Path\nos.chdir('/root/virtual-avatar-generation')\n\
+    \nSABR_SP = '/usr/local/envs/sabr/lib/python3.10/site-packages'\n\n# [1] Grep diffusion_transformer.py\
+    \ for all flash_attn imports\ninf_src = Path('model/architecture/diffusion_transformer.py').read_text()\n\
+    import re\nflash_imports_block = re.search(r'from flash_attn import \\([^)]+\\)', inf_src, re.S)\n\
+    if flash_imports_block:\n    print(\"  flash_attn imports needed:\")\n    print(\"  \" + flash_imports_block.group(0))\n\
+    else:\n    print(\"  (no block-style flash_attn import found)\")\n\n# [2] Expand flash_attn stub to\
+    \ cover all imports\nstub = Path(SABR_SP) / 'flash_attn' / '__init__.py'\nstub.write_text('''# 2026-04-21\
+    \ stub — flash_attn build failed on Colab A100 sm_80.\n# Route everything to torch SDPA. A100 has\
+    \ native SDPA math/mem-efficient kernels.\n__version__ = \"2.5.8-stub\"\nimport warnings\nimport torch\n\
+    import torch.nn.functional as F\n\ndef _to_bhsd(x):\n    \"\"\"flash-attn layout (B, S, H, D) -> SDPA\
+    \ layout (B, H, S, D)\"\"\"\n    return x.transpose(1, 2)\n\ndef _to_bshd(x):\n    \"\"\"SDPA layout\
+    \ (B, H, S, D) -> flash-attn layout (B, S, H, D)\"\"\"\n    return x.transpose(1, 2)\n\ndef flash_attn_func(q,\
+    \ k, v, dropout_p=0.0, softmax_scale=None, causal=False, **kwargs):\n    \"\"\"q, k, v: (B, S, H,\
+    \ D)\"\"\"\n    q, k, v = _to_bhsd(q), _to_bhsd(k), _to_bhsd(v)\n    out = F.scaled_dot_product_attention(q,\
+    \ k, v, dropout_p=dropout_p,\n                                          is_causal=causal, scale=softmax_scale)\n\
+    \    return _to_bshd(out)\n\ndef flash_attn_qkvpacked_func(qkv, dropout_p=0.0, softmax_scale=None,\
+    \ causal=False, **kwargs):\n    \"\"\"qkv: (B, S, 3, H, D) — unpack to q/k/v, route to SDPA\"\"\"\n\
+    \    q, k, v = qkv.unbind(dim=2)  # each (B, S, H, D)\n    return flash_attn_func(q, k, v, dropout_p=dropout_p,\n\
+    \                            softmax_scale=softmax_scale, causal=causal)\n\ndef flash_attn_kvpacked_func(q,\
+    \ kv, dropout_p=0.0, softmax_scale=None, causal=False, **kwargs):\n    \"\"\"q: (B, S, H, D), kv:\
+    \ (B, S, 2, H, D)\"\"\"\n    k, v = kv.unbind(dim=2)\n    return flash_attn_func(q, k, v, dropout_p=dropout_p,\n\
+    \                            softmax_scale=softmax_scale, causal=causal)\n\ndef flash_attn_varlen_func(*args,\
+    \ **kwargs):\n    raise NotImplementedError(\"flash_attn_varlen_func stub — DiT shouldn't need it\"\
+    )\n\ndef flash_attn_varlen_qkvpacked_func(*args, **kwargs):\n    raise NotImplementedError(\"flash_attn_varlen_qkvpacked_func\
+    \ stub\")\n\ndef flash_attn_varlen_kvpacked_func(*args, **kwargs):\n    raise NotImplementedError(\"\
+    flash_attn_varlen_kvpacked_func stub\")\n''')\nprint(\"  [2] flash_attn stub expanded (6 exports)\"\
+    )\n\n# [3] pip install -e for pipeline/track to register 'phalp' package\nprint(\"  [3] Installing\
+    \ pipeline/track as editable (phalp package) ...\")\nr = subprocess.run(\n    ['mamba', 'run', '-n',\
+    \ 'sabr', '--no-capture-output',\n     'pip', 'install', '--no-deps', '-e', 'pipeline/track'],\n \
+    \   capture_output=True, text=True)\n# Print last few lines\nprint('\\n'.join(r.stdout.splitlines()[-5:]))\n\
+    if r.returncode != 0:\n    print('  stderr tail:', r.stderr[-600:])\n\n# [4] Re-pin numpy 1.26.4 —\
+    \ torch 2.1.0+cu121 was built against numpy 1.x\nprint(\"  [4] Force numpy==1.26.4 (torch ABI) ...\"\
+    )\nr = subprocess.run(\n    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n     'pip', 'install',\
+    \ '--no-cache-dir', '--force-reinstall', '--no-deps',\n     'numpy==1.26.4'],\n    capture_output=True,\
+    \ text=True)\nprint('\\n'.join(r.stdout.splitlines()[-3:]))\n\n# [5] Verify import chain in sabr env\n\
+    print(\"\\n  [5] Re-verify imports inside sabr env ...\")\nverify = textwrap.dedent(\"\"\"\n    import\
+    \ os, sys, traceback\n    os.environ['HOME'] = '/root'\n    os.environ['MPLBACKEND'] = 'Agg'\n   \
+    \ sys.path.insert(0, '/root/virtual-avatar-generation')\n    import numpy; print(f'  numpy: {numpy.__version__}')\n\
+    \    for name in [\n        'phalp',\n        'flash_attn',\n        'model.architecture.diffusion_transformer',\n\
+    \        'pipeline.track.phalp.utils.smpl_utils',\n    ]:\n        try:\n            __import__(name)\n\
+    \            print(f'  [ok]    {name}')\n        except Exception as e:\n            print(f'  [FAIL]\
+    \  {name} - {type(e).__name__}: {str(e)[:120]}')\n\"\"\")\nr = subprocess.run(\n    ['mamba', 'run',\
+    \ '-n', 'sabr', '--no-capture-output', 'python', '-c', verify],\n    capture_output=True, text=True)\n\
+    print(r.stdout)\nif r.stderr and 'Traceback' in r.stderr:\n    print('  stderr:', r.stderr[-800:])"
+  cell_id: DqxsGjtrSw9i
+- name: cell-17
+  type: code
+  source: "#@title D7) Install smplx + deeper dry-run { run: \"auto\" }\nimport subprocess, textwrap\n\
+    # smplx is pure-Python with torch backend, no C ext. Safe install.\nr = subprocess.run(\n    ['mamba',\
+    \ 'run', '-n', 'sabr', '--no-capture-output',\n     'pip', 'install', '--no-cache-dir', '--no-deps',\
+    \ 'smplx'],\n    capture_output=True, text=True)\nprint('\\n'.join(r.stdout.splitlines()[-5:]))\n\n\
+    # Full import chain again, now including all top-of-inference.py imports\nverify = textwrap.dedent(\"\
+    \"\"\n    import os, sys, traceback\n    os.environ['HOME'] = '/root'\n    os.environ['MPLBACKEND']\
+    \ = 'Agg'\n    sys.path.insert(0, '/root/virtual-avatar-generation')\n    import numpy; print(f' \
+    \ numpy: {numpy.__version__}')\n    import torch; print(f'  torch: {torch.__version__}  CUDA: {torch.cuda.is_available()}')\n\
+    \n    from pipeline.track.phalp.utils.smpl_utils import SMPL\n    print('  [ok]  SMPL (smpl_utils)')\n\
+    \n    from model.backbones import create_backbone\n    print('  [ok]  create_backbone')\n\n    from\
+    \ model.architecture.diffusion_transformer import DiT_action\n    print('  [ok]  DiT_action')\n\n\
+    \    from model.architecture.diffusion import create_diffusion\n    print('  [ok]  create_diffusion')\n\
+    \n    from pipeline.track.phalp.visualize.py_renderer import Renderer\n    print('  [ok]  Renderer\
+    \ (pyrender)')\n\n    # Try create_backbone() actual instantiation (DINOv2 load)\n    import torch\n\
+    \    try:\n        bb = create_backbone(model='large', device='cuda')\n        print(f'  [ok]  DINOv2\
+    \ ViT-L loaded on CUDA')\n    except Exception as e:\n        print(f'  [warn]  create_backbone: {type(e).__name__}:\
+    \ {str(e)[:150]}')\n\n    print()\n    print('All critical inference.py imports work.')\n\"\"\")\n\
+    r = subprocess.run(\n    ['mamba', 'run', '-n', 'sabr', '--no-capture-output', 'python', '-c', verify],\n\
+    \    capture_output=True, text=True)\nprint(r.stdout)\nif r.stderr and 'Traceback' in r.stderr:\n\
+    \    print('--- stderr ---')\n    print(r.stderr[-1500:])"
+  cell_id: Z8y8ZVkxS914
+- name: cell-18
+  type: code
+  source: "#@title G) Input video upload { run: \"auto\" }\n# SABR rejects square videos (inference.py:408-410).\
+    \ 5-10s recommended for first test.\nimport os, cv2, sys\nfrom pathlib import Path\n\nVIDEO_DIR =\
+    \ Path('/root/virtual-avatar-generation/videos')\nVIDEO_DIR.mkdir(parents=True, exist_ok=True)\nos.chdir('/root/virtual-avatar-generation')\n\
+    \ntry:\n    from google.colab import files\n    if not any(VIDEO_DIR.glob('*.mp4')):\n        print(\"\
+    \  Upload a climbing video (mp4, NON-SQUARE, 5-10s recommended).\")\n        uploaded = files.upload()\n\
+    \        for fname in uploaded:\n            dst = VIDEO_DIR / fname\n            dst.write_bytes(uploaded[fname])\n\
+    \            print(f\"  Saved: {dst}\")\nexcept ImportError:\n    print(\"  (google.colab not available)\"\
+    )\n\nclips = list(VIDEO_DIR.glob('*.mp4'))\nif not clips:\n    sys.exit(\"FATAL: no mp4 in videos/.\
+    \ Upload one.\")\n\nfor clip in clips:\n    cap = cv2.VideoCapture(str(clip))\n    if not cap.isOpened():\n\
+    \        sys.exit(f\"FATAL: cannot open {clip}\")\n    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))\n\
+    \    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))\n    fps = cap.get(cv2.CAP_PROP_FPS)\n    n_frames\
+    \ = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))\n    cap.release()\n    duration = n_frames / fps if fps\
+    \ else 0\n    print(f\"  {clip.name}: {w}x{h} @ {fps:.1f}fps, {n_frames} frames, {duration:.1f}s\"\
+    )\n    if w == h:\n        sys.exit(f\"FATAL: {clip.name} is square ({w}x{h}). SABR latent mode rejects\
+    \ square.\")\n    if duration > 15:\n        print(f\"  WARN: {duration:.1f}s is long — first test\
+    \ should be <=10s\")\n\nprint(\"\\n[G] PASS - video ready.\")"
+  cell_id: b61J1JNlTJ5t
+- name: cell-19
+  type: code
+  source: "#@title H) Run SABR inference (--skipContext, async) { run: \"auto\" }\n# `mamba run -n sabr`\
+    \ activates the env for all subprocess children (PHALP demo.py etc).\n# MPLBACKEND=Agg avoids matplotlib\
+    \ inline backend crash in ultralytics.\n# PYOPENGL_PLATFORM=osmesa for pyrender headless GL.\n# Launch\
+    \ async (5-15 min expected) so MCP doesn't timeout.\nimport os, subprocess, threading, time\nfrom\
+    \ pathlib import Path\n\nos.chdir('/root/virtual-avatar-generation')\n# Clean previous run's output\
+    \ dir (idempotent)\nout_dir = Path('output')\nout_dir.mkdir(parents=True, exist_ok=True)\n\nenv =\
+    \ os.environ.copy()\nenv['HOME'] = '/root'\nenv['MPLBACKEND'] = 'Agg'\nenv['PYOPENGL_PLATFORM'] =\
+    \ 'osmesa'\n\n_inf = {'status': 'running', 'rc': None, 'started_at': time.time()}\ndef _run_infer():\n\
+    \    try:\n        _inf['rc'] = subprocess.run(\n            ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n\
+    \             'python', '-u', 'inference.py',\n             '--ckpt', '0070000.pt',\n            \
+    \ '--mode', '0',\n             '--skipContext',\n             '--videoDir', 'videos'],\n         \
+    \   cwd='/root/virtual-avatar-generation',\n            env=env,\n            stdout=open('/tmp/sabr_inf.log',\
+    \ 'w'),\n            stderr=subprocess.STDOUT).returncode\n        _inf['status'] = 'done'\n    except\
+    \ Exception as e:\n        _inf['status'] = 'error'\n        _inf['err'] = str(e)\n\nthreading.Thread(target=_run_infer,\
+    \ daemon=True).start()\nprint(\"  Inference launched (thread). Log: /tmp/sabr_inf.log\")\nprint(\"\
+    \  Expected 5-15 min for a 10s clip. Poll with H-poll cell.\")"
+  cell_id: 06SL-D5OTXbu
+- name: cell-20
+  type: code
+  source: "#@title Hp) Poll inference progress { run: \"auto\" }\nimport time, subprocess\nfrom pathlib\
+    \ import Path\nlog = Path('/tmp/sabr_inf.log')\nelapsed = (time.time() - _inf['started_at']) / 60\
+    \ if '_inf' in dir() else 0\nprint(f\"Status: {_inf.get('status')}  rc: {_inf.get('rc')}  Elapsed:\
+    \ {elapsed:.1f} min\")\nif log.exists():\n    n = sum(1 for _ in open(log))\n    print(f\"Log: {log.stat().st_size\
+    \ // 1024} KB, {n} lines\\n\")\n    r = subprocess.run(['tail', '-n', '30', str(log)], capture_output=True,\
+    \ text=True)\n    print(r.stdout)\n# Output file check\nout = sorted(Path('/root/virtual-avatar-generation/output').glob('*.mp4'))\n\
+    print(f\"\\noutput/ mp4 count: {len(out)}\")\nfor m in out:\n    print(f\"  {m.name}: {m.stat().st_size\
+    \ / (1024**2):.2f} MB\")\nif _inf.get('status') == 'done':\n    rc = _inf['rc']\n    print(f\"\\n===\
+    \ INFERENCE {'COMPLETE' if rc==0 else 'FAILED'} rc={rc} ===\")\nelse:\n    print(\"\\n(still running)\"\
+    )"
+  cell_id: EpVlKdzsTYr3
+- name: cell-21
+  type: code
+  source: "#@title E2) 4DHumans data dir setup (missed in Cell E) { run: \"auto\" }\n# inference.py:259-266\
+    \ expects HOME_DIR/.cache/4DHumans/data/ with:\n#   - smpl/ (subdir containing SMPL_NEUTRAL.pkl)\n\
+    #   - SMPL_to_J19.pkl\n#   - smpl_mean_params.npz\n# I'd only populated ~/.cache/phalp/ earlier —\
+    \ different path.\nimport subprocess, os\nfrom pathlib import Path\n\nHOME_DIR = Path('/root/virtual-avatar-generation')\n\
+    data_dir = HOME_DIR / '.cache' / '4DHumans' / 'data'\ndata_dir.mkdir(parents=True, exist_ok=True)\n\
+    (data_dir / 'smpl').mkdir(parents=True, exist_ok=True)\n\n# Sources (already created by Cell E):\n\
+    src_smpl_neutral = Path('/root/.cache/phalp/3D/models/smpl/SMPL_NEUTRAL.pkl')\nsrc_smpl_to_j19  =\
+    \ Path('/root/.cache/phalp/3D/SMPL_to_J19.pkl')\nsrc_mean_params  = Path('/root/.cache/phalp/3D/smpl_mean_params.npz')\n\
+    \ncopies = [\n    (src_smpl_neutral, data_dir / 'smpl' / 'SMPL_NEUTRAL.pkl'),\n    (src_smpl_to_j19,\
+    \  data_dir / 'SMPL_to_J19.pkl'),\n    (src_mean_params,  data_dir / 'smpl_mean_params.npz'),\n]\n\
+    for s, d in copies:\n    if not s.exists():\n        print(f\"  FAIL: source missing {s}\"); continue\n\
+    \    if d.exists() and d.stat().st_size == s.stat().st_size:\n        print(f\"  skip: {d}\")\n  \
+    \      continue\n    subprocess.run(['cp', str(s), str(d)], check=True)\n    print(f\"  OK: {s.name}\
+    \ -> {d}\")\n\n# Final state\nprint(f\"\\n  {data_dir}/ contents:\")\nfor p in sorted(data_dir.rglob('*')):\n\
+    \    if p.is_file():\n        print(f\"    {p.stat().st_size:>10}  {p.relative_to(data_dir)}\")\n\
+    print(\"\\n[E2] PASS.\")"
+  cell_id: e4V29qRUWEvi
+- name: cell-22
+  type: code
+  source: ''
+  cell_id: qIxNe9btV4V-
+- name: cell-23
+  type: code
+  source: "#@title E3) PHALP legacy path setup { run: \"auto\" }\n# inference.py:280 uses relative 'PHALP/phalp/visualize/smpl_mean_params.npz'.\n\
+    # Upstream expected users to have PHALP cloned as a sibling in the repo root.\n# We don't — create\
+    \ the dir + copy from our existing phalp_weights/3D/ cache.\nimport subprocess\nfrom pathlib import\
+    \ Path\n\nrepo = Path('/root/virtual-avatar-generation')\nlegacy_dir = repo / 'PHALP' / 'phalp' /\
+    \ 'visualize'\nlegacy_dir.mkdir(parents=True, exist_ok=True)\n\nsrc = Path('/root/.cache/phalp/3D/smpl_mean_params.npz')\n\
+    dst = legacy_dir / 'smpl_mean_params.npz'\nif dst.exists() and dst.stat().st_size == src.stat().st_size:\n\
+    \    print(f\"  skip: {dst}\")\nelse:\n    subprocess.run(['cp', str(src), str(dst)], check=True)\n\
+    \    print(f\"  OK: {src} -> {dst}\")\n\n# Also make an empty __init__.py chain so imports work if\
+    \ anything tries to import PHALP\nfor p in [repo/'PHALP', repo/'PHALP'/'phalp', repo/'PHALP'/'phalp'/'visualize']:\n\
+    \    init = p / '__init__.py'\n    if not init.exists():\n        init.write_text('')\n        print(f\"\
+    \  created {init}\")\n\nprint(\"\\n[E3] PASS.\")"
+  cell_id: FTxN6OoUWtW4
+- name: cell-24
+  type: code
+  source: "#@title D8) Fix video filename + try detectron2 pre-built wheel { run: \"auto\" }\n# Issue\
+    \ 1: inference.py main() does f\"{video_name}.mp4\" but video_name from os.listdir\n# already includes\
+    \ .mp4 — double extension. Rename uploaded files to strip .mp4.\n# Issue 2: detectron2 needed by video_inpainting.py.\
+    \ Source build fails on Colab.\n# Try pre-built wheel for torch 2.1 + cu121.\nimport os, subprocess\n\
+    from pathlib import Path\n\n# [1] Rename videos: video.mp4 -> video (no extension). inference.py:main()\
+    \ appends .mp4.\nvideos = Path('/root/virtual-avatar-generation/videos')\nfor v in list(videos.iterdir()):\n\
+    \    if v.is_file() and v.suffix == '.mp4':\n        # Move to stem name (no extension). inference.py\
+    \ will append .mp4 and find it.\n        # Actually NO — inference.py does f\"{name}.mp4\" so we need\
+    \ the file to LITERALLY\n        # be named `{stem}.mp4` when listdir returns `{stem}` AND {stem}.mp4\
+    \ is the file.\n        # Simpler: leave files as is, PATCH inference.py:main to handle both cases.\n\
+    \        pass\n\n# Patch inference.py:main to strip .mp4 from video_name if present\ninf_py = Path('/root/virtual-avatar-generation/inference.py')\n\
+    src = inf_py.read_text()\nbad_main = \"    for video_name in os.listdir(videoDir):\"\ngood_main =\
+    \ \"    for video_name in os.listdir(videoDir):\\n        if video_name.lower().endswith('.mp4'):\\\
+    n            video_name = video_name[:-4]\"\nif \"video_name[:-4]\" not in src:\n    assert bad_main\
+    \ in src, f\"FAIL: main() loop anchor not found\"\n    src = src.replace(bad_main, good_main, 1)\n\
+    \    inf_py.write_text(src)\n    print(\"  [1] inference.py patched: strip .mp4 from video_name\"\
+    )\nelse:\n    print(\"  [1] already patched\")\n\n# [2] detectron2 pre-built wheel. Try torch 2.1\
+    \ / cu121 index.\nprint(\"\\n  [2] Trying detectron2 pre-built wheels (torch 2.1 / cu121) ...\")\n\
+    r = subprocess.run(\n    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n     'pip', 'install',\
+    \ '--no-cache-dir', 'detectron2',\n     '-f', 'https://dl.fbaipublicfiles.com/detectron2/wheels/cu121/torch2.1/index.html'],\n\
+    \    capture_output=True, text=True)\nprint('\\n'.join(r.stdout.splitlines()[-8:]))\nif r.returncode\
+    \ != 0:\n    print('  stderr:', r.stderr[-400:])\n    print(\"\\n  Fallback: try cu118/torch2.1 index\
+    \ ...\")\n    r = subprocess.run(\n        ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n\
+    \         'pip', 'install', '--no-cache-dir', 'detectron2',\n         '-f', 'https://dl.fbaipublicfiles.com/detectron2/wheels/cu118/torch2.1/index.html'],\n\
+    \        capture_output=True, text=True)\n    print('\\n'.join(r.stdout.splitlines()[-8:]))\n\n# Verify\n\
+    r = subprocess.run(\n    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n     'python', '-c',\
+    \ 'import detectron2; print(\"detectron2:\", detectron2.__version__)'],\n    capture_output=True,\
+    \ text=True)\nprint(\"\\n  detectron2 import:\", r.stdout.strip() or r.stderr.strip()[-300:])"
+  cell_id: B19Vdp2zXCqA
+- name: cell-25
+  type: code
+  source: "#@title D9-scout) Inspect video_inpainting.py detectron2 usage { run: \"auto\" }\nimport subprocess\n\
+    # Find all detectron2 references\nr = subprocess.run(['grep', '-n', 'detectron2',\n              \
+    \      '/root/virtual-avatar-generation/pipeline/environment/tool/video_inpainting.py'],\n       \
+    \            capture_output=True, text=True)\nprint(\"=== detectron2 refs in video_inpainting.py ===\"\
+    )\nprint(r.stdout)\n\n# Read top 100 lines for context\nwith open('/root/virtual-avatar-generation/pipeline/environment/tool/video_inpainting.py')\
+    \ as f:\n    lines = f.readlines()\nprint(f\"\\n=== top 60 lines of video_inpainting.py ({len(lines)}\
+    \ total) ===\")\nprint(''.join(lines[:60]))"
+  cell_id: 82UZMOjAXKWk
+- name: cell-26
+  type: code
+  source: "#@title D9) detectron2 source build — final attempt (async) { run: \"auto\" }\n# Force correct\
+    \ CUDA arch + use our torch via --no-build-isolation. A100 = sm_80.\n# Pre-install build deps explicitly\
+    \ to avoid pip's isolated env re-resolving.\nimport subprocess, threading, time, textwrap, os\nfrom\
+    \ pathlib import Path\n\nscript = textwrap.dedent('''\n    set +e\n    source /usr/local/etc/profile.d/conda.sh\n\
+    \    conda activate sabr\n\n    echo \"=== [1] Build deps ===\"\n    pip install --no-cache-dir ninja\
+    \ \"setuptools<65\" \"cython<3\" packaging wheel 2>&1 | tail -3\n\n    echo \"=== [2] detectron2 from\
+    \ source with our torch ===\"\n    # FORCE_CUDA=1 -> pytorch ext compiles with CUDA. Arch 8.0=A100,\
+    \ 9.0=H100 fallback.\n    # --no-build-isolation -> use our torch 2.1 (setup.py can import it)\n \
+    \   export FORCE_CUDA=1\n    export TORCH_CUDA_ARCH_LIST=\"8.0\"\n    pip install --no-cache-dir --no-build-isolation\
+    \ \\\\\n        'git+https://github.com/facebookresearch/detectron2.git@main' 2>&1 | tail -30\n\n\
+    \    echo \"=== [3] Verify ===\"\n    python -c \"import detectron2; print('detectron2:', detectron2.__version__)\"\
+    \n    echo \"=== [DONE] ===\"\n''').strip()\nPath('/tmp/d2_build.sh').write_text(script)\nsubprocess.run(['chmod',\
+    \ '+x', '/tmp/d2_build.sh'], check=True)\n\n_d2 = {'status': 'running', 'rc': None, 'started_at':\
+    \ time.time()}\ndef _run():\n    try:\n        _d2['rc'] = subprocess.run(\n            'bash /tmp/d2_build.sh\
+    \ > /tmp/d2_build.log 2>&1', shell=True).returncode\n        _d2['status'] = 'done'\n    except Exception\
+    \ as e:\n        _d2['status'] = 'error'; _d2['err'] = str(e)\nthreading.Thread(target=_run, daemon=True).start()\n\
+    print(\"detectron2 build launched bg. ~5-10 min. Poll /tmp/d2_build.log\")"
+  cell_id: 3T-HHr1VXVuP
+- name: cell-27
+  type: code
+  source: "#@title D9p) detectron2 build status { run: \"auto\" }\nimport time, subprocess\nfrom pathlib\
+    \ import Path\nlog = Path('/tmp/d2_build.log')\nelapsed = (time.time() - _d2['started_at']) / 60 if\
+    \ '_d2' in dir() else 0\nprint(f\"Status: {_d2.get('status')}  rc: {_d2.get('rc')}  Elapsed: {elapsed:.1f}\
+    \ min\")\nif log.exists():\n    print(f\"Log: {log.stat().st_size // 1024} KB\\n\")\n    r = subprocess.run(['tail',\
+    \ '-n', '25', str(log)], capture_output=True, text=True)\n    print(r.stdout)\nelse:\n    print(\"\
+    Log not yet created.\")\n# Show that pip process is indeed alive\nr = subprocess.run(['pgrep', '-af',\
+    \ 'pip\\\\|nvcc\\\\|gcc'], capture_output=True, text=True)\nprint(\"\\n=== Active pip/compiler processes\
+    \ ===\")\nprint(r.stdout or \"(none — probably linking step or done)\")"
+  cell_id: NUwZ7eYcYmlc
+- name: cell-28
+  type: code
+  source: "#@title G2) Kill current inference + trim all videos to 15s { run: \"auto\" }\n# 1) Stop any\
+    \ running inference child process (frees GPU + stops log spam)\n# 2) Trim every mp4 in videos/ to\
+    \ first 15s (re-encode for clean keyframe)\n# 3) Reset _inf so poll cells don't show stale state\n\
+    import subprocess, os, time, signal, re\nfrom pathlib import Path\n\n# [1] Kill inference.py processes\
+    \ (any still running)\nr = subprocess.run(['pgrep', '-f', 'inference.py|video_inpainting'],\n    \
+    \               capture_output=True, text=True)\npids = [p for p in r.stdout.strip().split('\\n')\
+    \ if p.isdigit()]\nfor pid in pids:\n    try:\n        os.kill(int(pid), signal.SIGTERM)\n       \
+    \ print(f\"  SIGTERM -> pid {pid}\")\n    except ProcessLookupError:\n        pass\ntime.sleep(2)\n\
+    for pid in pids:\n    try:\n        os.kill(int(pid), signal.SIGKILL)  # force\n    except ProcessLookupError:\n\
+    \        pass\nprint(f\"  killed {len(pids)} process(es)\")\n\n# [2] Trim videos\nVIDEOS = Path('/root/virtual-avatar-generation/videos')\n\
+    for mp4 in list(VIDEOS.glob('*.mp4')):\n    if mp4.name.endswith('.15s.mp4'):\n        continue  #\
+    \ already trimmed\n    # Get duration\n    r = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',\
+    \ 'format=duration',\n                        '-of', 'default=noprint_wrappers=1:nokey=1', str(mp4)],\n\
+    \                       capture_output=True, text=True)\n    try:\n        dur = float(r.stdout.strip())\n\
+    \    except ValueError:\n        print(f\"  SKIP: {mp4.name} - cannot read duration\")\n        continue\n\
+    \    print(f\"  {mp4.name}: {dur:.1f}s\", end='')\n    if dur <= 15.5:\n        print(\" -> keep as-is\"\
+    )\n        continue\n    # Trim to 15s, re-encode for clean keyframes (libx264 fast preset)\n    trimmed\
+    \ = mp4.with_suffix('.15s.mp4')\n    r = subprocess.run(['ffmpeg', '-y', '-i', str(mp4), '-t', '15',\n\
+    \                        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',\n                   \
+    \     '-an',  # drop audio (SABR doesn't use it)\n                        str(trimmed)], capture_output=True,\
+    \ text=True)\n    if r.returncode != 0:\n        print(f\" FAIL: {r.stderr[-200:]}\")\n        continue\n\
+    \    # Replace original with trimmed (keep same name so inference.py listdir picks it up)\n    mp4.unlink()\n\
+    \    trimmed.rename(mp4)\n    new_dur = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',\
+    \ 'format=duration',\n                              '-of', 'default=noprint_wrappers=1:nokey=1', str(mp4)],\n\
+    \                             capture_output=True, text=True).stdout.strip()\n    print(f\" -> trimmed\
+    \ to {new_dur}s, {mp4.stat().st_size // 1024} KB\")\n\n# [3] Reset inference state\nif '_inf' in dir():\n\
+    \    _inf.clear()\n    _inf.update({'status': 'reset', 'rc': None})\nprint(\"\\n  _inf reset. Ready\
+    \ to re-run Cell H.\")\nprint(\"\\n[G2] PASS.\")"
+  cell_id: 24V-_ekvbXKh
+- name: cell-29
+  type: code
+  source: "#@title E4) Fix hardcoded pipeline/inpaint path + grep for more { run: \"auto\" }\nimport subprocess,\
+    \ os\nfrom pathlib import Path\n\nrepo = Path('/root/virtual-avatar-generation')\nos.chdir(repo)\n\
+    \n# Grep for all 'pipeline/inpaint' references in code\nr = subprocess.run(['grep', '-rn', 'pipeline/inpaint',\
+    \ '--include=*.py', '--include=*.yaml', '.'],\n                   capture_output=True, text=True)\n\
+    print(\"=== All 'pipeline/inpaint' refs ===\")\nprint(r.stdout)\n\n# Symlink pipeline/inpaint -> pipeline/environment\
+    \ (simplest fix)\nlink = repo / 'pipeline' / 'inpaint'\ntarget = repo / 'pipeline' / 'environment'\n\
+    if link.exists() or link.is_symlink():\n    print(f\"  already exists: {link}\")\nelse:\n    os.symlink(str(target),\
+    \ str(link))\n    print(f\"  created symlink: {link} -> {target}\")\n\n# Verify the missing file path\
+    \ now resolves\ncheck_path = Path('/root/virtual-avatar-generation/pipeline/inpaint/tool/configs/object_removal.yaml')\n\
+    print(f\"\\n  check {check_path}: {'EXISTS' if check_path.exists() else 'MISSING'}\")\nif check_path.exists():\n\
+    \    print(f\"  content (first 200 chars): {check_path.read_text()[:200]}\")"
+  cell_id: I7szHQIqduMV
+- name: cell-30
+  type: code
+  source: "#@title Hp-deep) Phase marker scan { run: \"auto\" }\nimport subprocess\nfrom pathlib import\
+    \ Path\nlog = '/tmp/sabr_inf.log'\n# Count lines matching various phase markers\npatterns = [\n  \
+    \  ('ffmpeg.*fps=', 'ffmpeg extract'),\n    ('person,', 'YOLO person detect'),\n    ('Loading.*SAM',\
+    \ 'SAM load'),\n    ('SamPredictor|sam_model', 'SAM predictor'),\n    ('RAFT|raft', 'RAFT optical\
+    \ flow'),\n    ('FGT|fgt', 'FGT inpaint'),\n    ('LAFC|lafc', 'LAFC'),\n    ('PHALP|phalp', 'PHALP\
+    \ tracking'),\n    ('HMR|hmr', 'HMR pose'),\n    ('DiT|diffusion', 'DiT diffusion'),\n    ('Renderer|pyrender',\
+    \ 'render'),\n    ('Inpainting finished|complete|Done', 'completion'),\n]\nprint(\"=== Phase markers\
+    \ in log ===\")\nfor pat, label in patterns:\n    r = subprocess.run(['grep', '-cE', pat, log], capture_output=True,\
+    \ text=True)\n    count = r.stdout.strip()\n    print(f\"  {count:>5}  {label}\")\n\n# Show last non-YOLO\
+    \ line to see actual progress\nr = subprocess.run(\n    ['bash', '-c', f\"grep -v 'person,' '{log}'\
+    \ | grep -v 'Speed:' | grep -v '^$' | tail -20\"],\n    capture_output=True, text=True)\nprint(\"\\\
+    n=== Last 20 non-YOLO lines ===\")\nprint(r.stdout)"
+  cell_id: h2l7zvN4fB5I
+- name: cell-31
+  type: code
+  source: "#@title E5) Init missing self.processNumber + wrap context-frame cmd in skip guard { run: \"\
+    auto\" }\nfrom pathlib import Path\n\ninf = Path('/root/virtual-avatar-generation/inference.py')\n\
+    src = inf.read_text()\n\n# Fix 1: default processNumber=0 so command-list evaluation doesn't AttributeError.\n\
+    # Already have `self.skip_context = skip_context` injected — add processNumber there.\nanchor1 = \"\
+    self.skip_context = skip_context\"\nif \"self.processNumber\" not in src:\n    assert anchor1 in src,\
+    \ \"FAIL: skip_context anchor not found (P4c patch broken?)\"\n    src = src.replace(anchor1,\n  \
+    \                    \"self.skip_context = skip_context\\n        self.processNumber = 0\", 1)\n \
+    \   print(\"  [1] Added self.processNumber = 0 default\")\nelse:\n    print(\"  [1] processNumber\
+    \ already set\")\n\n# Fix 2: wrap the getContextFrames command-list construction in skip guard too\n\
+    # (my P4d patch only wrapped subprocess.run, not the list construction above it).\n# Anchor on \"\
+    getContextFrames = [\" before the list; wrap up to the subprocess.run end.\n# Easier: comment out\
+    \ the list construction when skip_context by using a lambda-like\n# guard via short-circuit. But simplest\
+    \ is to wrap both the list AND the subprocess.\n# We already have `if not self.skip_context:` wrapping\
+    \ subprocess.run. Move the list up.\n\n# Find the block to wrap - from \"getContextFrames = [\" to\
+    \ after \"cwd=self.context_tool_dir, check=True)\"\nimport re\n# Current structure (after my patches):\n\
+    #     getContextFrames = [\n#         \"python\",\n#         context_path,\n#         ...\n#     \
+    \    \"--processNumber\", str(self.processNumber)\n#     ]\n#     if not self.skip_context:\n#   \
+    \      subprocess.run(getContextFrames, cwd=self.context_tool_dir, check=True)\n#     else:\n#   \
+    \      print('[skipContext] ...')\n\n# Find the list literal and wrap everything in one if\nm = re.search(r\"\
+    \        getContextFrames = \\[\\n(            .*\\n)+?        \\]\\n\", src)\nif m:\n    list_block\
+    \ = m.group(0)\n    # Only wrap if not already wrapped\n    if \"if not self.skip_context:\\n    \
+    \        getContextFrames\" not in src:\n        # Indent the list block 4 more spaces\n        indented\
+    \ = \"\\n\".join(\"    \" + line if line else line\n                              for line in list_block.splitlines())\
+    \ + \"\\n\"\n        # Replace the current unwrapped list + my existing if/else block with a single\n\
+    \        # wrapped if/else\n        wrapped = \"        if not self.skip_context:\\n\" + indented\
+    \ + \\\n                  \"            subprocess.run(getContextFrames, cwd=self.context_tool_dir,\
+    \ check=True)\\n\" + \\\n                  \"        else:\\n\" + \\\n                  \"       \
+    \     print('[skipContext] skipping GroundingDINO+AOT context extraction')\\n\"\n        # Replace\
+    \ the block between list_block start and the existing if/else end\n        # Build pattern covering\
+    \ list_block + \"        if not self.skip_context:\\n...\" through else print\n        full_pattern\
+    \ = re.compile(\n            r\"        getContextFrames = \\[\\n(?:            .*\\n)+?        \\\
+    ]\\n\"\n            r\"        if not self\\.skip_context:\\n\"\n            r\"            subprocess\\\
+    .run\\(getContextFrames, cwd=self\\.context_tool_dir, check=True\\)\\n\"\n            r\"        else:\\\
+    n\"\n            r\"            print\\(.*\\)\\n\",\n            re.M)\n        new_src = full_pattern.sub(wrapped,\
+    \ src)\n        if new_src != src:\n            inf.write_text(new_src)\n            print(\"  [2]\
+    \ getContextFrames list wrapped in skip_context guard\")\n        else:\n            print(\"  [2]\
+    \ Could not re-wrap — check manually\")\n    else:\n        print(\"  [2] already wrapped\")\nelse:\n\
+    \    print(\"  [2] getContextFrames list not found — may be already refactored\")\n\n# Final verify\n\
+    import subprocess\nr = subprocess.run(['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n    \
+    \                'python', '-c',\n                    'import py_compile; py_compile.compile(\"/root/virtual-avatar-generation/inference.py\"\
+    , doraise=True); print(\"compile OK\")'],\n                   capture_output=True, text=True)\nprint(\"\
+    \\n  syntax:\", r.stdout.strip() or r.stderr.strip()[-300:])"
+  cell_id: BQQ__nOik1sz
+- name: cell-32
+  type: code
+  source: "#@title E6) Skip inpainting if already done + relaunch H { run: \"auto\" }\nfrom pathlib import\
+    \ Path\nimport subprocess, os\n\ninf = Path('/root/virtual-avatar-generation/inference.py')\nsrc =\
+    \ inf.read_text()\n\n# Add idempotency guard to inpaint_person — skip subprocess if result mp4 exists\n\
+    anchor = 'subprocess.run(cmd, cwd=self.inpaint_tool_dir, check=True)'\nif \"[skip inpaint — cached]\"\
+    \ not in src:\n    replacement = (\n        'inpaint_out = f\"{HOME_DIR}/pipeline/environment/data/results/{self.video_name}.mp4\"\
+    \\n'\n        '        if os.path.exists(inpaint_out) and os.path.getsize(inpaint_out) > 10_000:\\\
+    n'\n        '            print(f\"[skip inpaint — cached] {inpaint_out}\")\\n'\n        '        else:\\\
+    n'\n        '            subprocess.run(cmd, cwd=self.inpaint_tool_dir, check=True)'\n    )\n    assert\
+    \ anchor in src, f\"FAIL: inpaint anchor not found\"\n    src = src.replace(anchor, replacement, 1)\n\
+    \    inf.write_text(src)\n    print(\"  idempotency guard added\")\nelse:\n    print(\"  already has\
+    \ guard\")\n\n# Verify cached inpaint exists\nout = Path('/root/virtual-avatar-generation/pipeline/environment/data/results/video.mp4')\n\
+    if out.exists():\n    print(f\"  cached inpaint: {out} ({out.stat().st_size // 1024} KB) — will skip\
+    \ re-run\")\nelse:\n    print(f\"  no cached inpaint — will re-run (9-10 min)\")\n\nr = subprocess.run(['mamba',\
+    \ 'run', '-n', 'sabr', '--no-capture-output',\n                    'python', '-c',\n             \
+    \       'import py_compile; py_compile.compile(\"/root/virtual-avatar-generation/inference.py\", doraise=True);\
+    \ print(\"compile OK\")'],\n                   capture_output=True, text=True)\nprint(\"  syntax:\"\
+    , r.stdout.strip() or r.stderr.strip()[-300:])"
+  cell_id: T78j6zNulAnp
+- name: cell-33
+  type: code
+  source: "#@title D10) dill + relaunch H { run: \"auto\" }\nimport subprocess\nr = subprocess.run(\n\
+    \    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n     'pip', 'install', '--no-cache-dir',\
+    \ 'dill'],\n    capture_output=True, text=True)\nprint('\\n'.join(r.stdout.splitlines()[-3:]))\n#\
+    \ Verify import\nr2 = subprocess.run(\n    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n\
+    \     'python', '-c', 'import dill; print(\"dill:\", dill.__version__)'],\n    capture_output=True,\
+    \ text=True)\nprint(r2.stdout.strip() or r2.stderr.strip()[-200:])"
+  cell_id: CQK4W7S3l0U5
+- name: cell-34
+  type: code
+  source: "#@title D11) Batch PHALP deps { run: \"auto\" }\nimport subprocess\n# PHALP published extras\
+    \ — install likely-missing ones in one shot\npkgs = [\n    'scenedetect',          # scene detection\
+    \ for video splitting\n    'pytube',               # youtube download (may not be needed at runtime)\n\
+    \    'pulp',                 # PHALP tracker LP solver\n    'omegaconf',            # hydra configs\n\
+    \    'rich',                 # pretty logging\n    'av',                   # PyAV — video I/O\n  \
+    \  'trimesh',              # 3D mesh ops (SMPL render)\n    'roma',                 # rotation math\n\
+    \    'yacs',                 # detectron2 config\n    'lap',                  # linear assignment\
+    \ (tracking)\n]\nr = subprocess.run(\n    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n\
+    \     'pip', 'install', '--no-cache-dir'] + pkgs,\n    capture_output=True, text=True)\nprint('\\\
+    n'.join(r.stdout.splitlines()[-10:]))\nif r.returncode != 0:\n    print(\"  stderr:\", r.stderr[-400:])\n\
+    \n# Verify all imports\nverify_code = f\"\"\"\nimport importlib\nfor m in {pkgs!r}:\n    try:\n  \
+    \      importlib.import_module(m)\n        print(f'  [ok]    {{m}}')\n    except Exception as e:\n\
+    \        print(f'  [FAIL]  {{m}} - {{e}}')\n\"\"\"\nr2 = subprocess.run(\n    ['mamba', 'run', '-n',\
+    \ 'sabr', '--no-capture-output',\n     'python', '-c', verify_code],\n    capture_output=True, text=True)\n\
+    print(r2.stdout)"
+  cell_id: bOYEcgPmmp3k
+- name: cell-35
+  type: code
+  source: "#@title D12) Batch 2 — sklearn + likely missing PHALP deps { run: \"auto\" }\nimport subprocess\n\
+    pkgs = [\n    'scikit-learn',\n    'scikit-image',\n    'pytorch-lightning',\n    'yt-dlp',\n    'pyyaml',\n\
+    \    'webcolors',\n    'tqdm',\n    'future',\n    'imageio-ffmpeg',\n    'matplotlib',\n]\nr = subprocess.run(\n\
+    \    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n     'pip', 'install', '--no-cache-dir']\
+    \ + pkgs,\n    capture_output=True, text=True)\nprint('\\n'.join(r.stdout.splitlines()[-8:]))\n\n\
+    # Verify\nverify = f\"\"\"\nimport importlib\nfor m in ['sklearn', 'skimage', 'pytorch_lightning',\
+    \ 'yt_dlp', 'yaml',\n          'webcolors', 'tqdm', 'imageio_ffmpeg', 'matplotlib']:\n    try:\n \
+    \       importlib.import_module(m)\n        print(f'  [ok]    {{m}}')\n    except Exception as e:\n\
+    \        print(f'  [FAIL]  {{m}} - {{str(e)[:80]}}')\n\"\"\"\nr2 = subprocess.run(\n    ['mamba',\
+    \ 'run', '-n', 'sabr', '--no-capture-output', 'python', '-c', verify],\n    capture_output=True, text=True)\n\
+    print(r2.stdout)"
+  cell_id: ngUOb04gnkqh
+- name: cell-36
+  type: code
+  source: "#@title D13) Re-apply matplotlibrc Agg + launch H { run: \"auto\" }\nimport subprocess, re\n\
+    from pathlib import Path\n\nmpl_rc = Path('/usr/local/envs/sabr/lib/python3.10/site-packages/matplotlib/mpl-data/matplotlibrc')\n\
+    if mpl_rc.exists():\n    mrc = mpl_rc.read_text()\n    new = re.sub(r'^(#\\s*)?backend\\s*:\\s*.*$',\
+    \ 'backend: Agg', mrc, count=1, flags=re.MULTILINE)\n    if 'backend: Agg' not in new:\n        new\
+    \ = 'backend: Agg\\n' + mrc\n    mpl_rc.write_text(new)\n    print(f\"  matplotlibrc -> Agg\")\n\n\
+    # Also set MPLBACKEND via python code env for extra safety — add to inference.py top\ninf = Path('/root/virtual-avatar-generation/inference.py')\n\
+    src = inf.read_text()\nif \"os.environ['MPLBACKEND'] = 'Agg'\" not in src:\n    # Insert after existing\
+    \ imports — find first os/sys import block\n    src = src.replace(\"import subprocess\\nimport os\"\
+    ,\n                      \"import subprocess\\nimport os\\nos.environ['MPLBACKEND'] = 'Agg'\", 1)\n\
+    \    inf.write_text(src)\n    print(\"  inference.py: MPLBACKEND=Agg env set\")\n\n# Verify\nverify\
+    \ = \"\"\"\nimport matplotlib, pytorch_lightning\nprint('matplotlib:', matplotlib.__version__)\nprint('pl:',\
+    \ pytorch_lightning.__version__)\n\"\"\"\nr = subprocess.run(\n    ['mamba', 'run', '-n', 'sabr',\
+    \ '--no-capture-output', 'python', '-c', verify],\n    capture_output=True, text=True)\nprint(r.stdout)\n\
+    if r.stderr and 'Error' in r.stderr:\n    print('stderr:', r.stderr[-300:])"
+  cell_id: nF6QNWBNnvNK
+- name: cell-37
+  type: code
+  source: "#@title D14) Nuke matplotlib-inline + verify + launch H { run: \"auto\" }\nimport subprocess\n\
+    # Uninstall everything matplotlib-inline related. No deps need it at runtime in SABR.\nr = subprocess.run(\n\
+    \    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n     'pip', 'uninstall', '-y', 'matplotlib-inline',\
+    \ 'ipykernel', 'ipython'],\n    capture_output=True, text=True)\nprint('\\n'.join(r.stdout.splitlines()[-8:]))\n\
+    \n# Verify matplotlib + pl import clean now\nverify = \"\"\"\nimport os\nos.environ['MPLBACKEND']\
+    \ = 'Agg'\nimport matplotlib\nmatplotlib.use('Agg', force=True)\nimport pytorch_lightning\nprint('matplotlib:',\
+    \ matplotlib.__version__, 'backend:', matplotlib.get_backend())\nprint('pl:', pytorch_lightning.__version__)\n\
+    \"\"\"\nr2 = subprocess.run(\n    ['mamba', 'run', '-n', 'sabr', '--no-capture-output', 'python',\
+    \ '-c', verify],\n    capture_output=True, text=True)\nprint(r2.stdout)\nif r2.stderr:\n    print('stderr:',\
+    \ r2.stderr[-300:])"
+  cell_id: GX1g3FPzn0tx
+- name: cell-38
+  type: code
+  source: "#@title D16) Fix hydra override syntax for video.inference { run: \"auto\" }\nfrom pathlib\
+    \ import Path\nimport subprocess\ninf = Path('/root/virtual-avatar-generation/inference.py')\nsrc\
+    \ = inf.read_text()\nif '\"+video.inference=True\"' in src:\n    print(\"  already patched\")\nelse:\n\
+    \    old = '\"video.inference=True\"'\n    assert old in src, \"FAIL: anchor not found\"\n    src\
+    \ = src.replace(old, '\"+video.inference=True\"', 1)\n    inf.write_text(src)\n    print(\"  video.inference\
+    \ -> +video.inference (hydra append)\")\nr = subprocess.run(['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n\
+    \                    'python', '-c',\n                    'import py_compile; py_compile.compile(\"\
+    /root/virtual-avatar-generation/inference.py\", doraise=True); print(\"compile OK\")'],\n        \
+    \           capture_output=True, text=True)\nprint(\"  syntax:\", r.stdout.strip() or r.stderr.strip()[-300:])"
+  cell_id: GkJwY2ybpof2
+- name: cell-39
+  type: code
+  source: "#@title D17) Install 4D-Humans hmr2 { run: \"auto\" }\nimport subprocess\nr = subprocess.run(\n\
+    \    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n     'pip', 'install', '--no-cache-dir',\
+    \ '--no-deps',\n     'git+https://github.com/shubham-goel/4D-Humans.git'],\n    capture_output=True,\
+    \ text=True)\nprint('\\n'.join(r.stdout.splitlines()[-10:]))\nif r.returncode != 0:\n    print(\"\
+    stderr:\", r.stderr[-500:])\n# Verify\nr2 = subprocess.run(\n    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n\
+    \     'python', '-c', 'import hmr2; print(\"hmr2:\", hmr2.__file__)'],\n    capture_output=True, text=True)\n\
+    print(r2.stdout.strip() or r2.stderr.strip()[-200:])"
+  cell_id: SXPlQtb4qdBC
+- name: cell-40
+  type: code
+  source: "#@title Hp-mini) Minimal poll { run: \"auto\" }\nimport time, subprocess\nfrom pathlib import\
+    \ Path\nlog = Path('/tmp/sabr_inf.log')\nelapsed = (time.time() - _inf['started_at']) / 60 if '_inf'\
+    \ in dir() else 0\nprint(f\"Status: {_inf.get('status')}  rc: {_inf.get('rc')}  Elapsed: {elapsed:.1f}\
+    \ min\")\nif log.exists():\n    print(f\"Log: {log.stat().st_size // 1024} KB\")\n    # Just last\
+    \ 15 lines, truncate each line to 200 chars\n    r = subprocess.run(['tail', '-n', '15', str(log)],\
+    \ capture_output=True, text=True)\n    for line in r.stdout.splitlines():\n        print(\"  \" +\
+    \ line[:200])\nout = sorted(Path('/root/virtual-avatar-generation/output').glob('*.mp4'))\nprint(f\"\
+    \\noutput/ mp4 count: {len(out)}\")\nfor m in out:\n    print(f\"  {m.name}: {m.stat().st_size / (1024**2):.2f}\
+    \ MB\")"
+  cell_id: nOdlKfmRrWfI
+- name: cell-41
+  type: code
+  source: "#@title D18) Patch inference.py zero_vector load + relaunch { run: \"auto\" }\nfrom pathlib\
+    \ import Path\nimport subprocess, pickle, numpy as np\n\ninf = Path('/root/virtual-avatar-generation/inference.py')\n\
+    src = inf.read_text()\n\n# Replace torch.load call with pickle.load for dinov2_zero_vector.pt (plain\
+    \ numpy pickle)\nold = 'zero_vector = torch.from_numpy(torch.load(f\"{HOME_DIR}/model/backbones/dinov2_zero_vector.pt\"\
+    , map_location=self.device)).to(self.device)'\nif old not in src:\n    # Try simpler match\n    import\
+    \ re\n    m = re.search(r'zero_vector = torch\\.from_numpy\\(torch\\.load\\(.*dinov2_zero_vector\\\
+    .pt.*\\)\\)\\.to\\(self\\.device\\)', src)\n    if m:\n        old = m.group(0)\n    else:\n     \
+    \   print(\"  anchor not found in current source\")\n\nif old in src:\n    new = ('import pickle as\
+    \ _pkl\\n'\n           '        with open(f\"{HOME_DIR}/model/backbones/dinov2_zero_vector.pt\", \"\
+    rb\") as _f:\\n'\n           '            _zv = _pkl.load(_f)\\n'\n           '        zero_vector\
+    \ = torch.from_numpy(_zv).to(self.device)')\n    src = src.replace(old, new, 1)\n    inf.write_text(src)\n\
+    \    print(\"  zero_vector load patched to use pickle.load\")\n\n# Also alternative: just regenerate\
+    \ the file as torch-readable\n# Actually simpler — let me keep the numpy pickle, patch is fine.\n\n\
+    r = subprocess.run(['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n                    'python',\
+    \ '-c',\n                    'import py_compile; py_compile.compile(\"/root/virtual-avatar-generation/inference.py\"\
+    , doraise=True); print(\"compile OK\")'],\n                   capture_output=True, text=True)\nprint(\"\
+    \  syntax:\", r.stdout.strip() or r.stderr.strip()[-300:])"
+  cell_id: Y5t5-KDrsgqc
+- name: cell-42
+  type: code
+  source: "#@title D19) Fix device mismatch at line 559 + relaunch { run: \"auto\" }\nfrom pathlib import\
+    \ Path\nimport subprocess\ninf = Path('/root/virtual-avatar-generation/inference.py')\nsrc = inf.read_text()\n\
+    \n# Show context around line 559\nlines = src.splitlines()\nprint(\"=== lines 555-565 ===\")\nfor\
+    \ i in range(max(0, 554), min(len(lines), 565)):\n    print(f\"  {i+1:4d}: {lines[i]}\")\n\n# Patch\
+    \ the device mismatch. Move all components to the same device (use box_center's device)\nold = \"\
+    center = (box_center + torch.stack([left, top], dim=-1))*ratio\"\nif old in src:\n    new = (\"_dev\
+    \ = box_center.device\\n\"\n           \"            center = (box_center + torch.stack([left, top],\
+    \ dim=-1).to(_dev))*ratio\")\n    src = src.replace(old, new, 1)\n    inf.write_text(src)\n    print(\"\
+    \\n  [D19] patched line 559 — force torch.stack to box_center.device\")\nelse:\n    print(\"\\n  anchor\
+    \ not found — maybe patch already applied OR different line\")\n\nr = subprocess.run(['mamba', 'run',\
+    \ '-n', 'sabr', '--no-capture-output',\n                    'python', '-c',\n                    'import\
+    \ py_compile; py_compile.compile(\"/root/virtual-avatar-generation/inference.py\", doraise=True);\
+    \ print(\"compile OK\")'],\n                   capture_output=True, text=True)\nprint(\"  syntax:\"\
+    , r.stdout.strip() or r.stderr.strip()[-300:])"
+  cell_id: 5PYjykJRvEqp
+- name: cell-43
+  type: code
+  source: "#@title D19b) Fix indentation + relaunch { run: \"auto\" }\nfrom pathlib import Path\nimport\
+    \ subprocess\ninf = Path('/root/virtual-avatar-generation/inference.py')\nsrc = inf.read_text()\n\n\
+    # Find and remove my broken patch, restore original line, then patch correctly\nbad = \"_dev = box_center.device\\\
+    n            center = (box_center + torch.stack([left, top], dim=-1).to(_dev))*ratio\"\nif bad in\
+    \ src:\n    src = src.replace(bad, \"center = (box_center + torch.stack([left, top], dim=-1).to(box_center.device))*ratio\"\
+    , 1)\n    print(\"  removed broken patch, inline .to(device) fix applied\")\nelse:\n    print(\" \
+    \ broken patch not found — maybe auto-fixed or different\")\n\ninf.write_text(src)\n\nr = subprocess.run(['mamba',\
+    \ 'run', '-n', 'sabr', '--no-capture-output',\n                    'python', '-c',\n             \
+    \       'import py_compile; py_compile.compile(\"/root/virtual-avatar-generation/inference.py\", doraise=True);\
+    \ print(\"compile OK\")'],\n                   capture_output=True, text=True)\nprint(\"  syntax:\"\
+    , r.stdout.strip() or r.stderr.strip()[-300:])\n# Show the fixed line\nlines = Path('/root/virtual-avatar-generation/inference.py').read_text().splitlines()\n\
+    for i in range(555, 562):\n    print(f\"  {i+1:4d}: {lines[i]}\")"
+  cell_id: GO8vec7JvJM0
+- name: cell-44
+  type: code
+  source: "#@title I) Download output mp4 { run: \"auto\" }\nfrom pathlib import Path\nfrom google.colab\
+    \ import files\n\nout = Path('/root/virtual-avatar-generation/output/video.mp4')\nif not out.exists():\n\
+    \    print(\"no output mp4\")\nelse:\n    print(f\"  {out.name}: {out.stat().st_size / (1024**2):.2f}\
+    \ MB\")\n    files.download(str(out))\n    print(f\"  download triggered - check your browser.\")"
+  cell_id: lEG9zNDU0Aga
+- name: cell-45
+  type: code
+  source: "#@title Debug) Inspect PHALP tracking output { run: \"auto\" }\nimport subprocess, os, pickle\n\
+    from pathlib import Path\n\n# Look for PHALP output pkls\ntrack_out = Path('/root/virtual-avatar-generation/pipeline/track/outputs')\n\
+    print(\"=== PHALP output tree ===\")\nfor p in sorted(track_out.rglob('*')):\n    if p.is_file():\n\
+    \        sz = p.stat().st_size\n        print(f\"  {sz:>10}  {p.relative_to(track_out)}\")\n\n# Try\
+    \ to load the tracking pkl\npkls = list(track_out.rglob('*.pkl'))\nprint(f\"\\n=== Found {len(pkls)}\
+    \ pkl(s) ===\")\nfor pkl in pkls:\n    print(f\"\\n--- {pkl.relative_to(track_out)} ({pkl.stat().st_size}\
+    \ bytes) ---\")\n    try:\n        r = subprocess.run(\n            ['mamba', 'run', '-n', 'sabr',\
+    \ '--no-capture-output',\n             'python', '-c',\n             f'''\nimport pickle, os\nos.environ['HOME']='/root'\n\
+    import sys\nsys.path.insert(0, '/root/virtual-avatar-generation')\nwith open(\"{pkl}\", \"rb\") as\
+    \ f:\n    data = pickle.load(f)\nprint(\"type:\", type(data).__name__)\nif isinstance(data, dict):\n\
+    \    print(\"keys:\", list(data.keys())[:10])\n    for k, v in list(data.items())[:5]:\n        if\
+    \ hasattr(v, \"shape\"):\n            print(f\"  {{k}}: shape={{v.shape}}\")\n        elif isinstance(v,\
+    \ (list, tuple)):\n            print(f\"  {{k}}: len={{len(v)}}\", type(v[0]).__name__ if v else '')\n\
+    \        elif isinstance(v, dict):\n            print(f\"  {{k}}: dict keys={{list(v.keys())[:5]}}\"\
+    )\n        else:\n            print(f\"  {{k}}: {{type(v).__name__}} = {{str(v)[:80]}}\")\n'''],\n\
+    \            capture_output=True, text=True)\n        print(r.stdout)\n        if r.stderr:\n    \
+    \        print(\"  stderr:\", r.stderr[-400:])\n    except Exception as e:\n        print(f\"  load\
+    \ fail: {e}\")"
+  cell_id: DDGxMrTu0kjK
+- name: cell-46
+  type: code
+  source: "#@title Debug2) PHALP demo log + inference.py pkl load line { run: \"auto\" }\nimport subprocess\n\
+    from pathlib import Path\n\n# Check PHALP demo.log for save-related messages\nlog = '/root/virtual-avatar-generation/pipeline/track/outputs/demo.log'\n\
+    r = subprocess.run(['bash', '-c', f'grep -iE \"save|track|pkl|pickle|joblib|error|fail|exception\"\
+    \ {log} | head -30'],\n                   capture_output=True, text=True)\nprint(\"=== demo.log search\
+    \ ===\")\nprint(r.stdout or \"(no matches)\")\n\n# Find where inference.py loads the tracking data\n\
+    r2 = subprocess.run(['grep', '-n', '-E', 'joblib|pickle\\\\.load|\\\\.pkl|tracked_smpl',\n       \
+    \             '/root/virtual-avatar-generation/inference.py'],\n                   capture_output=True,\
+    \ text=True)\nprint(\"\\n=== inference.py track load refs ===\")\nprint(r2.stdout)\n\n# Check PHALP's\
+    \ demo.py for save logic\nr3 = subprocess.run(['grep', '-n', '-E', 'save|joblib|pkl|dump',\n     \
+    \               '/root/virtual-avatar-generation/pipeline/track/scripts/demo.py'],\n             \
+    \      capture_output=True, text=True)\nprint(\"\\n=== demo.py save refs ===\")\nprint(r3.stdout[:2000])"
+  cell_id: ryl8-PQS0xty
+- name: cell-47
+  type: code
+  source: "#@title Research) final_visuals_dic + PHALP output logic { run: \"auto\" }\nimport subprocess\n\
+    # Where is final_visuals_dic defined/loaded in inference.py?\nr = subprocess.run(['grep', '-n', 'final_visuals_dic',\n\
+    \                    '/root/virtual-avatar-generation/inference.py'],\n                   capture_output=True,\
+    \ text=True)\nprint(\"=== inference.py final_visuals_dic refs ===\")\nprint(r.stdout)\n\n# Show lines\
+    \ 460-500 context (around the commented-out pkl load)\nprint(\"\\n=== inference.py lines 460-510 ===\"\
+    )\nwith open('/root/virtual-avatar-generation/inference.py') as f:\n    lines = f.readlines()\nfor\
+    \ i in range(459, 510):\n    print(f\"  {i+1:4d}: {lines[i].rstrip()}\")\n\n# Look at PHALP's real\
+    \ demo.py - grep for how it saves outputs\nprint(\"\\n=== SABR's vendored demo.py — save/dump logic\
+    \ ===\")\nr = subprocess.run(['grep', '-n', '-E', 'final_visuals_dic|\\\\.pkl|joblib|pickle|\\\\.dump',\n\
+    \                    '/root/virtual-avatar-generation/pipeline/track/scripts/demo.py'],\n        \
+    \           capture_output=True, text=True)\nprint(r.stdout[:2500])\n# Full demo.py\nprint(\"\\n===\
+    \ SABR's demo.py full ===\")\nwith open('/root/virtual-avatar-generation/pipeline/track/scripts/demo.py')\
+    \ as f:\n    print(f.read()[:3500])"
+  cell_id: 86rob7D11FEF
+- name: cell-48
+  type: code
+  source: "#@title Research2) Render loop + PHALP save path { run: \"auto\" }\nimport subprocess\n# Render\
+    \ loop full context (lines 560-635)\nprint(\"=== inference.py lines 560-635 (render loop) ===\")\n\
+    with open('/root/virtual-avatar-generation/inference.py') as f:\n    lines = f.readlines()\nfor i\
+    \ in range(559, min(635, len(lines))):\n    print(f\"  {i+1:4d}: {lines[i].rstrip()}\")\n\n# PHALP\
+    \ track() — find save logic\nprint(\"\\n=== PHALP track() — where pkl is saved ===\")\nr = subprocess.run(['grep',\
+    \ '-rn', '-E', 'joblib|\\\\.dump|pickle|_results\\\\.pkl|\\\\.pkl',\n                    '/root/virtual-avatar-generation/pipeline/track/phalp/trackers/'],\n\
+    \                   capture_output=True, text=True)\nprint(r.stdout[:2500])"
+  cell_id: lAyRnlgQ1P72
+- name: cell-49
+  type: code
+  source: "#@title Research3) PHALP.py:380-420 save gate + check if results/ exists { run: \"auto\" }\n\
+    import subprocess\nfrom pathlib import Path\n\n# Show save gate context\nwith open('/root/virtual-avatar-generation/pipeline/track/phalp/trackers/PHALP.py')\
+    \ as f:\n    phalp_lines = f.readlines()\nprint(\"=== PHALP.py lines 170-185 (pkl_path definition)\
+    \ ===\")\nfor i in range(169, 185):\n    print(f\"  {i+1:4d}: {phalp_lines[i].rstrip()}\")\nprint(\"\
+    \\n=== PHALP.py lines 380-420 (save gate) ===\")\nfor i in range(379, 420):\n    print(f\"  {i+1:4d}:\
+    \ {phalp_lines[i].rstrip()}\")\n\n# Does the results/ dir exist?\nprint(\"\\n=== Actual /results/\
+    \ dir contents ===\")\nout_dir = Path('/root/virtual-avatar-generation/pipeline/track/outputs')\n\
+    results_dir = out_dir / 'results'\nif results_dir.exists():\n    for p in results_dir.rglob('*'):\n\
+    \        print(f\"  {p.relative_to(out_dir)} ({p.stat().st_size if p.is_file() else 'DIR'})\")\nelse:\n\
+    \    print(f\"  NO /results/ dir at {results_dir}\")\n\n# Search for any .pkl anywhere in outputs\n\
+    print(\"\\n=== All .pkl in outputs/ ===\")\nr = subprocess.run(['find', str(out_dir), '-name', '*.pkl'],\
+    \ capture_output=True, text=True)\nprint(r.stdout or \"(none)\")"
+  cell_id: 4isw6spm1fpV
+- name: cell-50
+  type: code
+  source: "#@title Research4) Grep PHALP exception in inference log { run: \"auto\" }\nimport subprocess\n\
+    # Find traceback/exception patterns in the inference log\nr = subprocess.run(\n    ['bash', '-c',\n\
+    \     \"grep -nE 'Traceback|Error|Exception|raise |cannot |failed|[Aa]ssert' /tmp/sabr_inf.log | head\
+    \ -50\"],\n    capture_output=True, text=True)\nprint(\"=== Exception/Error lines ===\")\nprint(r.stdout)\n\
+    \n# Also grep demo.log for similar patterns\nprint(\"\\n=== demo.log errors ===\")\nr2 = subprocess.run(\n\
+    \    ['bash', '-c',\n     \"grep -nE 'Traceback|Error|Exception|raise |failed' /root/virtual-avatar-generation/pipeline/track/outputs/demo.log\
+    \ | head -20\"],\n    capture_output=True, text=True)\nprint(r2.stdout or \"(none)\")\n\n# Read the\
+    \ tail of sabr_inf.log to see final PHALP output + any exception\nprint(\"\\n=== tail of sabr_inf.log\
+    \ (last 80 lines) ===\")\nr3 = subprocess.run(['tail', '-n', '80', '/tmp/sabr_inf.log'], capture_output=True,\
+    \ text=True)\n# Strip super-long lines\nfor line in r3.stdout.splitlines():\n    print(\"  \" + line[:200])"
+  cell_id: f5a1e-LM1nTv
+- name: cell-51
+  type: code
+  source: "#@title Research5) PHALP track() full flow — all returns / early exits { run: \"auto\" }\n\
+    import subprocess\nphalp_py = '/root/virtual-avatar-generation/pipeline/track/phalp/trackers/PHALP.py'\n\
+    # Find all `return` and `continue` and `break` in track() method\nr = subprocess.run(\n    ['awk',\
+    \ '/def track\\\\(/,/def [a-z]/',\n     phalp_py], capture_output=True, text=True)\nprint(\"=== PHALP.track()\
+    \ method ===\")\n# Too long — show structure (only lines with `def`, `return`, major branches, `if`)\n\
+    for i, line in enumerate(r.stdout.splitlines()):\n    stripped = line.strip()\n    if (stripped.startswith(('def\
+    \ ', 'return', 'continue', 'break', 'raise'))\n        or 'self.cfg.' in line or 'overwrite' in line\
+    \ or 'track_dataset' in line\n        or 'video_seq' in line or 'pkl_path' in line or 'final_visuals_dic['\
+    \ in line):\n        print(f\"  {i:4d}: {line.rstrip()[:150]}\")\n\n# Also check: render.enable config\
+    \ default\nprint(\"\\n=== render.enable / video_seq related config ===\")\nr2 = subprocess.run(['grep',\
+    \ '-rn', '-E', 'render.enable|render\\\\.enable|track_dataset',\n                     '/root/virtual-avatar-generation/pipeline/track/phalp/configs/'],\n\
+    \                    capture_output=True, text=True)\nprint(r2.stdout[:1500])\n\n# Check the SABR-vendored\
+    \ hydra overrides file\nprint(\"\\n=== hydra overrides from last run ===\")\nr3 = subprocess.run(['cat',\
+    \ '/root/virtual-avatar-generation/pipeline/track/outputs/.hydra/overrides.yaml'],\n             \
+    \       capture_output=True, text=True)\nprint(r3.stdout)\nprint(\"\\n=== config.yaml (first 80 lines)\
+    \ ===\")\nr4 = subprocess.run(['head', '-n', '80', '/root/virtual-avatar-generation/pipeline/track/outputs/.hydra/config.yaml'],\n\
+    \                    capture_output=True, text=True)\nprint(r4.stdout)"
+  cell_id: tmSivlJx1ypK
+- name: cell-52
+  type: code
+  source: "#@title Research6) Patch PHALP to fail loud + solo-run PHALP { run: \"auto\" }\nimport subprocess\n\
+    from pathlib import Path\n\n# Patch PHALP.py except to raise instead of swallow\nphalp_py = Path('/root/virtual-avatar-generation/pipeline/track/phalp/trackers/PHALP.py')\n\
+    src = phalp_py.read_text()\nold = \"except Exception as e:\\n            print(e)\\n            print(traceback.format_exc())\"\
+    \nif old in src:\n    new = \"except Exception as e:\\n            print('!!! PHALP EXCEPTION !!!')\\\
+    n            print(e)\\n            print(traceback.format_exc())\\n            import sys; sys.exit(99)\"\
+    \n    src = src.replace(old, new, 1)\n    phalp_py.write_text(src)\n    print(\"  patched PHALP except\
+    \ to sys.exit(99)\")\nelse:\n    print(\"  already patched or anchor shape different\")\n\n# Run PHALP\
+    \ alone — direct subprocess, capture ALL output\nprint(\"\\n=== Running PHALP solo (15s limit) ===\"\
+    )\nimport os\nenv = os.environ.copy()\nenv['HOME'] = '/root'\nenv['MPLBACKEND'] = 'Agg'\nr = subprocess.run(\n\
+    \    ['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n     'python', 'scripts/demo.py',\n  \
+    \   'video.source=/root/virtual-avatar-generation/videos/video.mp4',\n     'video.output_dir=/root/virtual-avatar-generation/pipeline/track/outputs',\n\
+    \     'video.width=368', 'video.height=640',\n     'overwrite=true'],\n    cwd='/root/virtual-avatar-generation/pipeline/track',\n\
+    \    env=env, capture_output=True, text=True, timeout=600)\nprint(f\"exit code: {r.returncode}\")\n\
+    print(\"\\n--- stdout tail (last 60 lines) ---\")\nprint('\\n'.join(r.stdout.splitlines()[-60:]))\n\
+    print(\"\\n--- stderr tail (last 60 lines) ---\")\nprint('\\n'.join(r.stderr.splitlines()[-60:]))\n\
+    \n# Check if pkl was saved\nprint(\"\\n=== pkl check after solo PHALP ===\")\nr2 = subprocess.run(['find',\
+    \ '/root/virtual-avatar-generation/pipeline/track/outputs',\n                     '-name', '*.pkl'],\
+    \ capture_output=True, text=True)\nprint(r2.stdout or \"(still no pkl)\")"
+  cell_id: MTcd_cmr2Ecz
+- name: cell-53
+  type: code
+  source: "#@title Research7) Check PHALP:201 context + add `inference` field to VideoConfig { run: \"\
+    auto\" }\nimport subprocess\nfrom pathlib import Path\n\n# Line 195-220 of PHALP.py\nprint(\"=== PHALP.py\
+    \ lines 195-225 ===\")\nphalp = Path('/root/virtual-avatar-generation/pipeline/track/phalp/trackers/PHALP.py')\n\
+    lines = phalp.read_text().splitlines()\nfor i in range(194, min(225, len(lines))):\n    print(f\"\
+    \  {i+1:4d}: {lines[i].rstrip()}\")\n\n# Show VideoConfig in configs/base.py\nprint(\"\\n=== VideoConfig\
+    \ in phalp/configs/base.py ===\")\nbase = Path('/root/virtual-avatar-generation/pipeline/track/phalp/configs/base.py')\n\
+    src = base.read_text()\nimport re\nm = re.search(r'class VideoConfig[^:]*:\\s*\\n((?:\\s{4}.*\\n)+)',\
+    \ src)\nif m:\n    print(m.group(0))\nelse:\n    r = subprocess.run(['grep', '-n', '-A', '20', 'class\
+    \ VideoConfig', str(base)],\n                       capture_output=True, text=True)\n    print(r.stdout)"
+  cell_id: qiVV5agt2064
+- name: cell-54
+  type: code
+  source: "#@title D20) Remove video.inference flag + add schema field + uncomment motion completion {\
+    \ run: \"auto\" }\nfrom pathlib import Path\nimport subprocess, re\n\n# [1] Remove +video.inference=True\
+    \ from inference.py cmd\ninf = Path('/root/virtual-avatar-generation/inference.py')\nsrc = inf.read_text()\n\
+    if '\"+video.inference=True\"' in src:\n    src = src.replace('\"+video.inference=True\",\\n', '',\
+    \ 1)  # drop with trailing comma+newline\n    if '\"+video.inference=True\"' in src:\n        src\
+    \ = src.replace('\"+video.inference=True\"', '', 1)  # fallback\n    print(\"  [1] removed +video.inference=True\
+    \ from inference.py cmd\")\nelse:\n    print(\"  [1] already removed\")\ninf.write_text(src)\n\n#\
+    \ [2] Add `inference: bool = False` to VideoConfig (schema fix for future compat)\nbase = Path('/root/virtual-avatar-generation/pipeline/track/phalp/configs/base.py')\n\
+    bsrc = base.read_text()\nif 'inference: bool' not in bsrc:\n    # Insert after `end_time: str = '10s'`\
+    \ line (before end of VideoConfig)\n    anchor = \"end_time: str = '10s'\"\n    new = \"end_time:\
+    \ str = '10s'\\n    inference: bool = False  # added 2026-04-21 for SABR schema compat\"\n    bsrc\
+    \ = bsrc.replace(anchor, new, 1)\n    base.write_text(bsrc)\n    print(\"  [2] added inference: bool\
+    \ = False to VideoConfig\")\nelse:\n    print(\"  [2] VideoConfig already has inference field\")\n\
+    \n# [3] Uncomment motion completion block (lines 476-545 approx — all the `#     ...` lines)\nsrc2\
+    \ = inf.read_text()\nlines = src2.splitlines()\nstart = None; end = None\nfor i, line in enumerate(lines):\n\
+    \    if '# if self.mode == \"latent\":' in line:\n        start = i\n    elif start is not None and\
+    \ line.strip() and not line.lstrip().startswith('#'):\n        end = i\n        break\n# Show block\
+    \ first to confirm\nif start is not None and end is not None:\n    print(f\"\\n  [3] motion completion\
+    \ block: lines {start+1}..{end}\")\n    print(\"  Uncommenting...\")\n    # Uncomment each line by\
+    \ removing leading '# ' (exactly 2 chars after indent)\n    new_lines = []\n    for i, line in enumerate(lines):\n\
+    \        if start <= i < end:\n            # remove the exact '#     ' or '#\\n' pattern\n       \
+    \     stripped = re.sub(r'^(\\s*)#\\s?(.*)$', r'\\1\\2', line)\n            new_lines.append(stripped)\n\
+    \        else:\n            new_lines.append(line)\n    src2 = '\\n'.join(new_lines) + '\\n'\n   \
+    \ inf.write_text(src2)\n    print(\"  [3] uncommented motion completion block\")\nelse:\n    print(f\"\
+    \  [3] could not locate block (start={start}, end={end})\")\n\n# Syntax check\nr = subprocess.run(['mamba',\
+    \ 'run', '-n', 'sabr', '--no-capture-output',\n                    'python', '-c',\n             \
+    \       'import py_compile; py_compile.compile(\"/root/virtual-avatar-generation/inference.py\", doraise=True);\
+    \ print(\"compile OK\")'],\n                   capture_output=True, text=True)\nprint(\"\\n  syntax:\"\
+    , r.stdout.strip() or r.stderr.strip()[-500:])"
+  cell_id: B1PsGjPb2-j6
+- name: cell-55
+  type: code
+  source: "#@title D21) Check pkl + fix self.padTensor -> padTensor { run: \"auto\" }\nimport subprocess\n\
+    from pathlib import Path\n\n# Pkl check\nr = subprocess.run(['find', '/root/virtual-avatar-generation/pipeline/track/outputs',\n\
+    \                    '-name', '*.pkl'], capture_output=True, text=True)\nprint(\"=== pkl files ===\"\
+    )\nprint(r.stdout or \"(still no pkl — PHALP didn't finish yet)\")\n\n# Patch self.padTensor -> padTensor\
+    \ in the uncommented block\ninf = Path('/root/virtual-avatar-generation/inference.py')\nsrc = inf.read_text()\n\
+    count = src.count('self.padTensor')\nif count:\n    src = src.replace('self.padTensor', 'padTensor')\n\
+    \    inf.write_text(src)\n    print(f\"  patched {count} self.padTensor -> padTensor\")\nelse:\n \
+    \   print(\"  no self.padTensor found — already patched\")\n\nr = subprocess.run(['mamba', 'run',\
+    \ '-n', 'sabr', '--no-capture-output',\n                    'python', '-c',\n                    'import\
+    \ py_compile; py_compile.compile(\"/root/virtual-avatar-generation/inference.py\", doraise=True);\
+    \ print(\"compile OK\")'],\n                   capture_output=True, text=True)\nprint(\"  syntax:\"\
+    , r.stdout.strip() or r.stderr.strip()[-300:])"
+  cell_id: 8D8E4zxf6qvw
+- name: cell-56
+  type: code
+  source: "#@title D22) PHALP idempotency + relaunch H { run: \"auto\" }\nfrom pathlib import Path\ninf\
+    \ = Path('/root/virtual-avatar-generation/inference.py')\nsrc = inf.read_text()\n\n# Add \"overwrite=false\"\
+    \ to PHALP subprocess cmd (skip if pkl exists)\nanchor = '\"video.inference=True\",'  # this should\
+    \ be gone already but check\nif 'overwrite=false' not in src:\n    # Find the cmd list with video.width\
+    \ etc, add overwrite=false\n    target = '\"video.width={width}\"'\n    if target in src:\n      \
+    \  # Actually anchor on f\"video.height={height}\" to append after\n        before = 'f\"video.height={height}\"\
+    '\n        if before in src:\n            src = src.replace(before, before + ',\\n            \"overwrite=false\"\
+    ', 1)\n            inf.write_text(src)\n            print(\"  added 'overwrite=false' to PHALP cmd\"\
+    )\n    print(\"  (or already present)\")\nelse:\n    print(\"  overwrite=false already present\")\n\
+    \n# Compile check\nimport subprocess\nr = subprocess.run(['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n\
+    \                    'python', '-c',\n                    'import py_compile; py_compile.compile(\"\
+    /root/virtual-avatar-generation/inference.py\", doraise=True); print(\"compile OK\")'],\n        \
+    \           capture_output=True, text=True)\nprint(\"  syntax:\", r.stdout.strip() or r.stderr.strip()[-300:])"
+  cell_id: oLxlc0bn6xc3
+- name: cell-57
+  type: code
+  source: "#@title Debug3) Extract frames + checksum { run: \"auto\" }\nimport subprocess, os\nfrom pathlib\
+    \ import Path\n\nout_mp4 = '/root/virtual-avatar-generation/output/video.mp4'\n# 1. Hash + metadata\n\
+    r = subprocess.run(['md5sum', out_mp4], capture_output=True, text=True)\nprint(\"hash:\", r.stdout.strip())\n\
+    r = subprocess.run(['stat', '-c', '%s bytes, mtime %y', out_mp4], capture_output=True, text=True)\n\
+    print(\"meta:\", r.stdout.strip())\nr = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',\n\
+    \                    'stream=width,height,nb_frames,codec_name,duration',\n                    '-of',\
+    \ 'default=noprint_wrappers=1', out_mp4],\n                   capture_output=True, text=True)\nprint(\"\
+    ffprobe:\")\nprint(r.stdout)\n\n# 2. Extract 6 sample frames (start/25%/50%/mid/75%/end)\nframes_dir\
+    \ = Path('/tmp/inspect_frames')\nif frames_dir.exists():\n    subprocess.run(['rm', '-rf', str(frames_dir)])\n\
+    frames_dir.mkdir()\nsubprocess.run(['ffmpeg', '-v', 'error', '-i', out_mp4,\n                '-vf',\
+    \ 'select=eq(n\\\\,10)+eq(n\\\\,90)+eq(n\\\\,180)+eq(n\\\\,200)+eq(n\\\\,270)+eq(n\\\\,350)',\n  \
+    \              '-vsync', 'vfr', f'{frames_dir}/frame_%02d.jpg'], check=False)\n# List extracted frames\n\
+    print(\"\\nextracted:\")\nfor p in sorted(frames_dir.glob('*.jpg')):\n    print(f\"  {p.name}: {p.stat().st_size\
+    \ // 1024} KB\")\n\n# 3. Render output file path check — does inference.py save to where we think?\n\
+    inf_py = open('/root/virtual-avatar-generation/inference.py').read()\nimport re\nm = re.search(r'self\\\
+    .savePath\\s*=\\s*(.+)', inf_py)\nprint(\"\\nsavePath in inference.py:\", m.group(1) if m else \"\
+    NOT FOUND\")"
+  cell_id: HdX4L_cxAB8l
+- name: cell-58
+  type: code
+  source: "#@title Debug4) Inspect PHALP pkl structure + render-time camera values { run: \"auto\" }\n\
+    import subprocess, textwrap\n# Introspect pkl — what keys/structure does it have?\ncode = textwrap.dedent(\"\
+    \"\"\n    import joblib, os\n    os.environ['HOME']='/root'\n    import sys; sys.path.insert(0, '/root/virtual-avatar-generation')\n\
+    \    p = joblib.load('/root/virtual-avatar-generation/pipeline/track/outputs/results/demo_video.pkl')\n\
+    \    print('type:', type(p).__name__)\n    if isinstance(p, dict):\n        print('top keys:', list(p.keys())[:5])\n\
+    \        first = list(p.keys())[0]\n        print(f'\\\\nfirst frame key: {first!r}')\n        val\
+    \ = p[first]\n        print('val type:', type(val).__name__)\n        if isinstance(val, dict):\n\
+    \            for k, v in val.items():\n                if hasattr(v, 'shape'):\n                 \
+    \   print(f'  {k}: shape={v.shape}')\n                elif isinstance(v, (list, tuple)):\n       \
+    \             info = f'len={len(v)}'\n                    if v:\n                        info += f'\
+    \ first={type(v[0]).__name__}'\n                        if hasattr(v[0], 'shape'):\n             \
+    \               info += f' shape={v[0].shape}'\n                    print(f'  {k}: {info}')\n    \
+    \            else:\n                    print(f'  {k}: {type(v).__name__} = {str(v)[:80]}')\n    \
+    \        if 'camera_bbox' in val:\n                print(f'\\\\ncamera_bbox[0] values: {val[\"camera_bbox\"\
+    ][0] if val[\"camera_bbox\"] else \"EMPTY\"}')\n            if 'smpl' in val and val['smpl']:\n  \
+    \              s = val['smpl'][0]\n                print(f'\\\\nsmpl[0] keys: {list(s.keys()) if isinstance(s,\
+    \ dict) else type(s).__name__}')\n\"\"\")\nr = subprocess.run(['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n\
+    \                    'python', '-c', code], capture_output=True, text=True)\nprint(r.stdout)\nif r.stderr\
+    \ and ('Error' in r.stderr or 'Traceback' in r.stderr):\n    print('stderr:', r.stderr[-500:])\n\n\
+    # Show inference.py motion-completion block (now uncommented) to verify\nprint(\"\\n=== inference.py\
+    \ lines 474-520 (motion completion block) ===\")\nwith open('/root/virtual-avatar-generation/inference.py')\
+    \ as f:\n    lines = f.readlines()\nfor i in range(473, min(520, len(lines))):\n    print(f\"  {i+1:4d}:\
+    \ {lines[i].rstrip()}\")"
+  cell_id: xLxcvdJaAOp2
+- name: cell-59
+  type: code
+  source: "#@title Debug5) Read inference.py 520-560 (second commented block) { run: \"auto\" }\nwith\
+    \ open('/root/virtual-avatar-generation/inference.py') as f:\n    lines = f.readlines()\n# Show from\
+    \ 517 to the end of the second commented block\nprint(\"=== inference.py lines 517-570 ===\")\nfor\
+    \ i in range(516, min(570, len(lines))):\n    print(f\"  {i+1:4d}: {lines[i].rstrip()}\")"
+  cell_id: MomXCFnDAZud
+- name: cell-60
+  type: code
+  source: "#@title D23) Uncomment 2nd motion-completion block (conditioning) { run: \"auto\" }\nfrom pathlib\
+    \ import Path\ninf = Path('/root/virtual-avatar-generation/inference.py')\nsrc = inf.read_text()\n\
+    \nold_block = \"\"\"            # bbox = normalize_bboxes(sample['person_bbox'][:self.seqLen].unsqueeze(0),\
+    \ width, height)\n            # pred_camera = sample['camera_3D'][:self.seqLen].unsqueeze(0)\n   \
+    \         # final_body_pose = torch.cat((sample['smpl']['global_orient'][:self.seqLen], sample['smpl']['body_pose'][:self.seqLen]),\
+    \ dim=1) #(seqLen, 24, 3, 3)\n            # pose_6d = matrix_to_rotation_6d(final_body_pose).reshape(self.seqLen,\
+    \ -1).unsqueeze(0)\n            # betas = sample['smpl']['betas'][:self.seqLen].view(self.seqLen,\
+    \ -1).unsqueeze(0)\n            # overwrite_first_24frames = torch.cat([bbox, pred_camera, pose_6d,\
+    \ betas], dim=-1).to(self.device)[:,:context_tensor.shape[0] + 24] #every video is 24 fps so 24 frames\
+    \ is 1 second + length of context.\n            # overwrite_first_24frames = overwrite_first_24frames.permute(0,2,1).to(self.device)\
+    \ #optionally, can remove for general body parameters\"\"\"\n\nnew_block = \"\"\"            bbox\
+    \ = normalize_bboxes(sample['person_bbox'][:self.seqLen].unsqueeze(0), width, height)\n          \
+    \  pred_camera = sample['camera_3D'][:self.seqLen].unsqueeze(0)\n            final_body_pose = torch.cat((sample['smpl']['global_orient'][:self.seqLen],\
+    \ sample['smpl']['body_pose'][:self.seqLen]), dim=1) #(seqLen, 24, 3, 3)\n            pose_6d = matrix_to_rotation_6d(final_body_pose).reshape(self.seqLen,\
+    \ -1).unsqueeze(0)\n            betas = sample['smpl']['betas'][:self.seqLen].view(self.seqLen, -1).unsqueeze(0)\n\
+    \            overwrite_first_24frames = torch.cat([bbox, pred_camera, pose_6d, betas], dim=-1).to(self.device)[:,:context_tensor.shape[0]\
+    \ + 24] #every video is 24 fps so 24 frames is 1 second + length of context.\n            overwrite_first_24frames\
+    \ = overwrite_first_24frames.permute(0,2,1).to(self.device) #optionally, can remove for general body\
+    \ parameters\"\"\"\n\nif old_block in src:\n    src = src.replace(old_block, new_block)\n    inf.write_text(src)\n\
+    \    print(\"  uncommented 2nd motion-completion block (7 lines)\")\nelse:\n    print(\"  block not\
+    \ found\")\n\nimport subprocess\nr = subprocess.run(['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n\
+    \                    'python', '-c',\n                    'import py_compile; py_compile.compile(\"\
+    /root/virtual-avatar-generation/inference.py\", doraise=True); print(\"compile OK\")'],\n        \
+    \           capture_output=True, text=True)\nprint(\"  syntax:\", r.stdout.strip() or r.stderr.strip()[-400:])"
+  cell_id: XjEIhe_2Aji3
+- name: cell-61
+  type: code
+  source: "#@title Audit) Verify fixes + key invariants { run: \"auto\" }\nimport subprocess, textwrap\n\
+    from pathlib import Path\n\ninf = Path('/root/virtual-avatar-generation/inference.py').read_text()\n\
+    \n# [1] Both uncomment blocks present?\nchecks = [\n    ('if self.mode == \"latent\":\\n         \
+    \   videoPklFile = joblib.load',     'block-1 (sample populate)'),\n    ('overwrite_first_24frames\
+    \ = torch.cat([bbox, pred_camera, pose_6d, betas]', 'block-2 (DiT conditioning)'),\n    ('overwrite_first_24frames\
+    \ = overwrite_first_24frames.permute(0,2,1)',       'block-2 permute'),\n    (\"sample['camera_3D']\"\
+    ,                                                       'camera_3D assignment'),\n    (\"sample['person_bbox']\"\
+    ,                                                      'person_bbox assignment'),\n    (\"sample['smpl']['betas']\"\
+    ,                                                    'betas assignment'),\n    ('self.padTensor',\
+    \                                                             'BAD: self.padTensor (should be padTensor)'),\n\
+    \    ('#             bbox = normalize_bboxes',                                      'BAD: block-2\
+    \ still commented'),\n]\nfor pat, label in checks:\n    n = inf.count(pat)\n    ok = (n > 0 and 'BAD'\
+    \ not in label) or (n == 0 and 'BAD' in label)\n    print(f\"  {'OK' if ok else 'FAIL'} [{n}×] {label}\"\
+    )\n\n# [2] Simulate conditioning tensor shapes for sanity\nprint(\"\\n[2] conditioning tensor shape\
+    \ check (in-env) ...\")\ncode = textwrap.dedent(\"\"\"\n    import joblib, torch, os\n    os.environ['HOME']='/root'\n\
+    \    import sys; sys.path.insert(0, '/root/virtual-avatar-generation')\n    pkl = joblib.load('/root/virtual-avatar-generation/pipeline/track/outputs/results/demo_video.pkl')\n\
+    \    keys = list(pkl.keys())\n    print(f'  pkl frames: {len(keys)}')\n\n    # Emulate the stacking\
+    \ in inference.py:483\n    cam = torch.stack([torch.tensor(pkl[f]['camera_bbox'][0]) for f in keys])\n\
+    \    print(f'  camera_bbox stack: {tuple(cam.shape)}')\n    bbox = torch.stack([torch.tensor(pkl[f]['bbox'][0])\
+    \ for f in keys])\n    print(f'  bbox stack: {tuple(bbox.shape)}')\n    go = torch.stack([torch.tensor(pkl[f]['smpl'][0]['global_orient'])\
+    \ for f in keys])\n    print(f'  global_orient stack: {tuple(go.shape)}')\n    bp = torch.stack([torch.tensor(pkl[f]['smpl'][0]['body_pose'])\
+    \ for f in keys])\n    print(f'  body_pose stack: {tuple(bp.shape)}')\n    bt = torch.stack([torch.tensor(pkl[f]['smpl'][0]['betas'])\
+    \ for f in keys])\n    print(f'  betas stack: {tuple(bt.shape)}')\n\n    # Simulate cat with zeros(self.initLength=0)\n\
+    \    zc = torch.zeros(0)\n    try:\n        cat = torch.cat([zc, cam], dim=0)\n        print(f'  cat(empty_1D,\
+    \ (N,3)) OK shape={tuple(cat.shape)}')\n    except Exception as e:\n        print(f'  cat FAIL: {e}')\n\
+    \n    # Final shapes that go into overwrite_first_24frames\n    seqLen = 1100\n    b = cam.unsqueeze(0)[:,\
+    \ :seqLen]; print(f'  camera unsqueezed [:seqLen]: {tuple(b.shape)}')\n    # context_tensor.shape[0]\
+    \ = 1 in skipContext path\n    idx = min(1 + 24, cam.shape[0])\n    print(f'  overwrite_first_24frames\
+    \ slice [:, :{idx}]: first {idx} positions overwritten')\n\"\"\")\nr = subprocess.run(['mamba', 'run',\
+    \ '-n', 'sabr', '--no-capture-output',\n                    'python', '-c', code], capture_output=True,\
+    \ text=True)\nprint(r.stdout)\nif r.stderr and ('Traceback' in r.stderr or 'Error' in r.stderr):\n\
+    \    print('stderr:', r.stderr[-500:])"
+  cell_id: 0jPGHR1RBZdR
+- name: cell-62
+  type: code
+  source: "#@title D24) Kill current + fix conditioning slice to cover ALL PHALP frames { run: \"auto\"\
+    \ }\nimport os, signal, subprocess, time\nfrom pathlib import Path\n\n# Kill current inference\nr\
+    \ = subprocess.run(['pgrep', '-f', 'inference.py'], capture_output=True, text=True)\npids = [p for\
+    \ p in r.stdout.strip().split('\\n') if p.isdigit()]\nfor pid in pids:\n    try: os.kill(int(pid),\
+    \ signal.SIGKILL)\n    except: pass\nprint(f\"killed {len(pids)} process(es)\")\n\n# Fix slice: [:,:context_tensor.shape[0]\
+    \ + 24] -> cover all PHALP frames\n# Need to pad sample tensors up to seqLen for full conditioning\n\
+    inf = Path('/root/virtual-avatar-generation/inference.py')\nsrc = inf.read_text()\n\n# [1] Change\
+    \ padTensor padLength from 100 to 1100 (seqLen)\n# ORIGINAL: padLength = 100\n# NEW: use self.seqLen\
+    \ worth\nold_pad = \"    padLength = 100\"\nif old_pad in src:\n    src = src.replace(old_pad, \"\
+    \    padLength = 1100  # seqLen — fill entire sequence with PHALP data\")\n    print(\"  [1] padTensor\
+    \ length 100 -> 1100\")\nelse:\n    print(\"  [1] padTensor already patched or different\")\n\n# [2]\
+    \ Change overwrite slice from +24 to +self.seqLen (cover all frames DiT sees)\n# Current patched line:\n\
+    #   overwrite_first_24frames = torch.cat([...], dim=-1).to(self.device)[:,:context_tensor.shape[0]\
+    \ + 24]\n# New: slice to seqLen so ALL positions conditioned\nold_slice = \"[:,:context_tensor.shape[0]\
+    \ + 24]\"\nnew_slice = \"[:,:self.seqLen]\"\nif old_slice in src:\n    src = src.replace(old_slice,\
+    \ new_slice, 1)\n    print(f\"  [2] slice {old_slice} -> {new_slice}\")\nelse:\n    print(\"  [2]\
+    \ slice already modified\")\n\ninf.write_text(src)\n\n# Quick PyTorch cat sanity to confirm main-Claude's\
+    \ earlier claim\ntest_code = '''\nimport torch\na = torch.zeros(0)\nb = torch.zeros(359, 3)\ntry:\n\
+    \    c = torch.cat([a, b], dim=0)\n    print(f\"cat(empty_1D, (359,3)) -> OK shape={tuple(c.shape)}\"\
+    )\nexcept Exception as e:\n    print(f\"cat FAILED: {type(e).__name__}: {e}\")\n'''\nr = subprocess.run(['mamba',\
+    \ 'run', '-n', 'sabr', '--no-capture-output',\n                    'python', '-c', test_code], capture_output=True,\
+    \ text=True)\nprint(r.stdout)\n\n# Compile\nr = subprocess.run(['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n\
+    \                    'python', '-c',\n                    'import py_compile; py_compile.compile(\"\
+    /root/virtual-avatar-generation/inference.py\", doraise=True); print(\"compile OK\")'],\n        \
+    \           capture_output=True, text=True)\nprint(\"compile:\", r.stdout.strip() or r.stderr.strip()[-300:])"
+  cell_id: L9E_yN9-CS4n
+- name: cell-63
+  type: code
+  source: "#@title D25) Patch gaussian_diffusion.py line 291 — overwrite only first 161 channels { run:\
+    \ \"auto\" }\nfrom pathlib import Path\nimport subprocess\n\ngd = Path('/root/virtual-avatar-generation/model/architecture/diffusion/gaussian_diffusion.py')\n\
+    src = gd.read_text()\n\n# Show line 285-300 context\nprint(\"=== gaussian_diffusion.py lines 285-300\
+    \ ===\")\nfor i, line in enumerate(src.splitlines()[284:300], start=285):\n    print(f\"  {i:4d}:\
+    \ {line.rstrip()}\")\n\n# Patch the assignment to only overwrite first 161 channels (mean, not sigma)\n\
+    old = \"model_output[:,:, :inpaint.shape[-1]] = inpaint\"\nif old in src:\n    new = \"model_output[:,\
+    \ :inpaint.shape[1], :inpaint.shape[-1]] = inpaint\"\n    src = src.replace(old, new, 1)\n    gd.write_text(src)\n\
+    \    print(f\"\\n  patched: uses inpaint.shape[1] for channel dim instead of full slice\")\nelif \"\
+    model_output[:, :inpaint.shape[1]\" in src:\n    print(\"\\n  already patched\")\nelse:\n    print(\"\
+    \\n  anchor not found\")\n\n# Compile check\nr = subprocess.run(['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n\
+    \                    'python', '-c', f'import py_compile; py_compile.compile(\"{gd}\", doraise=True);\
+    \ print(\"OK\")'],\n                   capture_output=True, text=True)\nprint(f\"  compile: {r.stdout.strip()\
+    \ or r.stderr.strip()[-300:]}\")"
+  cell_id: jmTh7MuKDmuN
+- name: cell-64
+  type: code
+  source: "#@title Verify) Avatar visibility check { run: \"auto\" }\n# Sample 5 frames from output; compare\
+    \ to input at same timestamps.\n# If outputs == inputs → no avatar rendered (failure). If very different\
+    \ → avatar overlaid.\nimport subprocess, os, hashlib, json\nfrom pathlib import Path\n\nHOME = os.environ['HOME']\n\
+    VAG = Path(HOME) / 'virtual-avatar-generation'\nos.chdir(VAG)\n\n# Find most recent video under output/\n\
+    out_dir = VAG / 'output'\nvideos = sorted(out_dir.glob('*.mp4'), key=lambda p: p.stat().st_mtime,\
+    \ reverse=True)\nif not videos:\n    raise SystemExit(\"no output video found\")\nout_vid = videos[0]\n\
+    print(f\"Output: {out_vid}  ({out_vid.stat().st_size/1e6:.2f} MB)\")\nprint(f\"mtime:  {subprocess.check_output(['stat',\
+    \ '-c', '%y', str(out_vid)]).decode().strip()}\")\n\n# Find input - look under vids_*/ or user-uploads\n\
+    candidates = []\nfor p in VAG.glob('vids_*/*.mp4'):\n    candidates.append(p)\nfor p in (VAG / 'user-uploads').glob('*.mp4')\
+    \ if (VAG / 'user-uploads').exists() else []:\n    candidates.append(p)\ninput_vids = [p for p in\
+    \ candidates if 'output' not in str(p).lower()]\nprint(f\"Inputs found: {len(input_vids)}\")\nfor\
+    \ p in input_vids[:5]:\n    print(f\"  {p}\")\n\n# Extract 5 frames from each video: at 0.1, 0.3,\
+    \ 0.5, 0.7, 0.9 of duration\nimport numpy as np\nimport cv2\n\ndef sample_frames(vid_path, n=5):\n\
+    \    cap = cv2.VideoCapture(str(vid_path))\n    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))\n \
+    \   frames = []\n    for frac in [0.1, 0.3, 0.5, 0.7, 0.9]:\n        cap.set(cv2.CAP_PROP_POS_FRAMES,\
+    \ int(total * frac))\n        ret, f = cap.read()\n        if ret: frames.append((int(total*frac),\
+    \ f))\n    cap.release()\n    return frames\n\nout_frames = sample_frames(out_vid)\nprint(f\"\\nOutput\
+    \ frames sampled: {len(out_frames)}\")\n\n# Quick variance check: output frames should have meaningful\
+    \ pixel variance\nfor idx, (fn, f) in enumerate(out_frames):\n    h, w = f.shape[:2]\n    # variance\
+    \ per channel\n    std = f.std(axis=(0,1))\n    mean = f.mean(axis=(0,1))\n    print(f\"  Frame {fn}:\
+    \ shape={f.shape}  mean_bgr={mean.round(1).tolist()}  std_bgr={std.round(1).tolist()}\")\n\n# If there's\
+    \ a matching input, also compare\nif input_vids:\n    inp = input_vids[0]\n    in_frames = sample_frames(inp)\n\
+    \    print(f\"\\nInput frames sampled from {inp.name}: {len(in_frames)}\")\n    for (ofn, of), (ifn,\
+    \ iff) in zip(out_frames, in_frames):\n        # Resize input to output dims if different\n      \
+    \  oh, ow = of.shape[:2]\n        if iff.shape[:2] != (oh, ow):\n            iff = cv2.resize(iff,\
+    \ (ow, oh))\n        diff = np.abs(of.astype(np.int16) - iff.astype(np.int16)).mean()\n        print(f\"\
+    \  Frame ~{ofn}: mean_abs_diff(out-in) = {diff:.2f}  (0=identical, >20=clearly different)\")\n"
+  cell_id: rxv8ib_tGUAv
+- name: cell-65
+  type: code
+  source: "#@title D15b) Verify fix + relaunch { run: \"auto\" }\nfrom pathlib import Path\nimport subprocess\n\
+    inf = Path('/root/virtual-avatar-generation/inference.py')\nlines = inf.read_text().splitlines()\n\
+    print(\"=== top 12 lines (post D15) ===\")\nfor i, l in enumerate(lines[:12], 1):\n    print(f\" \
+    \ {i:3d}: {l}\")\n\n# Relaunch via H-launcher\n# Actually Cell H just sets _inf state. Let me re-run\
+    \ it.\nprint(\"\\n Relaunching H...\")\n"
+  cell_id: Eats208KtoKA
+- name: cell-66
+  type: code
+  source: "#@title D27) Inspect video_inpainting.py outputMaskDir bug { run: \"auto\" }\nimport subprocess\n\
+    from pathlib import Path\nvip = Path('/root/virtual-avatar-generation/pipeline/environment/tool/video_inpainting.py')\n\
+    src = vip.read_text()\nlines = src.splitlines()\n\n# Show context around line 603 + all outputMaskDir\
+    \ refs\nprint(\"=== outputMaskDir assignments/refs ===\")\nr = subprocess.run(['grep', '-n', 'outputMaskDir',\
+    \ str(vip)], capture_output=True, text=True)\nprint(r.stdout)\n\n# Also show full tail of the log\
+    \ (the Traceback often has more context earlier)\nr2 = subprocess.run(['tail', '-n', '80', '/tmp/sabr_inf.log'],\
+    \ capture_output=True, text=True)\nprint(\"\\n=== sabr_inf.log tail (last 80) ===\")\nfor line in\
+    \ r2.stdout.splitlines():\n    print(\"  \" + line[:200])\n"
+  cell_id: TgiIPYKO0aFJ
+- name: cell-67
+  type: code
+  source: "#@title D28) Fix video.mp4.mp4 double extension + video_inpainting.py outputMaskDir { run:\
+    \ \"auto\" }\nfrom pathlib import Path\nimport subprocess, re\n\ninf = Path('/root/virtual-avatar-generation/inference.py')\n\
+    src = inf.read_text()\n\n# [1] Find main() iteration over videos dir\nprint(\"=== main() video iteration\
+    \ refs ===\")\nr = subprocess.run(['grep', '-n', '-E', 'os\\\\.listdir|videoDir|\\\\.mp4|video_name',\n\
+    \                    str(inf)], capture_output=True, text=True)\nprint(r.stdout[:2500])\n"
+  cell_id: A4s6orLi0djo
+- name: cell-68
+  type: code
+  source: "#@title D28) Fix video_name double .mp4 + kill stale inference { run: \"auto\" }\nfrom pathlib\
+    \ import Path\nimport subprocess, os, signal\n\n# Kill any stale process\nr = subprocess.run(['pgrep',\
+    \ '-f', 'inference.py'], capture_output=True, text=True)\nfor pid in r.stdout.strip().split('\\n'):\n\
+    \    if pid.isdigit():\n        try: os.kill(int(pid), signal.SIGKILL)\n        except: pass\n\ninf\
+    \ = Path('/root/virtual-avatar-generation/inference.py')\nsrc = inf.read_text()\n\n# Find line 675:\
+    \ for video_name in os.listdir(videoDir):\nold = \"    for video_name in os.listdir(videoDir):\"\n\
+    new = ('    for video_name in os.listdir(videoDir):\\n'\n       '        if video_name.lower().endswith(\"\
+    .mp4\"):\\n'\n       '            video_name = video_name[:-4]')\nif old in src and \"if video_name.lower().endswith\"\
+    \ not in src:\n    src = src.replace(old, new, 1)\n    inf.write_text(src)\n    print(\"  [1] main()\
+    \ loop: strip .mp4 from video_name\")\nelse:\n    print(\"  [1] already patched or anchor different\"\
+    )\n\n# Verify\nr = subprocess.run(['grep', '-n', '-A', '3', 'for video_name in os.listdir', str(inf)],\n\
+    \                   capture_output=True, text=True)\nprint(\"\\n=== main() loop now ===\")\nprint(r.stdout)\n\
+    \n# Syntax check\nr = subprocess.run(['mamba', 'run', '-n', 'sabr', '--no-capture-output',\n     \
+    \               'python', '-c',\n                    'import py_compile; py_compile.compile(\"/root/virtual-avatar-generation/inference.py\"\
+    , doraise=True); print(\"compile OK\")'],\n                   capture_output=True, text=True)\nprint(\"\
+    syntax:\", r.stdout.strip() or r.stderr.strip()[-300:])\n"
+  cell_id: sGkujq6B0mo0
+- name: cell-69
+  type: code
+  source: "#@title Verify2) Locate input + diff output vs input { run: \"auto\" }\nimport subprocess,\
+    \ os, numpy as np, cv2\nfrom pathlib import Path\nHOME = os.environ['HOME']\nVAG = Path(HOME) / 'virtual-avatar-generation'\n\
+    \n# Exhaustive search for input mp4/mov (excluding output/)\nr = subprocess.run(['find', str(VAG),\
+    \ '-type', 'f', '(', '-name', '*.mp4', '-o', '-name', '*.mov', ')',\n                    '-not', '-path',\
+    \ '*/output/*', '-not', '-path', '*/.cache/*'],\n                   capture_output=True, text=True,\
+    \ timeout=30)\nall_vids = [Path(p) for p in r.stdout.strip().split('\\n') if p.strip()]\nprint(f\"\
+    Candidate inputs: {len(all_vids)}\")\nfor p in sorted(all_vids, key=lambda x: x.stat().st_size, reverse=True)[:15]:\n\
+    \    size_mb = p.stat().st_size / 1e6\n    print(f\"  {size_mb:7.2f} MB  {p}\")\n\n# Pick the largest\
+    \ non-output video as likely source\nif all_vids:\n    inp = max(all_vids, key=lambda x: x.stat().st_size)\n\
+    \    print(f\"\\nUsing: {inp}\")\n\n    out_vid = VAG / 'output' / 'video.mp4'\n\n    def sample_frames(vid_path,\
+    \ n=5):\n        cap = cv2.VideoCapture(str(vid_path))\n        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))\n\
+    \        fps = cap.get(cv2.CAP_PROP_FPS)\n        frames = []\n        for frac in [0.1, 0.3, 0.5,\
+    \ 0.7, 0.9]:\n            cap.set(cv2.CAP_PROP_POS_FRAMES, int(total * frac))\n            ret, f\
+    \ = cap.read()\n            if ret: frames.append((int(total*frac), f))\n        cap.release()\n \
+    \       return frames, total, fps\n\n    of, ot, ofps = sample_frames(out_vid)\n    infr, it, ifps\
+    \ = sample_frames(inp)\n    print(f\"Output: {ot} frames @ {ofps:.1f} fps\")\n    print(f\"Input:\
+    \  {it} frames @ {ifps:.1f} fps\")\n\n    # Frame-by-frame diff. Output is 16:9 landscape 2504x1440\
+    \ — input may differ.\n    print(\"\\nFrame diff (out vs input, same fractional position):\")\n  \
+    \  for (ofn, oframe), (ifn, iframe) in zip(of, infr):\n        if iframe.shape[:2] != oframe.shape[:2]:\n\
+    \            iframe_rs = cv2.resize(iframe, (oframe.shape[1], oframe.shape[0]))\n        else:\n \
+    \           iframe_rs = iframe\n        diff = np.abs(oframe.astype(np.int16) - iframe_rs.astype(np.int16))\n\
+    \        mean_diff = diff.mean()\n        # Also: what fraction of pixels changed by >30?\n      \
+    \  changed_frac = (diff.mean(axis=2) > 30).mean()\n        print(f\"  frame~{ofn}: mean_abs_diff={mean_diff:5.2f}\
+    \  frac_pixels_changed>30: {changed_frac*100:5.2f}%\")\n\n    # Save one frame for visual inspection\n\
+    \    os.makedirs('/tmp/verify', exist_ok=True)\n    cv2.imwrite('/tmp/verify/out_mid.jpg', of[2][1])\n\
+    \    cv2.imwrite('/tmp/verify/in_mid.jpg', infr[2][1])\n    print(\"\\nSaved /tmp/verify/{out_mid,in_mid}.jpg\
+    \ for visual inspection\")\n    print(f\"Output mid frame size: {of[2][1].shape}  Input mid frame\
+    \ size: {infr[2][1].shape}\")\n"
+  cell_id: QHkgloYCGbb_
+- name: cell-70
+  type: code
+  source: "#@title Verify3) Visualize 3 output frames + compare to inpainted-only { run: \"auto\" }\n\
+    import cv2, os, base64\nfrom pathlib import Path\nimport numpy as np\n\nVAG = Path(os.environ['HOME'])\
+    \ / 'virtual-avatar-generation'\nout = VAG / 'output' / 'video.mp4'\ninpainted_only = VAG / 'pipeline'\
+    \ / 'environment' / 'data' / 'results' / 'video.mp4'\n\ndef get_frame(p, frac):\n    cap = cv2.VideoCapture(str(p));\
+    \ t = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))\n    cap.set(cv2.CAP_PROP_POS_FRAMES, int(t*frac))\n\
+    \    ret, f = cap.read(); cap.release()\n    return f if ret else None\n\nprint(f\"Output: {out} exists={out.exists()}\"\
+    )\nprint(f\"Inpainted-only: {inpainted_only} exists={inpainted_only.exists()}\")\n\n# Diff output\
+    \ vs inpainted-only at same fractions — this is the acid test.\n# If they're >95% identical, avatar\
+    \ was NOT rendered.\n# If they differ by 10-30% in person-region, avatar IS overlaid.\nif inpainted_only.exists():\n\
+    \    for frac in [0.2, 0.5, 0.8]:\n        o = get_frame(out, frac)\n        i = get_frame(inpainted_only,\
+    \ frac)\n        if o is None or i is None:\n            print(f\"  frac={frac}: missing frame\")\n\
+    \            continue\n        if i.shape != o.shape:\n            i = cv2.resize(i, (o.shape[1],\
+    \ o.shape[0]))\n        diff = np.abs(o.astype(np.int16) - i.astype(np.int16))\n        print(f\"\
+    \  frac={frac}: out={o.shape} inp={i.shape}  mean_diff={diff.mean():.2f}  frac_px_changed>15: {(diff.mean(axis=2)>15).mean()*100:.1f}%\
+    \  max_diff={diff.max()}\")\n\n# Save 3 output frames as small jpegs, print size so user can decide\
+    \ if download-worth\nos.makedirs('/tmp/verify', exist_ok=True)\nfor i, frac in enumerate([0.2, 0.5,\
+    \ 0.8]):\n    f = get_frame(out, frac)\n    if f is not None:\n        # Downsample to 400px wide\
+    \ for inline display\n        h, w = f.shape[:2]\n        scale = 400 / w\n        small = cv2.resize(f,\
+    \ (400, int(h*scale)))\n        cv2.imwrite(f'/tmp/verify/out_{i}.jpg', small, [cv2.IMWRITE_JPEG_QUALITY,\
+    \ 70])\n        cv2.imwrite(f'/tmp/verify/out_full_{i}.jpg', f, [cv2.IMWRITE_JPEG_QUALITY, 80])\n\
+    \        print(f\"  Saved /tmp/verify/out_{i}.jpg ({os.path.getsize(f'/tmp/verify/out_{i}.jpg')/1024:.1f}\
+    \ KB)\")\n\n# Display inline so we can see it through MCP output\nfrom IPython.display import Image,\
+    \ display\nfor i in range(3):\n    p = f'/tmp/verify/out_{i}.jpg'\n    if os.path.exists(p):\n   \
+    \     print(f\"\\n=== Output frame at {int([0.2,0.5,0.8][i]*100)}% ===\")\n        display(Image(filename=p))\n"
+  cell_id: hwNMkP1zGkty

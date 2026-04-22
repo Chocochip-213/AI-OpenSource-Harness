@@ -1,0 +1,80 @@
+name: sabr
+version: "0.1.0"
+description: "SABR (agent-mitra/virtual-avatar-generation) — virtual avatar generation as world navigator. DiT_action diffusion + DINOv2 context + PHALP track + FGT/LAFC inpaint. Colab A100 40GB target (context-skip mode)."
+
+recipe_type: colab-notebook
+
+upstream:
+  repo: https://github.com/agent-mitra/virtual-avatar-generation.git
+  # Unpinned on first port — pin to SHA after first successful Colab run.
+  ref: main
+
+requirements: requirements_opt1.txt
+main: run.sh
+notebook_manifest: notebook_manifest.yaml
+
+docs:
+  plan: docs/plan.md
+  context: docs/context.md
+  tasks: docs/tasks.md
+
+runtime:
+  gpu: A100
+  python: "3.11"
+  disk_gb: 50       # 15 GB weights + ~5 GB deps + ~20 GB scratch (ffmpeg frames, inpainted video, intermediate tensors)
+  vram_min_gb: 40   # README FAQ: 40 GB OK if context model skipped (our target). Full pipeline wants 80 GB.
+  colab_version: "2025.07"  # Python 3.11 + chumpy builds cleanly. 2026.xx has Python 3.12 -> chumpy needs fork.
+
+# SABR secrets: upstream .env has R2/AWS/Firebase keys for data collection (training-side, optional).
+# For inference-only, nothing required.
+secrets:
+  required: []
+  optional:
+    - CLOUDFLARE_ACCOUNT_ID        # only if user uploads outputs to R2
+    - CLOUDFLARE_R2_ACCESS_KEY_ID
+    - CLOUDFLARE_R2_SECRET_ACCESS_KEY
+    - CLOUDFLARE_R2_BUCKET
+
+strategy_history: []
+# Pre-authorized strategies (see tasks.md v2 section):
+#   - v1: condacolab + upstream install.sh (default)
+#   - v2a: runtime rollback (if condacolab 0.1.x breaks on 2026.xx -> back to 2025.07)
+#   - v2b: direct pip into Colab base (skip mamba)
+#   - v2c: SDPA shim for flash-attn
+#   - v2d: manual miniforge
+
+artifacts:
+  notebook: "outputs/notebooks/{name}.ipynb"
+  e2e_results: "outputs/e2e/{name}/"
+  mcp_sessions: "outputs/mcp-sessions/{name}/"
+
+# SABR output = mp4 (3D avatar composited over inpainted original).
+integration:
+  backend_env_var: "AI_SABR_OUTPUT_URL"
+  asset_mime: "video/mp4"
+  team_channel: "#ai-endpoint"
+  contract_files:
+    - exports/model_card.md
+    - exports/gradio_api.schema.json
+    - exports/inference_handler.py
+    - exports/INTEGRATION_BACKEND.md
+    - exports/INTEGRATION_FRONTEND.md
+
+mcp:
+  # Enabled 2026-04-21 for live-driven initial port (32 files / 2022 pins / flash-attn
+  # risk / PHALP URL patch / OpenGL driver — static manifest <10% first-run success).
+  enabled: true
+  # When connection is active, auto-exec ALLOWED (iterative patching -> many small cell runs).
+  allow_auto_execution: true
+  # SABR logs verbose (PHALP + diffusion tqdm x 1100 + ffmpeg). Raise budget.
+  max_tool_output_tokens: 30000
+  preferred_gpu: "A100"
+  # 15GB download + install.sh + first inference may exceed 90-min idle timeout.
+  keepalive: true
+  # No Gradio — SABR is CLI-only (`python inference.py`). Output is mp4 via files.download().
+  # Phase 3 scope to wrap in Gradio.
+  serve_via_gradio: false
+  # SABR inference slow (5-15 min per 10s video). Raise MCP tool timeout.
+  # install.sh alone can hit 25 min (mmcv-full + detectron2 + flash-attn builds).
+  # 30 min covers worst-case install + first inference (if we ever one-shot the whole thing).
+  timeout_seconds: 1800

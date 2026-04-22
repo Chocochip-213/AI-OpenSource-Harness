@@ -1,0 +1,6 @@
+# SABR — Colab-side bootstrap deltas ONLY.
+# Real heavy deps (torch, mmcv-full, mmdet, mmpose, flash-attn, xformers, detectron2,
+# chumpy, timm, pyrender, ...) come from upstream install.sh via condacolab + mamba.
+# This file is for tooling that must exist BEFORE install.sh runs.
+condacolab>=0.1.4   # Installs mambaforge into Colab. Kernel restarts on install().
+gdown>=4.6          # Google Drive large-file download with auto virus-scan bypass.

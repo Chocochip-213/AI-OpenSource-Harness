@@ -251,6 +251,34 @@ def main() -> int:
         cells = None
         if isinstance(tool_result, dict):
             cells = tool_result.get("cells")
+            # Spill-envelope handling (2026-04-22 fix): Claude Code truncates
+            # MCP output exceeding MAX_MCP_OUTPUT_TOKENS to a file and returns
+            # {"content":[{"type":"text","text":"Error: ... saved to <path>..."}]}
+            # instead of the raw cells dict. Without re-hydration, `cells`
+            # stays None, the isinstance check falls through, and
+            # latest-cells.json silently never writes for larger notebooks.
+            # Same silent-loss mode that burned the flux2-klein-4b port.
+            if cells is None:
+                text_blob = ""
+                content = tool_result.get("content")
+                if isinstance(content, list) and content:
+                    text_blob = (content[0] or {}).get("text", "") or ""
+                elif isinstance(tool_result.get("text"), str):
+                    text_blob = tool_result["text"]
+                import re as _re
+                m = _re.search(r"saved to\s+(.+?\.txt)\.", text_blob)
+                if m:
+                    spill_path = Path(m.group(1).strip())
+                    try:
+                        spilled = json.loads(spill_path.read_text(encoding="utf-8"))
+                        if isinstance(spilled, dict):
+                            cells = spilled.get("cells")
+                            tool_result = spilled
+                        elif isinstance(spilled, list):
+                            cells = spilled
+                            tool_result = {"cells": cells}
+                    except Exception as e:
+                        log_error(f"get_cells spill re-hydrate failed: {spill_path}: {e}")
         elif isinstance(tool_result, list):
             cells = tool_result
             tool_result = {"cells": cells}

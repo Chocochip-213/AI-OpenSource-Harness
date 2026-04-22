@@ -1,0 +1,2 @@
+# Full: all deps for standalone / local dev
+# May conflict with Colab pre-installed packages

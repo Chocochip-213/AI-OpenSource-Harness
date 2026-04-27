@@ -1,0 +1,92 @@
+name: nlf
+version: "0.1.0"
+description: "NLF (Neural Localizer Fields, Sárándi & Pons-Moll NeurIPS'24) — single image → SMPL pose+shape+joints+vertices via TorchScript on Colab A100 40GB."
+
+# Recipe type — how the model is served.
+# - colab-notebook: One-shot Colab execution (default for most recipes)
+# - local-server:   Long-running GPU server (e.g. masking_server, API endpoint)
+# - hybrid:         Both — Colab for experiment, local server for production
+recipe_type: colab-notebook
+
+upstream:
+  repo: https://github.com/isarandi/nlf.git
+  # Pinned to the exact HEAD analyzed by the OpenCode 10-subagent brief on 2026-04-27.
+  # Why pin: bit.ly/nlf_l_pt + demo.ipynb cell layout + example_image.jpg presence are all
+  # baked into our cell plan. If upstream rewrites demo.ipynb the cells silently drift.
+  # Quarterly review: see docs/tasks.md "Reversal & Re-judgement".
+  ref: f8611fc76ff60f262eb0ab2c6abc3947e42a954a
+
+requirements: requirements_opt1.txt
+main: run.sh
+notebook_manifest: notebook_manifest.yaml
+
+docs:
+  plan: docs/plan.md
+  context: docs/context.md
+  tasks: docs/tasks.md
+
+runtime:
+  gpu: A100
+  python: "3.11"
+  # 473 MB TorchScript + ~50 MB cloned repo + ~1 GB scratch for output viz/save = ~2 GB used.
+  # 10 GB ceiling leaves >5x headroom for re-runs and per-cell artifacts.
+  disk_gb: 10
+  # A10 cell-level VRAM estimates: cell E load 2-6 GB, cell F inference 4-10 GB.
+  # 16 GB minimum excludes T4 (16 GB tight; would OOM on multi-person batches at max_detections=150).
+  # A100 40GB has 4x headroom — safe for the single-image MVP.
+  vram_min_gb: 16
+  # 2025.07 = Python 3.11 + torch 2.6.0+cu124 + numpy 2.0.2 (per colab-runtimes/SUMMARY.md).
+  # Why this runtime: NLF env yml requests numpy<2.0 and python=3.10, but A4 dep audit proved
+  # the bare detect_smpl_batched() call only needs torch + torchvision (both already pre-installed
+  # on 2025.07). Newer runtimes (2026.01+) move to Python 3.12 which would risk the implicit
+  # numpy<2 constraint surfacing through C-extension paths if we ever extend beyond MVP.
+  colab_version: "2025.07"
+
+# Secrets required at runtime. NEVER hardcode these in recipe files.
+# NLF model weights are public (https://bit.ly/nlf_l_pt → GitHub release asset, 495_696_900 bytes,
+# verified by OpenCode A8). No HF token, no R2 keys. Empty.
+secrets:
+  required: []
+  optional: []
+
+# Strategy history — populated as porting progresses.
+# Each failure → add entry. Keeps the "why we ended up at vN" trail.
+strategy_history:
+  - version: v1
+    name: Direct pip (PORTING_PATTERNS §1)
+    status: planned
+    reason: "torch + torchvision pre-installed on 2025.07; minimal subset proven by OpenCode A4."
+    date: 2026-04-27
+
+# Artifact paths (recipe-scoped — all under recipes/<name>/ or outputs/).
+artifacts:
+  notebook: "outputs/notebooks/{name}.ipynb"
+  e2e_results: "outputs/e2e/{name}/"
+  mcp_sessions: "outputs/mcp-sessions/{name}/"
+
+# Backend / frontend integration — out of MVP scope for NLF (research recipe, no team handoff yet).
+# Defaults preserved so tools/generate_export.py works if invoked, but contract_files are not
+# generated until/unless a backend consumer is identified.
+integration:
+  backend_env_var: "AI_GRADIO_URL"
+  asset_mime: "application/octet-stream"  # output is a torch.save'd .pt dict — binary blob
+  team_channel: "#ai-endpoint"
+  contract_files:
+    - exports/model_card.md
+    - exports/gradio_api.schema.json
+    - exports/inference_handler.py
+    - exports/INTEGRATION_BACKEND.md
+    - exports/INTEGRATION_FRONTEND.md
+
+# Colab MCP integration — OPT-IN per recipe.
+# Enabled from day-1 per user direction. Recipe is small (8 manual cells, ~3-5 min total),
+# so allow_auto_execution: true is appropriate (user can interrupt anytime).
+# preferred_gpu/keepalive ensure auto-injected preflight + heartbeat cells appear on top.
+mcp:
+  enabled: true
+  allow_auto_execution: true
+  max_tool_output_tokens: 10000
+  preferred_gpu: A100
+  keepalive: true
+  serve_via_gradio: false  # research recipe — no team handoff
+  timeout_seconds: 300

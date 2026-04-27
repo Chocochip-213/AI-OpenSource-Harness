@@ -1,0 +1,23 @@
+# NLF MVP — minimum proven inference subset (PyTorch TorchScript path).
+# Justification: OpenCode A4 dependency audit + OpenCode brief verified the bare
+#   torch.jit.load(...) ; model.detect_smpl_batched(image_batch)
+# call path uses only torch + torchvision. Everything else in the upstream
+# environment_comfortable_py10.yml (chumpy, numpy<2, mayavi, 14 editable libs by Sárándi,
+# tensorflow, etc.) belongs to OTHER paths: training, TF Hub demo, source-side viz scripts,
+# SMPL-X reconstruction. None of those are in MVP scope.
+#
+# Both packages below are PRE-INSTALLED on Colab runtime 2025.07:
+#   torch         2.6.0+cu124   ✓ (colab-runtimes/SUMMARY.md)
+#   torchvision   0.21.0+cu124  ✓
+# So this file is documentation for the recipe + a fallback if Colab ever ships
+# without them. The actual runtime check happens in notebook_manifest.yaml Cell C
+# (ensure_packages) using importlib.util.find_spec — no pip install if already present.
+#
+# Convenience packages also pre-installed on 2025.07 — listed for the same fallback reason:
+#   Pillow        11.2.1    ✓
+#   matplotlib    3.10.x    ✓
+
+torch
+torchvision
+Pillow
+matplotlib

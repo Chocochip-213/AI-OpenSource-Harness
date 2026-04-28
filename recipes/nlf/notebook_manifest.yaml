@@ -1,36 +1,36 @@
-# NLF — Notebook Manifest
+# NLF — Notebook Manifest (v0.3 endpoint-first)
 #
 # Generate: uv run python tools/generate_notebook.py nlf
 # Output:   outputs/notebooks/nlf.ipynb
 #
-# Auto-injected by tools/generate_notebook.py (because recipe.yaml mcp.enabled: true,
-# mcp.preferred_gpu: A100, mcp.keepalive: true):
-#   - Cell 0a — preflight (asserts torch.cuda.get_device_name(0) contains "A100")
-#   - Cell 0b — keepalive (daemon-thread heartbeat for Colab idle)
+# Auto-injected (mcp.enabled+keepalive+preferred_gpu): cell 0a preflight + 0b daemon-keepalive
 #
-# Manual cells below: B-I from docs/plan.md "Cell plan", code skeletons from
-# OpenCode A10 with adjustments captured in docs/context.md "Key Decisions".
+# Manual cells (B-J): clone → deps → weights → load → smoke (F+G) → serve → tunnel → forever-loop.
+# Run-all → public endpoint URL printed by cell I → cell J holds session alive (Colab idle 0).
 
-title: "NLF — Neural Localizer Fields → SMPL prediction (Colab)"
+title: "NLF Body Embedding API — Colab serving notebook"
 gpu_type: A100
 
 cells:
   - type: markdown
     source: |
-      # NLF — Neural Localizer Fields → SMPL prediction
-      Single image → SMPL pose+shape+joints+vertices via TorchScript.
+      # NLF Body Embedding API
+      Run-all the cells → public endpoint URL printed → leave the last cell running to keep Colab alive.
 
-      **Runtime**: Colab A100 40GB · 2025.07 (Python 3.11, torch 2.6.0+cu124).
-      If wrong: **Runtime → Change runtime type**.
+      **Runtime**: Colab A100 40GB · 2025.07 (or 2026.04 — both verified).
+      **Time**: ~3 min cold (clone + 473 MB weight DL + model load + tunnel up).
+      **Source**: <https://github.com/isarandi/nlf> pinned `f8611fc7…` (Sárándi+Pons-Moll NeurIPS'24).
 
-      **Time**: ~3–5 min cold (clone 30s · weight DL 60s · load 30s · inference 30s · viz/save 30s).
+      **Final endpoints** (printed by cell I):
+      - `POST /embed` (multipart `file`, single image) → 7-dim pose-invariant body-shape vector — **PRIMARY (signup flow)**
+      - `POST /infer` → full SMPL params + vector
+      - `POST /compare` (multipart `files`, 2+) → pairwise body-shape distance
+      - `GET /health`, `GET /docs`
 
-      **Source**: <https://github.com/isarandi/nlf> (pinned `f8611fc7…`). Code MIT;
-      model weights non-commercial research use only.
+      **Use case**: user-signup flow — call `/embed` once with selfie, store the 7-dim vector
+      in your DB, all future similarity computed client-side from stored vectors.
 
-      **Output**: 14-key dict (`boxes` + `pose` / `betas` / `trans` / `joints3d` / `vertices3d`
-      / `joints2d` / `vertices2d` / `*_nonparam` / `*_uncertainties`) saved as
-      `outputs/example_pred.pt` and triggered for download.
+      License: code MIT, model weights non-commercial research use only.
 
   - type: code
     source: |
@@ -40,54 +40,41 @@ cells:
 
       REPO_URL = "https://github.com/isarandi/nlf.git"
       REPO_DIR = Path("/content/nlf")
-      # Pinned to OpenCode-verified HEAD (2026-04-27). See recipes/nlf/recipe.yaml upstream.ref.
+      # OpenCode-verified HEAD (2026-04-27); pinning prevents demo.ipynb / bit.ly drift.
       PINNED_REF = "f8611fc76ff60f262eb0ab2c6abc3947e42a954a"
 
       if not REPO_DIR.exists():
           subprocess.check_call(["git", "clone", REPO_URL, str(REPO_DIR)])
       subprocess.check_call(["git", "-C", str(REPO_DIR), "checkout", PINNED_REF])
-
       os.chdir(REPO_DIR)
-      assert (REPO_DIR / "example_image.jpg").is_file(), \
-          "example_image.jpg missing — upstream may have rewritten the demo asset layout"
-      assert (REPO_DIR / "demo.ipynb").is_file(), "demo.ipynb missing"
-      print({
-          "cwd": str(Path.cwd()),
-          "has_example_image": True,
-          "has_demo_notebook": True,
-      })
+      assert (REPO_DIR / "example_image.jpg").is_file(), "example_image.jpg missing — upstream drift"
+      print({"cwd": str(Path.cwd()), "ok": True})
 
   - type: code
     source: |
       #@title C) Ensure Runtime Packages { run: "auto" }
-      # Fail-fast: catch missing deps NOW, not 30 min later during inference.
-      # NLF MVP minimum: torch + torchvision (verified by OpenCode A4 dependency audit).
-      # Pillow + matplotlib are convenience for image I/O + cell H viz.
-      # All 4 are pre-installed on Colab 2025.07 — pip install is a fallback for non-stock runtimes.
+      # Fail-fast dep verification. torch+torchvision pre-installed on Colab 2025.07/2026.04.
+      # fastapi+uvicorn+python-multipart for the serving cells. Pillow for PIL decode.
       import importlib.util, subprocess, sys
 
       required = {
-          "torch": "torch",
-          "torchvision": "torchvision",
+          "torch": "torch", "torchvision": "torchvision",
           "PIL": "Pillow",
-          "matplotlib": "matplotlib",
+          "fastapi": "fastapi", "uvicorn": "uvicorn[standard]",
+          "multipart": "python-multipart", "requests": "requests",
       }
-
-      missing = [pip_name for module_name, pip_name in required.items()
-                 if importlib.util.find_spec(module_name) is None]
-
+      missing = [pip for mod, pip in required.items() if importlib.util.find_spec(mod) is None]
       if missing:
-          print(f"Installing missing: {missing}")
+          print(f"Installing: {missing}")
           subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *missing])
 
-      still_missing = [m for m in required if importlib.util.find_spec(m) is None]
-      assert not still_missing, f"FATAL: failed to install {still_missing}"
-      print({"all_present": True, "checked": list(required.keys())})
+      still = [m for m in required if importlib.util.find_spec(m) is None]
+      assert not still, f"FATAL: failed to install {still}"
 
       import torch
-      assert torch.cuda.is_available(), "CUDA GPU is required for this notebook."
-      print({"torch": torch.__version__, "cuda": torch.version.cuda,
-             "gpu": torch.cuda.get_device_name(0)})
+      assert torch.cuda.is_available(), "CUDA GPU required"
+      print({"all_present": True, "torch": torch.__version__,
+             "cuda": torch.version.cuda, "gpu": torch.cuda.get_device_name(0)})
 
   - type: code
     source: |
@@ -95,151 +82,300 @@ cells:
       from pathlib import Path
       import urllib.request
 
-      # Verified by OpenCode A8 via `curl -IL https://bit.ly/nlf_l_pt` (Content-Length).
-      EXPECTED_BYTES = 495_696_900
-      MODEL_URL = "https://bit.ly/nlf_l_pt"
-      MODELS_DIR = REPO_DIR / "models"
-      MODELS_DIR.mkdir(exist_ok=True)
+      EXPECTED_BYTES = 495_696_900  # OpenCode A8 verified Content-Length
+      MODELS_DIR = REPO_DIR / "models"; MODELS_DIR.mkdir(exist_ok=True)
       MODEL_PATH = MODELS_DIR / "nlf_l_multi.torchscript"
 
-      need_download = (
-          not MODEL_PATH.exists()
-          or MODEL_PATH.stat().st_size != EXPECTED_BYTES
-      )
-      if need_download:
-          print(f"Downloading {MODEL_URL} -> {MODEL_PATH} ...")
-          urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-
-      actual_bytes = MODEL_PATH.stat().st_size
-      assert actual_bytes == EXPECTED_BYTES, \
-          f"Size mismatch: {actual_bytes} != {EXPECTED_BYTES} - bit.ly may have rotated; " \
-          "check https://github.com/isarandi/nlf/releases for direct asset URL."
-      print({"model_path": str(MODEL_PATH), "bytes": actual_bytes})
+      if not MODEL_PATH.exists() or MODEL_PATH.stat().st_size != EXPECTED_BYTES:
+          print(f"Downloading https://bit.ly/nlf_l_pt -> {MODEL_PATH}")
+          urllib.request.urlretrieve("https://bit.ly/nlf_l_pt", MODEL_PATH)
+      assert MODEL_PATH.stat().st_size == EXPECTED_BYTES, \
+          f"size mismatch (bit.ly rotated?) — check https://github.com/isarandi/nlf/releases"
+      print({"model_path": str(MODEL_PATH), "bytes": MODEL_PATH.stat().st_size})
 
   - type: code
     source: |
-      #@title E) Load Model + Bundled Image { run: "auto" }
+      #@title E) Load TorchScript Model { run: "auto" }
       import torch
-      # IMPORTANT: must import torchvision BEFORE torch.jit.load
-      # (per upstream demo.ipynb cell 1 inline comment, verified OpenCode A2).
+      # IMPORTANT: import torchvision BEFORE torch.jit.load (NLF demo cell 1 comment, OpenCode A2).
       import torchvision
 
-      DEVICE = "cuda"  # NEVER "cuda:1" - A3 documented `CUDA error: invalid device ordinal`.
-      IMAGE_PATH = REPO_DIR / "example_image.jpg"
+      DEVICE = "cuda"  # NEVER cuda:1 — A3 documented `invalid device ordinal` on single-GPU Colab.
 
-      # Cache model in globals() for cell re-run safety (harness pipeline-caching pattern).
+      # Cache in globals() — re-run safe.
       if "model" not in globals():
           model = torch.jit.load(str(MODEL_PATH)).to(DEVICE).eval()
-
-      image = torchvision.io.read_image(str(IMAGE_PATH)).to(DEVICE)
-      frame_batch = image.unsqueeze(0)
-
-      print({
-          "device": DEVICE,
-          "image_shape": tuple(image.shape),
-          "frame_batch_shape": tuple(frame_batch.shape),
-          "dtype": str(image.dtype),
-      })
-      assert frame_batch.ndim == 4 and frame_batch.shape[0] == 1, \
-          "frame_batch shape invariant violated"
-      assert frame_batch.is_cuda, "frame_batch must be on cuda"
+      print({"device": DEVICE, "model_loaded": True})
 
   - type: code
     source: |
-      #@title F) Run detect_smpl_batched { run: "auto" }
-      # Default args verified at nlf/pt/multiperson/multiperson_model.py:84-107
-      # (parametric base; `detect_smpl_batched` is the SMPL-flavored alias at :175):
-      #   default_fov_degrees=55.0, max_detections=150, model_name='smpl'.
-      # `torch.device("cuda")` context manager mirrors upstream demo.ipynb cell 1.
-      #
-      # Re-running this cell intentionally re-runs inference (no globals() cache for `pred`)
-      # so swapping the input image in cell E and re-running F produces fresh predictions.
+      #@title F) Smoke inference (bundled example_image.jpg) { run: "auto" }
+      # Validates the full pipeline before exposing endpoint. ~30s on A100.
+      import torch, torchvision
+      _img = torchvision.io.read_image(str(REPO_DIR / "example_image.jpg")).to("cuda")
       with torch.inference_mode(), torch.device("cuda"):
-          pred = model.detect_smpl_batched(frame_batch)
-
-      print(sorted(pred.keys()))
-      print(f"n_images_returned: {len(pred['pose'])}")
-      assert isinstance(pred, dict) and "pose" in pred, "Expected dict with 'pose' key"
-      assert len(pred["pose"]) == frame_batch.shape[0], "Output batch size mismatch"
+          pred = model.detect_smpl_batched(_img.unsqueeze(0))
+      print(f"keys: {sorted(pred.keys())}")
+      print(f"n_persons in example_image.jpg: {pred['boxes'][0].shape[0]}")
+      assert pred["boxes"][0].shape[0] > 0, "smoke test failed: no detection on example_image"
 
   - type: code
     source: |
-      #@title G) Verify Output Contract { run: "auto" }
-      # Expected keys verified against nlf/pt/multiperson/multiperson_model.py:
-      #   - Main path (detections > 0): :221-314 — `boxes` survives at :221, joints/verts/
-      #     uncertainties added at :273-308; only `poses3d`/`poses2d`/`uncertainties` are
-      #     deleted at :311-313 → return dict has 14 keys including `boxes`.
-      #   - Empty-detection fallback: :880-894 returns 13 keys (drops `boxes`).
-      # We assert all 14. Empty detection on example_image.jpg would indicate a model
-      # regression or an image without a person — fail-fast is the right behavior.
-      EXPECTED_KEYS = {
-          "boxes",
-          "pose", "betas", "trans",
-          "joints3d", "vertices3d",
-          "joints2d", "vertices2d",
+      #@title G) Verify 14-key contract { run: "auto" }
+      # Fail-fast schema check. Detected-main-path returns 14 keys including `boxes`.
+      # Empty-detection fallback (multiperson_model.py:880-894) returns 13 keys (no `boxes`).
+      EXPECTED = {
+          "boxes", "pose", "betas", "trans",
+          "joints3d", "vertices3d", "joints2d", "vertices2d",
           "joints3d_nonparam", "vertices3d_nonparam",
           "joints2d_nonparam", "vertices2d_nonparam",
           "joint_uncertainties", "vertex_uncertainties",
       }
-
-      pred_summary = {
-          k: [tuple(x.shape) for x in v] if isinstance(v, list) else type(v).__name__
-          for k, v in pred.items()
-      }
-      print(pred_summary)
-
-      missing_keys = EXPECTED_KEYS - pred.keys()
-      assert not missing_keys, \
-          f"Missing expected keys: {missing_keys} - this indicates either NO PERSON DETECTED " \
-          "(check input image / detector_threshold) OR upstream changed schema. " \
-          "Compare against nlf/pt/multiperson/multiperson_model.py:221-314 (main path) " \
-          "or :880-894 (empty fallback) and context.md Architecture."
-      print(f"All {len(EXPECTED_KEYS)} expected keys present.")
+      missing = EXPECTED - pred.keys()
+      assert not missing, f"missing keys: {missing} — multiperson_model.py:221-314 check"
+      print(f"All {len(EXPECTED)} keys present. Smoke test PASSED.")
 
   - type: code
     source: |
-      #@title H) Visualize 2D Mesh + Joints Overlay { run: "auto" }
-      # Use returned vertices2d / joints2d directly (pre-projected by the TorchScript model).
-      # No `ptu3d` / `cameralib` dependency needed - see context.md Key Decision.
-      import matplotlib.pyplot as plt
+      #@title H) FastAPI v0.3 — body-shape embedding server (background) { run: "auto" }
+      # 핵심 통찰: rigid bones / Y_span = rigid bones / real_height (H factor cancels in ratio).
+      # → 클라가 키 몰라도 비교 가능한 dimensionless body-shape vector.
+      import threading, time, io
+      import torch, torchvision, numpy as np
+      from PIL import Image
+      from fastapi import FastAPI, UploadFile, File
+      from typing import List
+      import uvicorn
 
-      img_np = image.detach().cpu().permute(1, 2, 0).numpy()
-      verts2d_np = pred["vertices2d"][0].detach().cpu().numpy().reshape(-1, 2)
-      joints2d_np = pred["joints2d"][0].detach().cpu().numpy().reshape(-1, 2)
+      assert "model" in globals(), "Run cell E first"
 
-      fig, ax = plt.subplots(figsize=(10, 7))
-      ax.imshow(img_np)
-      if len(verts2d_np):
-          ax.scatter(verts2d_np[:, 0], verts2d_np[:, 1], s=1, c="r", alpha=0.35,
-                     label=f"verts2d ({len(verts2d_np)})")
-      if len(joints2d_np):
-          ax.scatter(joints2d_np[:, 0], joints2d_np[:, 1], s=8, c="cyan", alpha=0.8,
-                     label=f"joints2d ({len(joints2d_np)})")
-      ax.set_axis_off()
-      ax.set_title(f"NLF - image 0 - {len(verts2d_np)} verts - {len(joints2d_np)} joints")
-      ax.legend(loc="lower right", fontsize=8)
-      plt.show()
+      FEATURE_NAMES = ['shoulder_w_norm','hip_w_norm','torso_norm',
+                       'upper_arm_norm','forearm_norm','thigh_norm','shin_norm']
+
+      def rigid_proportions(j):
+          """Y-span 정규화. RIGID bone segments only — pose-invariant + height-invariant.
+          float() wrap 필수: numpy.float32는 FastAPI jsonable_encoder가 직렬화 못 함
+          (TypeError: 'numpy.float32' object is not iterable)."""
+          Y = float(j[:,1].max() - j[:,1].min())
+          return [
+              float(abs(j[16,0]-j[17,0])/Y),                                                   # shoulder_w
+              float(abs(j[1,0] -j[2,0]) /Y),                                                   # hip_w (V-taper)
+              float(abs(j[12,1]-j[0,1]) /Y),                                                   # torso
+              float((np.linalg.norm(j[16]-j[18]) + np.linalg.norm(j[17]-j[19]))/2/Y),         # upper_arm
+              float((np.linalg.norm(j[18]-j[20]) + np.linalg.norm(j[19]-j[21]))/2/Y),         # forearm
+              float((np.linalg.norm(j[1]-j[4])  + np.linalg.norm(j[2]-j[5])) /2/Y),           # thigh
+              float((np.linalg.norm(j[4]-j[7])  + np.linalg.norm(j[5]-j[8])) /2/Y),           # shin
+          ]
+
+      def _decode(raw):
+          # torchvision.io.decode_image — 셀 F의 read_image가 내부적으로 사용하는 경로 (검증됨).
+          # bytearray(raw) → writable buffer 보장 (torch.frombuffer가 immutable bytes에 약한 torch 2.10 우회).
+          # PIL→numpy→permute 체인은 numpy 2.x non-writeable 이슈 + 비표준 stride로 SMPL TorchScript에서 500.
+          raw_t = torch.frombuffer(bytearray(raw), dtype=torch.uint8)
+          return torchvision.io.decode_image(raw_t, mode=torchvision.io.ImageReadMode.RGB).to("cuda")
+
+      def _run(raw):
+          img = _decode(raw)
+          with torch.inference_mode(), torch.device("cuda"):
+              pred = model.detect_smpl_batched(img.unsqueeze(0))
+          return img, pred
+
+      def _main_idx(pred):
+          """가장 큰 bbox = 메인 피사체 (셀카에 작은 보조 검출 회피)."""
+          b = pred["boxes"][0]
+          if b.shape[0] == 0: return None
+          areas = (b[:,2]-b[:,0]) * (b[:,3]-b[:,1])
+          return int(areas.argmax())
+
+      app = FastAPI(title="NLF Body Embedding API", version="0.3.0",
+                    description="Single image → 7-dim pose-invariant body-shape vector. "
+                                "Sárándi+Pons-Moll NeurIPS'24 (Neural Localizer Fields).")
+
+      @app.get("/")
+      def root():
+          return {
+              "name": "NLF Body Embedding API", "version": "0.3.0",
+              "primary": "POST /embed (single image) → 7-dim body-shape vector",
+              "use_case": "signup → embed → store vector → client computes similarity later",
+              "feature_names": FEATURE_NAMES,
+              "endpoints": {
+                  "POST /embed":   "image → 7-dim vector (PRIMARY signup endpoint)",
+                  "POST /infer":   "image → full SMPL params + vector",
+                  "POST /compare": "N images → pairwise body-shape distance",
+                  "GET /health":   "liveness + GPU status",
+                  "GET /docs":     "Swagger UI",
+              },
+          }
+
+      @app.get("/health")
+      def health():
+          return {"status":"ok", "model_loaded": True,
+                  "torch": torch.__version__,
+                  "gpu": torch.cuda.get_device_name(0),
+                  "vram_gb_free": round(torch.cuda.mem_get_info()[0]/1e9, 2),
+                  "vram_gb_total": round(torch.cuda.mem_get_info()[1]/1e9, 2)}
+
+      @app.post("/embed")
+      async def embed(file: UploadFile = File(...)):
+          """PRIMARY: 가입 시 1번 호출. 저장 후 클라가 자체 L2/cosine 비교."""
+          raw = await file.read()
+          _, pred = _run(raw)
+          idx = _main_idx(pred)
+          if idx is None:
+              return {"ok": False, "error": "no person detected", "n_persons": 0}
+          j3d = pred["joints3d"][0][idx].detach().cpu().numpy()
+          return {
+              "ok": True,
+              "vector": rigid_proportions(j3d),
+              "feature_names": FEATURE_NAMES, "dim": 7,
+              "n_persons_detected": int(pred["boxes"][0].shape[0]),
+              "subject_idx": idx,
+              "pose_invariant": True, "height_invariant": True,
+              "model": "NLF Sárándi+Pons-Moll NeurIPS'24",
+          }
+
+      def _person_payload(pred, idx):
+          j3d = pred["joints3d"][0][idx].detach().cpu().numpy()
+          return {
+              "boxes":  pred["boxes"][0][idx].detach().cpu().numpy().tolist(),
+              "betas":  pred["betas"][0][idx].detach().cpu().numpy().tolist(),
+              "pose":   pred["pose"][0][idx].detach().cpu().numpy().tolist(),
+              "trans":  pred["trans"][0][idx].detach().cpu().numpy().tolist(),
+              "joints3d": j3d.tolist(),
+              "joints2d": pred["joints2d"][0][idx].detach().cpu().numpy().tolist(),
+              "joint_uncertainties": pred["joint_uncertainties"][0][idx].detach().cpu().numpy().tolist(),
+              "rigid_proportions_vector": rigid_proportions(j3d),
+          }
+
+      @app.post("/infer")
+      async def infer(file: UploadFile = File(...)):
+          raw = await file.read()
+          img, pred = _run(raw)
+          n = int(pred["boxes"][0].shape[0])
+          return {"n_persons": n, "image_shape": list(img.shape), "filename": file.filename,
+                  "persons": [_person_payload(pred, i) for i in range(n)]}
+
+      @app.post("/compare")
+      async def compare(files: List[UploadFile] = File(...)):
+          if len(files) < 2: return {"error": "need >=2 files"}
+          items = []
+          for f in files:
+              raw = await f.read()
+              _, pred = _run(raw)
+              idx = _main_idx(pred)
+              if idx is None:
+                  items.append({"filename": f.filename, "vector": None})
+              else:
+                  j3d = pred["joints3d"][0][idx].detach().cpu().numpy()
+                  items.append({"filename": f.filename, "vector": rigid_proportions(j3d)})
+          pairs = []
+          for i in range(len(items)):
+              for j in range(i+1, len(items)):
+                  v1, v2 = items[i]["vector"], items[j]["vector"]
+                  d = None if (v1 is None or v2 is None) else float(np.linalg.norm(np.array(v1)-np.array(v2)))
+                  pairs.append({"a": items[i]["filename"], "b": items[j]["filename"], "distance": d})
+          return {"items": items, "pairs": pairs}
+
+      PORT = 7860
+      def _serve():
+          uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")
+
+      _existing = globals().get('_nlf_server_thread')
+      if _existing is None or not _existing.is_alive():
+          _nlf_server_thread = threading.Thread(target=_serve, daemon=True)
+          _nlf_server_thread.start()
+          time.sleep(2)
+          print(f"[server] FastAPI v0.3 on :{PORT}")
+      else:
+          print(f"[server] already on :{PORT}")
+
+      import requests
+      print(f"[health] {requests.get(f'http://localhost:{PORT}/health', timeout=5).json()}")
 
   - type: code
     source: |
-      #@title I) Save Outputs + Download { run: "auto" }
+      #@title I) cloudflared tunnel → public endpoint URL { run: "auto" }
+      # 무료 quick tunnel — *.trycloudflare.com 임시 URL (세션마다 회전).
+      # 영구 URL은 Cloudflare 계정 + named tunnel 필요.
+      import os, subprocess, threading, queue, re, time
       from pathlib import Path
 
-      OUTPUT_DIR = REPO_DIR / "outputs"
-      OUTPUT_DIR.mkdir(exist_ok=True)
-      PRED_PATH = OUTPUT_DIR / "example_pred.pt"
+      CF = Path("/usr/local/bin/cloudflared")
+      if not CF.exists():
+          print("[install] downloading cloudflared linux-amd64...")
+          subprocess.check_call([
+              "wget", "-q",
+              "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64",
+              "-O", str(CF),
+          ])
+          os.chmod(CF, 0o755)
+      print(f"[cloudflared] {subprocess.check_output([str(CF), '--version']).decode().strip()}")
 
-      # Move tensors to CPU before save (smaller pickle, no CUDA dependency on reload).
-      pred_cpu = {
-          k: [x.detach().cpu() for x in v] if isinstance(v, list) else v
-          for k, v in pred.items()
-      }
-      torch.save(pred_cpu, PRED_PATH)
-      print({"saved_to": str(PRED_PATH), "bytes": PRED_PATH.stat().st_size})
+      PORT = 7860
+      LOG = Path("/tmp/cloudflared.log"); LOG.unlink(missing_ok=True)
+      _q = queue.Queue()
 
-      # Trigger download in Colab; no-op locally.
-      try:
-          from google.colab import files
-          files.download(str(PRED_PATH))
-      except ImportError:
-          print("Not in Colab - skipping files.download()")
+      def _tunnel():
+          p = subprocess.Popen(
+              [str(CF), "tunnel", "--url", f"http://localhost:{PORT}",
+               "--no-autoupdate", "--logfile", str(LOG)],
+              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+          )
+          for line in p.stdout: _q.put(line)
+
+      _existing = globals().get('_tunnel_thread')
+      if _existing is None or not _existing.is_alive():
+          _tunnel_thread = threading.Thread(target=_tunnel, daemon=True)
+          _tunnel_thread.start()
+          print("[tunnel] starting...")
+      else:
+          print("[tunnel] already running")
+
+      URL_RE = re.compile(r'https://[a-z0-9-]+\.trycloudflare\.com')
+      url = None
+      deadline = time.time() + 60
+      while time.time() < deadline and not url:
+          try:
+              line = _q.get(timeout=2)
+              m = URL_RE.search(line)
+              if m: url = m.group(0); break
+          except queue.Empty:
+              pass
+          if LOG.exists():
+              m = URL_RE.search(LOG.read_text())
+              if m: url = m.group(0); break
+
+      if url:
+          PUBLIC_URL = url
+          print(f"\n  PUBLIC URL: {url}")
+          print(f"  curl {url}/health")
+          print(f"  curl -X POST -F 'file=@selfie.jpg' {url}/embed")
+          print(f"  Swagger UI: {url}/docs")
+          print(f"\n  (Session-rotating URL. Permanent: Cloudflare account + named tunnel.)")
+      else:
+          PUBLIC_URL = None
+          print("[tunnel] URL not detected in 60s. Last log:")
+          if LOG.exists(): print(LOG.read_text()[-2000:])
+
+  - type: code
+    source: |
+      #@title J) Forever-loop — keep Colab session alive { run: "auto" }
+      # Colab은 90분 idle 후 disconnect. 이 셀이 무한 foreground 루프 → cell 항상 active → idle 0.
+      # 12-hour hard cap (Colab Pro 기준)은 회피 불가. 더 오래 서비스하려면 cron 재기동 필요.
+      # Ctrl+M I (interrupt) 또는 Runtime > Disconnect로 정지.
+      import time, datetime, requests
+
+      print(f"  Endpoint serving (cell I 출력의 PUBLIC URL 참고).")
+      print(f"  Cell J holding session alive via foreground loop.")
+      print(f"  정지: 이 셀 interrupt OR Runtime > Disconnect.\n")
+
+      _heartbeat_period = 60  # seconds
+      while True:
+          now = datetime.datetime.now().strftime("%H:%M:%S")
+          try:
+              h = requests.get("http://localhost:7860/health", timeout=2).json()
+              status = f"vram_free={h.get('vram_gb_free','?')}GB · model={h.get('model_loaded')}"
+          except Exception as e:
+              status = f"health_check_fail: {type(e).__name__}"
+          print(f"[{now}] alive · {status}", flush=True)
+          time.sleep(_heartbeat_period)

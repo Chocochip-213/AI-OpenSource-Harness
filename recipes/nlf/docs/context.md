@@ -213,6 +213,7 @@ If `bit.ly` rotates, fall back to <https://github.com/isarandi/nlf/releases> (au
 | 2026-04-27 | Initial: Direct pip (no condacolab) | OpenCode A4: bare `detect_smpl_batched` only needs torch + torchvision (both pre-installed on 2025.07). |
 | 2026-04-27 | Initial: pin `upstream.ref` to f8611fc7… | OpenCode analyzed this exact commit; pin prevents silent drift in demo.ipynb / bit.ly target / example_image.jpg. |
 | 2026-04-27 | code-reviewer P1 catch: Cell G EXPECTED_KEYS missed `boxes` | Reviewer found main path (`multiperson_model.py:221-314`) returns 14 keys including `boxes`; the :880+ block I cited was the empty-detection fallback (13 keys). Fixed Cell G to assert all 14 (fail-fast on no-detections is desired) + corrected line citations in cell F/G + plan.md/context.md. |
+| 2026-04-27 | MCP cold-run cell 0 (preflight) PASSED | Allocated GPU: NVIDIA A100-SXM4-40GB / 42.4 GB VRAM (`expected: A100` matched). First run on CPU runtime correctly fail-fast'd via our assert (proved preflight does its job). User switched to A100 → re-run passed. Backup: outputs/mcp-sessions/nlf/20260427T073718Z.jsonl. |
 
 ## Artifact Locations
 | Path | Contents | Gitignored? |

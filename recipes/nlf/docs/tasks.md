@@ -35,7 +35,7 @@
 - [x] `uv run python tools/generate_notebook.py nlf` succeeds (non-empty cells; preflight + keepalive auto-injected)
 - [x] `uv run python scripts/smoke_test.py` passes (all .py compile, all imports OK)
 - [x] `Agent(subagent_type="code-reviewer")` ran (Opus 4.7) — flagged 1 P1 (Cell G `boxes` key + line citations) + 2 P2 (cell F idempotency comment, orphan exports template). P1 fixed; P2 cell F idempotency note added; P2 exports left as template-inherited (referenced via `recipe.yaml.integration.contract_files`). Marker `.claude/_code_review_passed.json` written.
-- [ ] First commit: `recipes/nlf/` scaffold (`feat(nlf): recipe scaffold + adversarial-verified MVP plan`)
+- [x] First commit: `0227846 feat(nlf): recipe scaffold + adversarial-verified MVP plan` (15 files, 1404 insertions; recipes/sabr/ correctly left untracked)
 
 ### Cold run (first Colab test, runtime 2025.07)
 - [ ] Open `outputs/notebooks/nlf.ipynb` in Colab

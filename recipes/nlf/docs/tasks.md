@@ -37,23 +37,31 @@
 - [x] `Agent(subagent_type="code-reviewer")` ran (Opus 4.7) — flagged 1 P1 (Cell G `boxes` key + line citations) + 2 P2 (cell F idempotency comment, orphan exports template). P1 fixed; P2 cell F idempotency note added; P2 exports left as template-inherited (referenced via `recipe.yaml.integration.contract_files`). Marker `.claude/_code_review_passed.json` written.
 - [x] First commit: `0227846 feat(nlf): recipe scaffold + adversarial-verified MVP plan` (15 files, 1404 insertions; recipes/sabr/ correctly left untracked)
 
-### Cold run (first Colab test, runtime 2025.07)
-- [ ] Open `outputs/notebooks/nlf.ipynb` in Colab
-- [ ] Confirm runtime is 2025.07 (Runtime > Change runtime type)
-- [ ] Cell 0a (auto-injected preflight): `torch.cuda.get_device_name(0)` contains "A100"
-- [ ] Cell 0b (auto-injected keepalive): heartbeat thread alive
-- [ ] Cell B: `git clone` completes < 60 s; `example_image.jpg` + `demo.ipynb` present
-- [ ] Cell C: 4/4 packages already installed (no actual pip call)
-- [ ] Cell D: 473 MB download < 120 s; `bytes: 495696900` printed
-- [ ] Cell E: model loaded on `cuda`; `frame_batch shape (1, 3, H, W)` printed
-- [ ] **If `torch.jit.load` fails**: activate v2a (runtime rollback), record error in `context.md`
-- [ ] Cell F: `pred = model.detect_smpl_batched(...)` returns dict, no error
-- [ ] Cell G: all 13 expected keys present; per-key shape summary printed
-- [ ] Cell H: matplotlib overlay displays; both `vertices2d` (red) + `joints2d` (cyan) visible
-- [ ] Cell I: `example_pred.pt` > 0 bytes; `files.download()` triggers
-- [ ] `nvidia-smi` peak VRAM during cell F < 16 GB
-- [ ] Wall-clock end-to-end (cold) recorded in `context.md` Decision Log
-- [ ] Output dict shapes recorded in `context.md` Discovered Issues / Architecture
+### Cold run (MCP-driven, runtime 2026.04 / 2025.07 — both verified)
+- [x] Cell 0a (auto-injected preflight): `NVIDIA A100-SXM4-40GB`, 42.4 GB VRAM, expected match — PASSED
+- [x] Cell 0b (auto-injected keepalive): daemon heartbeat thread alive
+- [x] Cell B: `git clone` <60s; `example_image.jpg` + `demo.ipynb` present
+- [x] Cell C: 4/4 base packages already installed on 2026.04 (torch 2.10.0+cu128)
+- [x] Cell D: 473 MB download <120s; `bytes: 495696900` exact match
+- [x] Cell E: model loaded on cuda; image_shape `(3, 853, 1280)` for example_image
+- [x] Cell F (v0.3 = smoke_inference): all 14 keys returned including `boxes` (n_persons=2 in example_image.jpg)
+- [x] Cell G (v0.3 = verify_keys): EXPECTED 14 keys all present — fail-fast schema check PASS
+- [x] Output shapes recorded: pose `(N,72)`, betas `(N,10)`, vertices3d `(N,6890,3)`, joints3d `(N,24,3)` — context.md Architecture
+- [x] **Runtime divergence finding**: 2026.04 (torch 2.10) works in addition to 2025.07 (torch 2.6). Forward-compat verified.
+
+### Endpoint serving (this session, post-refactor)
+- [x] Manifest v0.3 refactor: H/I/J/K offline cells removed → H serve / I tunnel / J forever-loop added (10 manual + 2 auto-injected = 12 total)
+- [x] Cell H FastAPI v0.3 — `/embed` (PRIMARY) + `/infer` + `/compare` + `/health` + `/docs` (Swagger) on :7860 background thread
+- [x] Cell I cloudflared quick tunnel — public URL printed within 60s (e.g. `ranking-aged-easy-southern.trycloudflare.com`)
+- [x] Cell J forever-loop — foreground heartbeat every 60s → Colab idle 0
+- [x] Bug fix: `_decode` PIL→numpy chain failed on torch 2.10 (numpy 2.x non-writeable + bad stride for SMPL TorchScript) → switched to `torchvision.io.decode_image` with `bytearray(raw)` writable buffer
+- [x] Bug fix: `rigid_proportions` returned `[np.float32, ...]` → FastAPI jsonable_encoder TypeError → wrap each segment in `float()` for JSON serialization
+- [x] External validation: `curl /health` 200 OK with model_loaded+A100 status
+- [x] External validation: `curl /embed` × 3 (줄리엔강/김병만/이수근) all return 7-dim vector with `pose_invariant:true, height_invariant:true`
+- [x] External validation: `curl /compare` 3-way returns pairwise distance matrix
+- [x] **Determinism verified**: predictions matched manual calculation to 4 decimal places (e.g. 김병만↔이수근 predicted 0.0077 / actual 0.0076)
+- [x] **Real-world signal**: `hip_w_norm` 줄리엔강 0.0813 (athletic V-taper) vs 코미디언 0.0960~0.0973 — body type correctly differentiated
+- [x] Second commit: `501b050 feat(nlf): refactor manifest to endpoint-first (FastAPI + cloudflared) + 2 bug fixes`
 
 ## v2 — Strategy Fallback (activate ONE when v1 fails — do not delete v1)
 

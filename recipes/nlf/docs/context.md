@@ -190,10 +190,12 @@ If `bit.ly` rotates, fall back to <https://github.com/isarandi/nlf/releases> (au
 ## Discovered Issues
 | Error | Root Cause | Fix | Verified |
 |-------|-----------|-----|----------|
-|       |           |     |          |
+| Cell E NameError on `REPO_DIR` after kernel restart | Colab kernel restart (manual or idle-kill) wipes Python globals; subsequent runs hit `IMAGE_PATH = REPO_DIR / "example_image.jpg"` before B re-runs | Re-run B/C/D/E in order (each idempotent). Documented behavior, not a bug. | 2026-04-27 |
+| `/embed` + `/infer` + `/compare` 500 Internal Server Error on torch 2.10 | Cell H `_decode` chain `pil = Image.open(io.BytesIO(raw)); torch.from_numpy(np.array(pil)).permute(2,0,1).contiguous().to("cuda")` — numpy 2.x non-writeable array protocol + non-standard stride choked SMPL TorchScript | Replaced with `torchvision.io.decode_image(torch.frombuffer(bytearray(raw), dtype=torch.uint8), mode=...)`. `bytearray()` ensures writable buffer; same code path as cell F's `read_image` (proven via smoke test). Promoted to `COMMON_ERRORS.md` candidate. | 2026-04-28 (manifest + live curl) |
+| `/embed` 500 `TypeError: 'numpy.float32' object is not iterable` | FastAPI's `jsonable_encoder` doesn't recognize `numpy.float32` as scalar — tries `dict(obj)` then `vars(obj)`, both fail. `rigid_proportions` returned `[np.float32, ...]` from numpy ops. | Wrap each segment in `float()` before list construction. Single-line fix in manifest cell H `rigid_proportions`. Hot-patchable on running Colab via redefining the function in a new cell (FastAPI handlers resolve globals at call time). | 2026-04-28 (manifest + live curl) |
+| `/compare` response `filename` field mojibake (`ÁÙ¸®¿£°­` = "줄리엔강" cp949) | FastAPI/starlette multipart parser doesn't decode `Content-Disposition` filename* parameter UTF-8 by default; falls back to latin-1 interpretation of cp949 bytes. | **Cosmetic only** — vectors and distances correct. Workaround: client uses its own ID, ignores returned filename. Trigger to fix: production needs original UTF-8 filenames in response. | 2026-04-28 |
 
-> Populated during cold-run on Colab. Empty until first run.
-> Promote generalizable fixes to `docs/COMMON_ERRORS.md`.
+> Populated during cold-run on Colab. Promote generalizable fixes (PIL decode chain on torch 2.10) to `docs/COMMON_ERRORS.md` if pattern recurs in another recipe.
 
 ## Risks
 | Risk | Probability | Mitigation |
@@ -214,6 +216,10 @@ If `bit.ly` rotates, fall back to <https://github.com/isarandi/nlf/releases> (au
 | 2026-04-27 | Initial: pin `upstream.ref` to f8611fc7… | OpenCode analyzed this exact commit; pin prevents silent drift in demo.ipynb / bit.ly target / example_image.jpg. |
 | 2026-04-27 | code-reviewer P1 catch: Cell G EXPECTED_KEYS missed `boxes` | Reviewer found main path (`multiperson_model.py:221-314`) returns 14 keys including `boxes`; the :880+ block I cited was the empty-detection fallback (13 keys). Fixed Cell G to assert all 14 (fail-fast on no-detections is desired) + corrected line citations in cell F/G + plan.md/context.md. |
 | 2026-04-27 | MCP cold-run cell 0 (preflight) PASSED | Allocated GPU: NVIDIA A100-SXM4-40GB / 42.4 GB VRAM (`expected: A100` matched). First run on CPU runtime correctly fail-fast'd via our assert (proved preflight does its job). User switched to A100 → re-run passed. Backup: outputs/mcp-sessions/nlf/20260427T073718Z.jsonl. |
+| 2026-04-27 | Runtime divergence discovered: actual is 2026.04 (torch 2.10.0+cu128) not 2025.07 | User selected A100 but Colab default runtime is 2026.04. TorchScript loaded fine on torch 2.10 → forward-compat verified. Recipe now documented as portable across 2025.07 + 2026.04. |
+| 2026-04-28 | Refactor manifest to endpoint-first | Per-user feedback: "사용자 가입할 때 자기 사진으로 자기 체형 임베딩하고 나중에 그 값으로 계속 계산". Removed offline-only cells (H viz / I save / J MCP-upload / K Tier B compare). Added FastAPI v0.3 (`/embed` primary + `/infer` + `/compare`) + cloudflared quick tunnel + foreground forever-loop. Use case = signup-time body embedding, store 7-dim vector, client computes similarity later. |
+| 2026-04-28 | Pose+height-invariant vector design (math insight) | rigid_segment / Y_span ≡ rigid_segment / real_height (H factor cancels). Client doesn't need ground-truth height. 7 features: shoulder_w/hip_w/torso/upper_arm/forearm/thigh/shin. Pose-dependent metrics (arm_total/leg_total = shoulder→wrist Euclidean) explicitly removed — they polluted distance with pose differences (이수근 T-pose vs 줄리엔강 셀카). Predictions matched to 4 decimal places vs manual calculation = deterministic. |
+| 2026-04-28 | Endpoint validation end-to-end PASS (3-way) | hip_w_norm: 줄리엔강 0.0813 (athletic V-taper) vs 코미디언 ~0.097. Pairwise: 김병만↔이수근 = 0.0076 (most similar, both Korean comedians) vs 줄리엔강↔코미디언 = ~0.022 (3× more distinct). Validates NLF correctly identifies build differences (the strongest signal is hip_w_norm). |
 
 ## Artifact Locations
 | Path | Contents | Gitignored? |

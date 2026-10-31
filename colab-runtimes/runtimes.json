@@ -1,6 +1,38 @@
 {
   "source": "https://github.com/googlecolab/backend-info.git",
   "runtimes": {
+    "2026.10": {
+      "commit_sha": "aaf59a1929a8b637ef5d41272647c8bee3f8fe7c",
+      "os": {
+        "ubuntu": "Ubuntu 24.04.4 LTS",
+        "python": "3.13.16",
+        "r": "R version 4.6.1 (2026-06-24) -- \"Happy Hop\"",
+        "julia": "1.12.6"
+      },
+      "total_gpu_packages": 722,
+      "key_packages": {
+        "torch": "2.11.0+cu130",
+        "torchvision": "0.26.0+cu130",
+        "torchaudio": "2.11.0+cu130",
+        "numpy": "2.1.3",
+        "scipy": "1.16.3",
+        "pillow": "11.3.0",
+        "transformers": "5.20.2",
+        "diffusers": "0.42.0",
+        "accelerate": "1.15.0",
+        "huggingface-hub": "1.33.0",
+        "huggingface_hub": "1.33.0",
+        "safetensors": "0.8.0",
+        "tensorflow": "2.21.0",
+        "jax": "0.11.1",
+        "jaxlib": "0.11.1",
+        "triton": "3.6.0",
+        "opencv-python": "5.0.0.93",
+        "opencv-python-headless": "5.0.0.93",
+        "gradio": "6.30.0",
+        "peft": "0.21.2"
+      }
+    },
     "2026.07": {
       "commit_sha": "ec53f93fe44a9cab118dc5451527b18e36e1a643",
       "os": {

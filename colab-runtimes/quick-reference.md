@@ -1,6 +1,6 @@
 # Colab Runtime Quick Reference (auto-generated)
 
-> **Last synced**: 2026-11-07 (UTC) — latest runtime in this snapshot: `2026.10`
+> **Last synced**: 2026-11-08 (UTC) — latest runtime in this snapshot: `2026.10`
 > Colab updates runtimes ~monthly. If `{today} - Last synced > 30d`, re-run:
 > `python scripts/sync_colab_runtimes.py`
 
